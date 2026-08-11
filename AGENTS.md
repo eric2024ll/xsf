@@ -70,6 +70,7 @@ cd ~ && git clone git@github.com:eric2024ll/jiage.git
 
 # 4. 创建 venv + 安装
 cd ~/jiage
+sudo apt install python3.12-venv -y    # Debian/Ubuntu 前置依赖 (ensurepip)
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
