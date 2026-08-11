@@ -63,7 +63,7 @@ uvicorn jiage.api:app --host 0.0.0.0 --port 8090
 # → 浏览器访问 http://47.93.199.96:8090
 ```
 
-端点: `/`(首页) `/login`(登录) `/logout`(退出) `/api/collections`(书架列表) `/api/stats`(统计) `/collections/{c}/search`(搜索) `/collections/{c}/add`(上传) `/collections/{c}/docs`(文献列表) `/collections/{c}/context`(上下文) `/collections/{c}/stats`(单书架统计) `/collections/{c}/doc/{id}`(删除)
+端点: `/`(首页) `/login`(登录) `/logout`(退出) `/api/collections`(书架列表) `/api/stats`(统计) `/collections/{c}/search`(搜索) `/collections/{c}/add`(上传) `/collections/{c}/docs`(文献列表) `/collections/{c}/context`(上下文) `/collections/{c}/stats`(单书架统计) `/collections/{c}/doc/{id}`(删除) `/collections/{c}/doc/{id}/proofread`(OCR 校对页) `/collections/{c}/doc/{id}/page/{p}/image`(PDF 页面 PNG) `/collections/{c}/doc/{id}/line/{lid}/edit`(保存行编辑) `/collections/{c}/doc/{id}/hits`(文档内命中列表)
 
 ## 服务器部署与实测流程 (标准)
 
