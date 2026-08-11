@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>籍 jiAge 文献池</title>
+<style>
+:root {
+  --bg: #f8f9fa;
+  --card-bg: #ffffff;
+  --text: #1a1a2e;
+  --text-muted: #6c757d;
+  --primary: #4361ee;
+  --primary-hover: #3a56d4;
+  --border: #dee2e6;
+  --accent: #e8f0fe;
+  --danger: #e5383b;
+  --success: #2a9d8f;
+  --radius: 8px;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+/* 顶部导航 */
+header {
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+header h1 { font-size: 1.25rem; font-weight: 700; }
+header .version {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--accent);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+/* 搜索区 */
+.search-bar {
+  background: var(--card-bg);
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.search-bar input[type="text"] {
+  flex: 1;
+  min-width: 200px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.95rem;
+}
+.search-bar select {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: white;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.search-bar button {
+  padding: 10px 24px;
+  background: var(--primary);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.search-bar button:hover { background: var(--primary-hover); }
+.search-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 主布局 */
+.main-layout {
+  display: flex;
+  gap: 20px;
+  padding: 20px 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+.results-col { flex: 1; min-width: 0; }
+.sidebar-col { width: 340px; flex-shrink: 0; }
+
+/* 搜索结果 */
+.result-count {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+.result-item {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: box-shadow 0.15s;
+}
+.result-item:hover { box-shadow: var(--shadow); }
+.result-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.result-meta .badge {
+  background: var(--accent);
+  padding: 1px 8px;
+  border-radius: 4px;
+  color: var(--primary);
+}
+.result-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 4px; }
+.result-text {
+  font-size: 0.88rem;
+  color: #444;
+  max-height: 4.5em;
+  overflow: hidden;
+}
+.result-text.expanded {
+  max-height: none;
+}
+.result-item.expanded .result-text { max-height: none; }
+
+.context-box {
+  margin-top: 10px;
+  padding: 10px 14px;
+  background: var(--bg);
+  border-radius: 6px;
+  border-left: 3px solid var(--primary);
+  font-size: 0.82rem;
+  display: none;
+}
+.context-box.show { display: block; }
+.context-line {
+  padding: 2px 0;
+  display: flex;
+  gap: 8px;
+}
+.context-line.hit { font-weight: 600; }
+.context-line .ln-meta {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  min-width: 50px;
+}
+.context-line .ln-text { flex: 1; }
+.bbox-info {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+mark {
+  background: #fff3a0;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+.no-results {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-muted);
+}
+
+/* 侧栏面板 */
+.panel {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.panel h3 {
+  font-size: 0.9rem;
+  margin-bottom: 12px;
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 6px;
+}
+.stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.stat-item {
+  text-align: center;
+  padding: 8px 4px;
+  background: var(--bg);
+  border-radius: 6px;
+}
+.stat-num { font-size: 1.3rem; font-weight: 700; color: var(--primary); }
+.stat-label { font-size: 0.72rem; color: var(--text-muted); }
+.coll-list { margin-top: 8px; font-size: 0.82rem; }
+.coll-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+/* 上传区 */
+.upload-form .field {
+  margin-bottom: 8px;
+}
+.upload-form label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  display: block;
+  margin-bottom: 2px;
+}
+.upload-form input[type="text"],
+.upload-form input[type="file"] {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 0.85rem;
+}
+.upload-form .checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+}
+.upload-form button {
+  width: 100%;
+  padding: 9px;
+  background: var(--success);
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.upload-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+.upload-status {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  padding: 6px 10px;
+  border-radius: 5px;
+  display: none;
+}
+.upload-status.show { display: block; }
+.upload-status.ok { background: #d4edda; color: #155724; }
+.upload-status.err { background: #f8d7da; color: #721c24; }
+.upload-status.loading { background: #e8f0fe; color: var(--primary); }
+
+/* 文献列表 */
+.doc-list { font-size: 0.82rem; }
+.doc-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+.doc-item:last-child { border-bottom: none; }
+.doc-info { flex: 1; min-width: 0; }
+.doc-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.doc-meta { font-size: 0.72rem; color: var(--text-muted); }
+.doc-del {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 0.95rem;
+  padding: 2px 6px;
+  flex-shrink: 0;
+}
+.doc-del:hover { background: #fce4e4; border-radius: 4px; }
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .main-layout { flex-direction: column; padding: 12px; }
+  .sidebar-col { width: 100%; }
+  .search-bar { padding: 12px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>籍 jiAge 文献池</h1>
+  <span class="version">v{{ version }}</span>
+</header>
+
+<!-- 搜索区 -->
+<div class="search-bar">
+  <input type="text" id="searchInput" placeholder="输入搜索词..." autocomplete="off">
+  <select id="collFilter">
+    <option value="">全部书架</option>
+  </select>
+  <button id="searchBtn" onclick="doSearch()">搜索</button>
+</div>
+
+<!-- 主区域 -->
+<div class="main-layout">
+  <!-- 左侧: 搜索结果 -->
+  <div class="results-col">
+    <div id="resultCount" class="result-count"></div>
+    <div id="results"></div>
+  </div>
+
+  <!-- 右侧: 侧栏 -->
+  <div class="sidebar-col">
+    <!-- 统计面板 -->
+    <div class="panel">
+      <h3>统计</h3>
+      <div class="stat-grid">
+        <div class="stat-item">
+          <div class="stat-num" id="statDocs">-</div>
+          <div class="stat-label">文献</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-num" id="statLines">-</div>
+          <div class="stat-label">行</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-num" id="statOcr">-</div>
+          <div class="stat-label">OCR</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-num" id="statBlocks">-</div>
+          <div class="stat-label">文本块</div>
+        </div>
+      </div>
+      <div class="coll-list" id="collList"></div>
+    </div>
+
+    <!-- 上传区 -->
+    <div class="panel">
+      <h3>上传 PDF</h3>
+      <form class="upload-form" id="uploadForm">
+        <div class="field">
+          <label>文件</label>
+          <input type="file" id="fileInput" accept=".pdf" required>
+        </div>
+        <div class="field">
+          <label>书架 (collection)</label>
+          <input type="text" id="upCollection" placeholder="如: 唐代文献" required>
+        </div>
+        <div class="field">
+          <label>cite_key (可选)</label>
+          <input type="text" id="upCiteKey" placeholder="如: tang2005">
+        </div>
+        <div class="field">
+          <label>标题 (可选)</label>
+          <input type="text" id="upTitle">
+        </div>
+        <div class="field">
+          <label>作者 (可选)</label>
+          <input type="text" id="upAuthor">
+        </div>
+        <div class="field checkbox-row">
+          <input type="checkbox" id="upOcr">
+          <label for="upOcr" style="margin:0;">OCR 扫描件模式</label>
+        </div>
+        <button type="submit" id="uploadBtn">上传入库</button>
+      </form>
+      <div class="upload-status" id="uploadStatus"></div>
+    </div>
+
+    <!-- 文献列表 -->
+    <div class="panel">
+      <h3>文献列表</h3>
+      <div class="doc-list" id="docList"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 工具函数 ──────────────────────────────
+
+function escapeHtml(s) {
+  if (!s) return '';
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+function highlight(text, query) {
+  if (!text || !query) return escapeHtml(text);
+  const escaped = escapeHtml(text);
+  // 分词高亮: 对 query 中的每个非空白片段
+  const tokens = query.split(/\s+/).filter(t => t.length > 0);
+  let result = escaped;
+  for (const tok of tokens) {
+    const re = new RegExp(
+      '(' + tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'
+    );
+    result = result.replace(re, '<mark>$1</mark>');
+  }
+  return result;
+}
+
+// ── 统计 ──────────────────────────────────
+
+async function loadStats() {
+  try {
+    const res = await fetch('/api/stats');
+    const data = await res.json();
+    document.getElementById('statDocs').textContent = data.documents ?? 0;
+    document.getElementById('statLines').textContent = data.lines ?? 0;
+    document.getElementById('statOcr').textContent = data.ocr_docs ?? 0;
+    document.getElementById('statBlocks').textContent = data.blocks ?? 0;
+
+    // 书架列表
+    const collList = document.getElementById('collList');
+    collList.innerHTML = '';
+    if (data.collections && data.collections.length > 0) {
+      for (const c of data.collections) {
+        const div = document.createElement('div');
+        div.className = 'coll-item';
+        div.innerHTML = `<span>${escapeHtml(c.name)}</span><span>${c.count} 篇 / ${c.pages} 页</span>`;
+        collList.appendChild(div);
+      }
+    }
+
+    // 更新搜索筛选下拉
+    const sel = document.getElementById('collFilter');
+    const current = sel.value;
+    sel.innerHTML = '<option value="">全部书架</option>';
+    if (data.collections) {
+      for (const c of data.collections) {
+        const opt = document.createElement('option');
+        opt.value = c.name;
+        opt.textContent = `${c.name} (${c.count})`;
+        sel.appendChild(opt);
+      }
+    }
+    sel.value = current;
+  } catch (e) {
+    console.error('stats error:', e);
+  }
+}
+
+// ── 搜索 ──────────────────────────────────
+
+let currentQuery = '';
+
+async function doSearch() {
+  const q = document.getElementById('searchInput').value.trim();
+  const collection = document.getElementById('collFilter').value;
+  if (!q) return;
+
+  currentQuery = q;
+  const btn = document.getElementById('searchBtn');
+  btn.disabled = true;
+  btn.textContent = '搜索中...';
+
+  try {
+    const params = new URLSearchParams({ q, limit: 30 });
+    if (collection) params.set('collection', collection);
+    const res = await fetch('/api/search?' + params);
+    const data = await res.json();
+    renderResults(data);
+  } catch (e) {
+    document.getElementById('results').innerHTML =
+      `<div class="no-results">搜索出错: ${escapeHtml(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '搜索';
+  }
+}
+
+function renderResults(data) {
+  const countEl = document.getElementById('resultCount');
+  const container = document.getElementById('results');
+
+  if (!data.results || data.results.length === 0) {
+    countEl.textContent = '';
+    container.innerHTML = '<div class="no-results">未找到匹配结果</div>';
+    return;
+  }
+
+  countEl.textContent = `找到 ${data.count} 条结果`;
+  container.innerHTML = '';
+
+  for (const r of data.results) {
+    const div = document.createElement('div');
+    div.className = 'result-item';
+    div.dataset.docId = r.doc_id;
+    div.dataset.page = r.page_num;
+    div.dataset.block = r.block_num;
+
+    const preview = r.text.length > 300 ? r.text.slice(0, 300) + '...' : r.text;
+
+    div.innerHTML = `
+      <div class="result-meta">
+        <span class="badge">${escapeHtml(r.collection)}</span>
+        <span>第 ${r.page_num} 页 / 段 ${r.block_num}</span>
+        ${r.cite_key ? `<span>[${escapeHtml(r.cite_key)}]</span>` : ''}
+      </div>
+      <div class="result-title">${escapeHtml(r.title)}</div>
+      <div class="result-text">${highlight(preview, currentQuery)}</div>
+      <div class="context-box"></div>
+    `;
+
+    div.addEventListener('click', () => toggleContext(div, r));
+    container.appendChild(div);
+  }
+}
+
+async function toggleContext(el, r) {
+  const ctxBox = el.querySelector('.context-box');
+  if (ctxBox.classList.contains('show')) {
+    ctxBox.classList.remove('show');
+    el.classList.remove('expanded');
+    return;
+  }
+
+  ctxBox.classList.add('show');
+  el.classList.add('expanded');
+  ctxBox.innerHTML = '<div style="color:var(--text-muted)">加载上下文...</div>';
+
+  try {
+    const params = new URLSearchParams({
+      radius: '1',
+    });
+    const res = await fetch(
+      `/api/context/${r.doc_id}/${r.page_num}/${r.block_num}?${params}`
+    );
+    const data = await res.json();
+
+    if (!data.lines || data.lines.length === 0) {
+      ctxBox.innerHTML = '<div style="color:var(--text-muted)">无上下文数据</div>';
+      return;
+    }
+
+    let html = '';
+    let bboxInfo = '';
+    for (const ln of data.lines) {
+      const isHit = ln.block_num === r.block_num;
+      const labelTag = ln.block_label
+        ? `<span style="color:var(--success);font-size:0.7rem;">[${escapeHtml(ln.block_label)}]</span> `
+        : '';
+      html += `<div class="context-line ${isHit ? 'hit' : ''}">
+        <span class="ln-meta">[${ln.block_num}:${ln.line_num}]</span>
+        <span class="ln-text">${labelTag}${highlight(ln.text, currentQuery)}</span>
+      </div>`;
+      if (isHit && ln.bbox) {
+        bboxInfo = `<div class="bbox-info">bbox: ${escapeHtml(ln.bbox)}</div>`;
+      }
+    }
+    ctxBox.innerHTML = html + bboxInfo;
+  } catch (e) {
+    ctxBox.innerHTML = `<div style="color:var(--danger)">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// ── 上传 ──────────────────────────────────
+
+document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const statusEl = document.getElementById('uploadStatus');
+  const btn = document.getElementById('uploadBtn');
+  const fileInput = document.getElementById('fileInput');
+
+  if (!fileInput.files[0]) return;
+
+  btn.disabled = true;
+  btn.textContent = '上传中...';
+  statusEl.className = 'upload-status show loading';
+  statusEl.textContent = '正在上传并入库，请稍候...';
+
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  formData.append('collection', document.getElementById('upCollection').value);
+  formData.append('cite_key', document.getElementById('upCiteKey').value);
+  formData.append('title', document.getElementById('upTitle').value);
+  formData.append('author', document.getElementById('upAuthor').value);
+  formData.append('ocr', document.getElementById('upOcr').checked);
+
+  try {
+    const res = await fetch('/api/add', { method: 'POST', body: formData });
+    const data = await res.json();
+
+    if (res.ok && data.status === 'ok') {
+      const r = data.result;
+      statusEl.className = 'upload-status show ok';
+      statusEl.textContent = `入库成功! 页:${r.pages} 块:${r.blocks} 行:${r.lines}`;
+      document.getElementById('uploadForm').reset();
+      loadStats();
+      loadDocs();
+    } else {
+      statusEl.className = 'upload-status show err';
+      statusEl.textContent = '失败: ' + (data.error || '未知错误');
+    }
+  } catch (e) {
+    statusEl.className = 'upload-status show err';
+    statusEl.textContent = '上传出错: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '上传入库';
+  }
+});
+
+// ── 文献列表 ──────────────────────────────
+
+async function loadDocs() {
+  try {
+    const res = await fetch('/api/docs?limit=100');
+    const data = await res.json();
+    const container = document.getElementById('docList');
+
+    if (!data.docs || data.docs.length === 0) {
+      container.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem;">暂无文献</div>';
+      return;
+    }
+
+    container.innerHTML = '';
+    for (const d of data.docs) {
+      const div = document.createElement('div');
+      div.className = 'doc-item';
+      const title = d.title || d.filename;
+      const typeTag = d.doc_type === 'ocr'
+        ? '<span style="color:var(--success);">OCR</span>'
+        : '';
+      div.innerHTML = `
+        <div class="doc-info">
+          <div class="doc-title">${escapeHtml(title)}</div>
+          <div class="doc-meta">#${d.id} · ${escapeHtml(d.collection)} · ${d.page_count || '?'}页 ${typeTag}</div>
+        </div>
+        <button class="doc-del" title="删除" onclick="deleteDoc(${d.id}, '${escapeHtml(title)}')">×</button>
+      `;
+      container.appendChild(div);
+    }
+  } catch (e) {
+    console.error('docs error:', e);
+  }
+}
+
+async function deleteDoc(docId, title) {
+  if (!confirm(`确定删除「${title}」(ID: ${docId})？`)) return;
+
+  try {
+    const res = await fetch(`/api/doc/${docId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (res.ok && data.status === 'ok') {
+      loadStats();
+      loadDocs();
+    } else {
+      alert('删除失败: ' + (data.error || '未知错误'));
+    }
+  } catch (e) {
+    alert('删除出错: ' + e.message);
+  }
+}
+
+// ── 回车搜索 ──────────────────────────────
+
+document.getElementById('searchInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doSearch();
+});
+
+// ── 初始化 ────────────────────────────────
+
+loadStats();
+loadDocs();
+</script>
+</body>
+</html>

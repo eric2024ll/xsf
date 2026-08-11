@@ -49,6 +49,22 @@ export PADDLE_OCR_TOKEN="<token>"                   # 从 aistudio 获取
 .venv/bin/jiage stats                                # 统计
 ```
 
+### Web 界面 (FastAPI)
+
+```bash
+# 本地 (开发模式, auto-reload)
+cd ~/projects/jiage
+.venv/bin/uvicorn jiage.api:app --reload --port 8000
+
+# 服务器 (绑外网)
+cd ~/jiage
+source .venv/bin/activate
+uvicorn jiage.api:app --host 0.0.0.0 --port 8000
+# → 浏览器访问 http://47.93.199.96:8000
+```
+
+端点: `/`(首页) `/api/search`(搜索) `/api/stats`(统计) `/api/add`(上传) `/api/docs`(文献列表) `/api/context`(上下文)
+
 ## 服务器部署与实测流程 (标准)
 
 > **服务器**: `47.93.199.96` (阿里云轻量 2核4G)
