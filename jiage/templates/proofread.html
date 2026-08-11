@@ -169,6 +169,13 @@ header h1 {
   border-left: 1px solid var(--border);
   padding: 16px;
 }
+.right.md-mode {
+  width: 100%;
+  flex: 1;
+  border-left: none;
+  max-width: 900px;
+  margin: 0 auto;
+}
 
 .block-group {
   margin-bottom: 14px;
@@ -182,6 +189,18 @@ header h1 {
   border-color: #b8d0ff;
   background: #f8fafc;
 }
+.block-group.md-flat {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin-bottom: 0;
+}
+.block-group.md-flat:hover,
+.block-group.md-flat.active {
+  border-color: transparent;
+  background: transparent;
+}
+.block-group.md-flat .line-num { display: none; }
 
 .block-header {
   font-size: 0.78rem;
@@ -326,7 +345,7 @@ mark {
 
 /* 重OCR 框选 */
 .image-wrap.draw-mode { cursor: crosshair; }
-.image-wrap.draw-mode .bbox-overlay { pointer-events: none; }
+.image-wrap.draw-mode .bbox-overlay { display: none; }
 .draw-layer {
   position: absolute;
   inset: 0;
@@ -384,6 +403,7 @@ mark {
 .reocr-actions .do-reocr { background: var(--danger); color: white; }
 .reocr-actions .do-reocr:disabled { opacity: 0.6; cursor: wait; }
 .reocr-actions .cancel-reocr { background: white; color: var(--text); border: 1px solid var(--border); }
+.reocr-actions .reocr-hint { color: var(--danger); font-weight: 600; }
 
 /* 移动版 tab */
 .mobile-tabs { display: none; }
@@ -445,6 +465,7 @@ mark {
 {% if error %}
 <div class="error-box">{{ error }}</div>
 {% else %}
+{% set is_md = doc.doc_type == 'markdown' %}
 
 <header>
   <a href="/" class="site-name">架閣</a>
@@ -466,6 +487,7 @@ mark {
 </header>
 
 <div class="main" id="main" data-tab="img">
+  {% if not is_md %}
   <div class="mobile-tabs">
     <button id="tabImg" class="active" onclick="switchTab('img')">圖</button>
     <button id="tabTxt" onclick="switchTab('txt')">文</button>
@@ -482,6 +504,7 @@ mark {
         <span class="hint">滚轮缩放 · 拖拽平移</span>
       </div>
       <div class="reocr-actions" id="reocrActions">
+        <span id="reocrHint" class="reocr-hint">在图上拖拽画框（可多个）→ 执行重OCR</span>
         <span id="reocrCount">已选 0 个区域</span>
         <button class="do-reocr" id="doReocrBtn" onclick="doReocr()">执行重OCR（替换本页）</button>
         <button class="cancel-reocr" onclick="clearReocrRegions()">清空</button>
@@ -509,14 +532,17 @@ mark {
       <div class="draw-layer" id="drawLayer"></div>
     </div>
   </div>
+  {% endif %}
 
-  <div class="right" id="textPanel">
+  <div class="right{% if is_md %} md-mode{% endif %}" id="textPanel">
     {% for b in blocks %}
-    <div class="block-group" id="block-{{ b.block_num }}" data-block-num="{{ b.block_num }}">
+    <div class="block-group{% if is_md %} md-flat{% endif %}" id="block-{{ b.block_num }}" data-block-num="{{ b.block_num }}">
+      {% if not is_md %}
       <div class="block-header">
         <span>段 {{ b.block_num }}</span>
         {% if b.block_label %}<span class="badge">{{ b.block_label }}</span>{% endif %}
       </div>
+      {% endif %}
       {% for ln in b.lines %}
       <div class="line-item"
            id="line-{{ ln.id }}"
@@ -775,6 +801,7 @@ function doInPageSearch() {
 (function initPan() {
   const wrap = document.getElementById('imageWrap');
   const left = document.getElementById('leftPanel');
+  if (!wrap || !left) return;
   let dragging = false, start = null;
   wrap.addEventListener('mousedown', (e) => {
     if (_reocrMode) return;
@@ -799,6 +826,7 @@ function doInPageSearch() {
 (function initWheel() {
   const wrap = document.getElementById('imageWrap');
   const left = document.getElementById('leftPanel');
+  if (!wrap || !left) return;
   wrap.addEventListener('wheel', (e) => {
     e.preventDefault();
     if (!_zoomInited) applyZoom();
@@ -874,6 +902,7 @@ function renderRegions() {
 (function initDraw() {
   const wrap = document.getElementById('imageWrap');
   const layer = document.getElementById('drawLayer');
+  if (!wrap || !layer) return;
   wrap.addEventListener('mousedown', (e) => {
     if (!_reocrMode) return;
     if (e.button !== 0) return;
