@@ -95,7 +95,12 @@ pip install -e .
 echo 'export PADDLE_OCR_TOKEN="<从 aistudio 获取的 token>"' >> ~/.bashrc
 source ~/.bashrc
 
-# 6. 验证安装
+# 6. 配置 OSS 数据存储 (collections 上 OSS, jiage.db 留本地)
+mkdir -p /mnt/oss/sources/jiage/collections/uploads
+echo 'export JIAGE_COLLECTIONS_DIR=/mnt/oss/sources/jiage/collections' >> ~/.bashrc
+source ~/.bashrc
+
+# 7. 验证安装
 jiage init      # 初始化 ~/jiage-data/jiage.db
 jiage stats     # 应显示空库
 ```
@@ -129,7 +134,8 @@ jiage stats
 | 变量 | 必填 | 说明 |
 |------|------|------|
 | `PADDLE_OCR_TOKEN` | OCR 时必填 | aistudio bearer token |
-| `JIAGE_DATA` | 可选 | 数据目录, 默认 `~/jiage-data/` |
+| `JIAGE_DATA` | 可选 | 数据目录(含 jiage.db), 默认 `~/jiage-data/` |
+| `JIAGE_COLLECTIONS_DIR` | 可选 | 书架+上传目录, 默认 `JIAGE_DATA/collections/`; 服务器指向 OSS `/mnt/oss/sources/jiage/collections/` |
 | `JIAGE_OCR_METHOD` | 可选 | OCR provider, 默认 `paddle_api` |
 
 ## 常用命令速查

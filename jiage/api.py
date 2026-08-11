@@ -22,7 +22,7 @@ templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    (get_data_dir() / "uploads").mkdir(parents=True, exist_ok=True)
+    (get_collections_dir() / "uploads").mkdir(parents=True, exist_ok=True)
     yield
 
 
@@ -180,7 +180,7 @@ async def api_add(
                 content={"error": "仅支持 PDF 文件"},
             )
 
-        upload_dir = get_data_dir() / "uploads"
+        upload_dir = get_collections_dir() / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = upload_dir / file.filename
         with open(pdf_path, "wb") as f:

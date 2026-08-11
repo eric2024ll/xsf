@@ -15,7 +15,12 @@ def get_db_path() -> Path:
 
 
 def get_collections_dir() -> Path:
-    d = get_data_dir() / 'collections'
+    """书架目录。可通过 JIAGE_COLLECTIONS_DIR 指向 OSS（服务器）。
+
+    默认 JIAGE_DATA/collections/（本地）；服务器设 /mnt/oss/sources/jiage/collections/。
+    jiage.db 必须留本地（ossfs 不支持 SQLite 文件锁）。
+    """
+    d = Path(os.environ.get('JIAGE_COLLECTIONS_DIR', str(get_data_dir() / 'collections')))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
