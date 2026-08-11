@@ -933,6 +933,7 @@ async def reocr_page(
         from .ocr import get_provider
 
         PT_PER_PX = 72.0 / 150.0  # 150dpi 像素 → PDF 点
+        OCR_DPI = 300              # 裁切渲染精度（高清→paddle 取清晰像素）
 
         src = pymupdf.open(pdf_path)
         try:
@@ -953,10 +954,16 @@ async def reocr_page(
                     continue
                 clip = pymupdf.Rect(x0 * PT_PER_PX, y0 * PT_PER_PX,
                                     x1 * PT_PER_PX, y1 * PT_PER_PX)
-                cpix = page_obj.get_pixmap(dpi=150, clip=clip)
-                cpage = out_pdf.new_page(width=cpix.width, height=cpix.height)
+                cpix = page_obj.get_pixmap(dpi=OCR_DPI, clip=clip)
+                if cpix.width <= 0 or cpix.height <= 0:
+                    continue
+                # 逻辑页面尺寸 = 150dpi 空间像素数（paddle bbox 空间不变），
+                # 但 image object 是 OCR_DPI 高清 → 精度提升
+                log_w = max(1, int(round(x1 - x0)))
+                log_h = max(1, int(round(y1 - y0)))
+                cpage = out_pdf.new_page(width=log_w, height=log_h)
                 cpage.insert_image(cpage.rect, pixmap=cpix)
-                crop_meta.append((float(x0), float(y0), cpix.width, cpix.height))
+                crop_meta.append((float(x0), float(y0), log_w, log_h))
 
             if not crop_meta:
                 return JSONResponse(
@@ -978,7 +985,7 @@ async def reocr_page(
             os.unlink(tmp_pdf)
 
         # 收集 OCR 结果，按 region 顺序，bbox 偏移回原页面坐标
-        new_blocks = []  # {block_label, lines:[{text, bbox}]}
+        new_blocks = []  # {block_label, bbox, lines:[str,...]}
         for i, page in enumerate(pages):
             if i >= len(crop_meta):
                 break
@@ -996,6 +1003,10 @@ async def reocr_page(
                 text = text.strip()
                 if not text:
                     continue
+                # paddle-VL 整段识别 → 按 \n 切行（无独立行框，bbox 用 block 近似）
+                lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+                if not lines:
+                    continue
                 bbox = block.get('block_bbox')
                 # bbox 偏移：crop 内坐标 + region 左上角偏移
                 shifted = None
@@ -1005,7 +1016,7 @@ async def reocr_page(
                 new_blocks.append({
                     "block_label": label,
                     "bbox": shifted,
-                    "text": text,
+                    "lines": lines,
                 })
 
         if not new_blocks:
@@ -1039,22 +1050,24 @@ async def reocr_page(
             for b in new_blocks:
                 block_num += 1
                 bbox_json = json.dumps(b["bbox"]) if b["bbox"] else None
-                conn.execute(
-                    """INSERT INTO lines
-                       (doc_id, page_num, block_num, line_num, text,
-                        bbox, block_label)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (doc_id, page_num, block_num, 1, b["text"],
-                     bbox_json, b["block_label"]),
-                )
+                full_text = '\n'.join(b["lines"])
+                for ln_num, ln_text in enumerate(b["lines"], 1):
+                    conn.execute(
+                        """INSERT INTO lines
+                           (doc_id, page_num, block_num, line_num, text,
+                            bbox, block_label)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (doc_id, page_num, block_num, ln_num, ln_text,
+                         bbox_json, b["block_label"]),
+                    )
+                    total_lines += 1
                 conn.execute(
                     """INSERT INTO blocks_fts
                        (doc_id, page_num, block_num, text)
                        VALUES (?, ?, ?, ?)""",
                     (doc_id, page_num, block_num,
-                     _tokenize(b["text"])),
+                     _tokenize(full_text)),
                 )
-                total_lines += 1
             conn.commit()
         finally:
             conn.close()

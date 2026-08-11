@@ -366,6 +366,10 @@ mark {
   pointer-events: none;
   z-index: 19;
 }
+.image-wrap.draw-mode .region-rect {
+  pointer-events: auto;
+  cursor: move;
+}
 .region-rect .region-tag {
   position: absolute;
   top: -18px;
@@ -377,6 +381,32 @@ mark {
   border-radius: 3px;
   white-space: nowrap;
 }
+.region-del {
+  position: absolute;
+  top: -8px; right: -8px;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: white;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: center;
+  cursor: pointer;
+  z-index: 21;
+  user-select: none;
+}
+.region-handle {
+  position: absolute;
+  width: 12px; height: 12px;
+  background: white;
+  border: 2px solid var(--danger);
+  border-radius: 50%;
+  z-index: 21;
+}
+.region-handle.tl { top: -6px; left: -6px; cursor: nwse-resize; }
+.region-handle.tr { top: -6px; right: -6px; cursor: nesw-resize; }
+.region-handle.bl { bottom: -6px; left: -6px; cursor: nesw-resize; }
+.region-handle.br { bottom: -6px; right: -6px; cursor: nwse-resize; }
 .reocr-actions {
   display: none;
   position: sticky;
@@ -885,64 +915,124 @@ function renderRegions() {
   if (!layer) return;
   layer.innerHTML = '';
   const img = document.getElementById('pageImage');
-  if (!img || !img.clientWidth || origWidth <= 0) return;
-  const s = img.clientWidth / origWidth;
+  if (!img || !img.clientWidth || !img.naturalWidth) return;
+  const s = img.clientWidth / img.naturalWidth; // 150dpi空间→显示
   _reocrRegions.forEach((r, i) => {
     const d = document.createElement('div');
     d.className = 'region-rect';
+    d.dataset.idx = i;
     d.style.left = (r.x0 * s) + 'px';
     d.style.top = (r.y0 * s) + 'px';
     d.style.width = ((r.x1 - r.x0) * s) + 'px';
     d.style.height = ((r.y1 - r.y0) * s) + 'px';
-    d.innerHTML = '<span class="region-tag">区' + (i + 1) + '</span>';
+    d.innerHTML = '<span class="region-tag">区' + (i + 1) + '</span>' +
+      '<span class="region-del" data-idx="' + i + '">\u00d7</span>' +
+      '<span class="region-handle tl" data-idx="' + i + '" data-corner="tl"></span>' +
+      '<span class="region-handle tr" data-idx="' + i + '" data-corner="tr"></span>' +
+      '<span class="region-handle bl" data-idx="' + i + '" data-corner="bl"></span>' +
+      '<span class="region-handle br" data-idx="' + i + '" data-corner="br"></span>';
     layer.appendChild(d);
   });
 }
+
+var _dragMode = null;   // 'draw'|'move'|'resize'
+var _dragIdx = -1;
+var _dragCorner = null;
+var _dragOrigin = null; // {mx,my,x0,y0,x1,y1}
 
 (function initDraw() {
   const wrap = document.getElementById('imageWrap');
   const layer = document.getElementById('drawLayer');
   if (!wrap || !layer) return;
   wrap.addEventListener('mousedown', (e) => {
-    if (!_reocrMode) return;
-    if (e.button !== 0) return;
-    if (e.target.classList.contains('region-rect')) return;
+    if (!_reocrMode || e.button !== 0) return;
     e.preventDefault();
     const rect = wrap.getBoundingClientRect();
-    _drawStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    // 删除按钮
+    if (e.target.classList.contains('region-del')) {
+      const idx = parseInt(e.target.dataset.idx);
+      if (!isNaN(idx)) { _reocrRegions.splice(idx, 1); renderRegions(); updateReocrCount(); }
+      return;
+    }
+    // 缩放 handle
+    if (e.target.classList.contains('region-handle')) {
+      _dragMode = 'resize';
+      _dragIdx = parseInt(e.target.dataset.idx);
+      _dragCorner = e.target.dataset.corner;
+      _dragOrigin = Object.assign({ mx, my }, _reocrRegions[_dragIdx]);
+      return;
+    }
+    // 移动 region
+    if (e.target.classList.contains('region-rect')) {
+      _dragMode = 'move';
+      _dragIdx = parseInt(e.target.dataset.idx);
+      _dragOrigin = Object.assign({ mx, my }, _reocrRegions[_dragIdx]);
+      return;
+    }
+    // 空白 → 画新框
+    _dragMode = 'draw';
+    _drawStart = { x: mx, y: my };
     _curDraw = document.createElement('div');
     _curDraw.className = 'draw-rect';
-    _curDraw.style.left = _drawStart.x + 'px';
-    _curDraw.style.top = _drawStart.y + 'px';
+    _curDraw.style.left = mx + 'px';
+    _curDraw.style.top = my + 'px';
     _curDraw.style.width = '0px';
     _curDraw.style.height = '0px';
     layer.appendChild(_curDraw);
   });
   window.addEventListener('mousemove', (e) => {
-    if (!_reocrMode || !_drawStart || !_curDraw) return;
+    if (!_reocrMode || !_dragMode) return;
     const rect = wrap.getBoundingClientRect();
-    const x = clamp(e.clientX - rect.left, 0, rect.width);
-    const y = clamp(e.clientY - rect.top, 0, rect.height);
-    _curDraw.style.left = Math.min(x, _drawStart.x) + 'px';
-    _curDraw.style.top = Math.min(y, _drawStart.y) + 'px';
-    _curDraw.style.width = Math.abs(x - _drawStart.x) + 'px';
-    _curDraw.style.height = Math.abs(y - _drawStart.y) + 'px';
+    const mx = clamp(e.clientX - rect.left, 0, rect.width);
+    const my = clamp(e.clientY - rect.top, 0, rect.height);
+    const img = document.getElementById('pageImage');
+    const sDisp = (img && img.naturalWidth) ? img.clientWidth / img.naturalWidth : 1;
+    if (_dragMode === 'draw' && _curDraw) {
+      _curDraw.style.left = Math.min(mx, _drawStart.x) + 'px';
+      _curDraw.style.top = Math.min(my, _drawStart.y) + 'px';
+      _curDraw.style.width = Math.abs(mx - _drawStart.x) + 'px';
+      _curDraw.style.height = Math.abs(my - _drawStart.y) + 'px';
+    } else if (_dragOrigin) {
+      const ddx = (mx - _dragOrigin.mx) / sDisp; // 显示→150dpi空间
+      const ddy = (my - _dragOrigin.my) / sDisp;
+      const r = _reocrRegions[_dragIdx];
+      const o = _dragOrigin;
+      if (_dragMode === 'move') {
+        r.x0 = o.x0 + ddx; r.y0 = o.y0 + ddy;
+        r.x1 = o.x1 + ddx; r.y1 = o.y1 + ddy;
+      } else if (_dragMode === 'resize') {
+        if (_dragCorner.indexOf('l') >= 0) r.x0 = Math.min(o.x0 + ddx, o.x1 - 4);
+        if (_dragCorner.indexOf('r') >= 0) r.x1 = Math.max(o.x1 + ddx, o.x0 + 4);
+        if (_dragCorner.indexOf('t') >= 0) r.y0 = Math.min(o.y0 + ddy, o.y1 - 4);
+        if (_dragCorner.indexOf('b') >= 0) r.y1 = Math.max(o.y1 + ddy, o.y0 + 4);
+      }
+      renderRegions();
+    }
   });
   window.addEventListener('mouseup', () => {
-    if (!_reocrMode || !_drawStart || !_curDraw) return;
-    const img = document.getElementById('pageImage');
-    const left = parseFloat(_curDraw.style.left);
-    const top = parseFloat(_curDraw.style.top);
-    const w = parseFloat(_curDraw.style.width);
-    const h = parseFloat(_curDraw.style.height);
-    _curDraw.remove();
-    _curDraw = null;
-    _drawStart = null;
-    if (w < 8 || h < 8) return;
-    const s = origWidth / Math.max(1, img.clientWidth); // 显示→页面像素
-    _reocrRegions.push({ x0: left * s, y0: top * s, x1: (left + w) * s, y1: (top + h) * s });
-    renderRegions();
-    updateReocrCount();
+    if (!_reocrMode || !_dragMode) return;
+    if (_dragMode === 'draw' && _curDraw) {
+      const img = document.getElementById('pageImage');
+      const left = parseFloat(_curDraw.style.left);
+      const top = parseFloat(_curDraw.style.top);
+      const w = parseFloat(_curDraw.style.width);
+      const h = parseFloat(_curDraw.style.height);
+      _curDraw.remove();
+      _curDraw = null;
+      _drawStart = null;
+      if (w >= 8 && h >= 8 && img && img.naturalWidth) {
+        const s = img.naturalWidth / Math.max(1, img.clientWidth); // 显示→150dpi空间
+        _reocrRegions.push({ x0: left * s, y0: top * s, x1: (left + w) * s, y1: (top + h) * s });
+        renderRegions();
+        updateReocrCount();
+      }
+    }
+    _dragMode = null;
+    _dragIdx = -1;
+    _dragCorner = null;
+    _dragOrigin = null;
   });
 })();
 
