@@ -770,7 +770,7 @@ async def proofread_page(
 
         # 解析 source_tags 供模板显示
         try:
-            source_tags = json.loads(doc.get("source_tags") or '["primary"]')
+            source_tags = json.loads(doc["source_tags"] or '["primary"]')
             if not isinstance(source_tags, list):
                 source_tags = ["primary"]
         except (json.JSONDecodeError, TypeError):
