@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from .config import get_data_dir, get_collections_dir
+from .config import get_data_dir, get_collections_dir, list_collections
 from .db import init_db, get_conn
 from .search import search, get_block_lines, get_context
 from .ingest import ingest_pdf, ingest_scanned_pdf, remove_doc
@@ -21,7 +21,9 @@ templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    """启动时初始化所有已有 collection 的 DB"""
+    for coll in list_collections():
+        init_db(coll)
     (get_collections_dir() / "uploads").mkdir(parents=True, exist_ok=True)
     yield
 
@@ -47,37 +49,46 @@ async def index(request: Request):
     )
 
 
+# ── Collection 列表 ────────────────────────────────────
+
+@app.get("/api/collections")
+async def api_collections():
+    return {"collections": list_collections()}
+
+
 # ── 搜索 ──────────────────────────────────────────────
 
-@app.get("/api/search")
-async def api_search(q: str, collection: str = None, limit: int = 20):
+@app.get("/collections/{collection}/search")
+async def api_search(collection: str, q: str, limit: int = 20):
     try:
         results = search(q, collection=collection, limit=limit)
         out = []
         for r in results:
-            lines = get_block_lines(r["doc_id"], r["page_num"], r["block_num"])
+            lines = get_block_lines(
+                r["doc_id"], r["page_num"], r["block_num"], collection
+            )
             text = " ".join(lines)
             out.append({
                 "doc_id": r["doc_id"],
                 "page_num": r["page_num"],
                 "block_num": r["block_num"],
-                "collection": r["collection"],
                 "filename": r.get("filename"),
                 "title": r.get("title") or r.get("filename"),
                 "cite_key": r.get("cite_key"),
                 "text": text,
             })
-        return {"query": q, "count": len(out), "results": out}
+        return {"query": q, "collection": collection,
+                "count": len(out), "results": out}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# ── 统计 ──────────────────────────────────────────────
+# ── 单 collection 统计 ─────────────────────────────────
 
-@app.get("/api/stats")
-async def api_stats():
+@app.get("/collections/{collection}/stats")
+async def api_coll_stats(collection: str):
     try:
-        conn = get_conn()
+        conn = get_conn(collection)
         try:
             n_docs = conn.execute(
                 "SELECT COUNT(*) FROM documents"
@@ -95,23 +106,76 @@ async def api_stats():
                 """SELECT COUNT(*) FROM documents
                    WHERE doc_type = 'born-digital' OR doc_type IS NULL"""
             ).fetchone()[0]
-            colls = conn.execute(
-                """SELECT collection, COUNT(*) as cnt, SUM(page_count) as pages
-                   FROM documents GROUP BY collection ORDER BY cnt DESC"""
-            ).fetchall()
         finally:
             conn.close()
         return {
+            "collection": collection,
             "documents": n_docs,
             "blocks": n_blocks,
             "lines": n_lines,
             "ocr_docs": n_ocr,
             "born_digital_docs": n_bd,
-            "collections": [
-                {"name": c["collection"], "count": c["cnt"],
-                 "pages": c["pages"] or 0}
-                for c in colls
-            ],
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── 全库统计 ──────────────────────────────────────────
+
+@app.get("/api/stats")
+async def api_stats():
+    """遍历所有 collection DB 求和"""
+    try:
+        total_docs = 0
+        total_lines = 0
+        total_blocks = 0
+        total_ocr = 0
+        total_bd = 0
+        coll_breakdown = []
+
+        for coll in list_collections():
+            try:
+                conn = get_conn(coll)
+                try:
+                    n_docs = conn.execute(
+                        "SELECT COUNT(*) FROM documents"
+                    ).fetchone()[0]
+                    n_lines = conn.execute(
+                        "SELECT COUNT(*) FROM lines"
+                    ).fetchone()[0]
+                    n_blocks = conn.execute(
+                        "SELECT COUNT(*) FROM blocks_fts"
+                    ).fetchone()[0]
+                    n_ocr = conn.execute(
+                        "SELECT COUNT(*) FROM documents WHERE doc_type = 'ocr'"
+                    ).fetchone()[0]
+                    n_bd = conn.execute(
+                        """SELECT COUNT(*) FROM documents
+                           WHERE doc_type = 'born-digital' OR doc_type IS NULL"""
+                    ).fetchone()[0]
+                    pages = conn.execute(
+                        "SELECT COALESCE(SUM(page_count), 0) FROM documents"
+                    ).fetchone()[0]
+                finally:
+                    conn.close()
+                total_docs += n_docs
+                total_lines += n_lines
+                total_blocks += n_blocks
+                total_ocr += n_ocr
+                total_bd += n_bd
+                coll_breakdown.append({
+                    "name": coll, "count": n_docs, "pages": pages,
+                })
+            except Exception:
+                continue
+
+        return {
+            "documents": total_docs,
+            "blocks": total_blocks,
+            "lines": total_lines,
+            "ocr_docs": total_ocr,
+            "born_digital_docs": total_bd,
+            "collections": coll_breakdown,
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -119,16 +183,18 @@ async def api_stats():
 
 # ── 上下文 ────────────────────────────────────────────
 
-@app.get("/api/context/{doc_id}/{page}/{block}")
-async def api_context(doc_id: int, page: int, block: int, radius: int = 1):
+@app.get("/collections/{collection}/context/{doc_id}/{page}/{block}")
+async def api_context(collection: str, doc_id: int, page: int,
+                      block: int, radius: int = 1):
     """返回命中块上下文，含 bbox / block_label"""
     try:
-        ctx = get_context(doc_id, page, block, radius=radius)
+        ctx = get_context(doc_id, page, block,
+                          radius=radius, collection=collection)
         if not ctx:
             return {"lines": []}
 
         # get_context 不返回 bbox/block_label，补查
-        conn = get_conn()
+        conn = get_conn(collection)
         try:
             extra = conn.execute(
                 """SELECT block_num, line_num, bbox, block_label
@@ -164,10 +230,10 @@ async def api_context(doc_id: int, page: int, block: int, radius: int = 1):
 
 # ── 上传 ──────────────────────────────────────────────
 
-@app.post("/api/add")
+@app.post("/collections/{collection}/add")
 async def api_add(
+    collection: str,
     file: UploadFile = File(...),
-    collection: str = Form(...),
     cite_key: str = Form(None),
     title: str = Form(None),
     author: str = Form(None),
@@ -179,6 +245,8 @@ async def api_add(
                 status_code=400,
                 content={"error": "仅支持 PDF 文件"},
             )
+
+        init_db(collection)
 
         upload_dir = get_collections_dir() / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -202,10 +270,10 @@ async def api_add(
 
 # ── 删除 ──────────────────────────────────────────────
 
-@app.delete("/api/doc/{doc_id}")
-async def api_remove(doc_id: int):
+@app.delete("/collections/{collection}/doc/{doc_id}")
+async def api_remove(collection: str, doc_id: int):
     try:
-        remove_doc(doc_id)
+        remove_doc(doc_id, collection)
         return {"status": "ok", "doc_id": doc_id}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -213,28 +281,18 @@ async def api_remove(doc_id: int):
 
 # ── 文献列表 ──────────────────────────────────────────
 
-@app.get("/api/docs")
-async def api_docs(collection: str = None, limit: int = 50):
+@app.get("/collections/{collection}/docs")
+async def api_docs(collection: str, limit: int = 50):
     try:
-        conn = get_conn()
+        conn = get_conn(collection)
         try:
-            if collection:
-                rows = conn.execute(
-                    """SELECT id, collection, cite_key, title, author,
-                              filename, page_count, doc_type, created_at
-                       FROM documents
-                       WHERE collection = ?
-                       ORDER BY created_at DESC LIMIT ?""",
-                    (collection, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """SELECT id, collection, cite_key, title, author,
-                              filename, page_count, doc_type, created_at
-                       FROM documents
-                       ORDER BY created_at DESC LIMIT ?""",
-                    (limit,),
-                ).fetchall()
+            rows = conn.execute(
+                """SELECT id, cite_key, title, author,
+                          filename, page_count, doc_type, created_at
+                   FROM documents
+                   ORDER BY created_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
         finally:
             conn.close()
         return {

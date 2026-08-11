@@ -35,14 +35,56 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
 }
-header h1 { font-size: 1.25rem; font-weight: 700; }
+header h1 { font-size: 1.25rem; font-weight: 700; white-space: nowrap; }
 header .version {
   font-size: 0.75rem;
   color: var(--text-muted);
   background: var(--accent);
   padding: 2px 8px;
   border-radius: 12px;
+}
+
+/* Collection 选择器 */
+.coll-bar {
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.coll-bar label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.coll-bar select {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: white;
+  font-size: 0.9rem;
+  cursor: pointer;
+  min-width: 180px;
+}
+.coll-bar .new-coll-btn {
+  padding: 7px 14px;
+  background: var(--accent);
+  color: var(--primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.coll-bar .new-coll-btn:hover { background: #d4e2fd; }
+.coll-bar .current-coll-info {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-left: auto;
 }
 
 /* 搜索区 */
@@ -62,14 +104,6 @@ header .version {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   font-size: 0.95rem;
-}
-.search-bar select {
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: white;
-  font-size: 0.9rem;
-  cursor: pointer;
 }
 .search-bar button {
   padding: 10px 24px;
@@ -295,6 +329,7 @@ mark {
   .main-layout { flex-direction: column; padding: 12px; }
   .sidebar-col { width: 100%; }
   .search-bar { padding: 12px; }
+  .coll-bar { padding: 8px 12px; flex-wrap: wrap; }
 }
 </style>
 </head>
@@ -305,12 +340,17 @@ mark {
   <span class="version">v{{ version }}</span>
 </header>
 
+<!-- Collection 选择器 -->
+<div class="coll-bar">
+  <label>书架:</label>
+  <select id="collSelect"></select>
+  <button class="new-coll-btn" onclick="createCollection()">+ 新建</button>
+  <span class="current-coll-info" id="collInfo"></span>
+</div>
+
 <!-- 搜索区 -->
 <div class="search-bar">
   <input type="text" id="searchInput" placeholder="输入搜索词..." autocomplete="off">
-  <select id="collFilter">
-    <option value="">全部书架</option>
-  </select>
   <button id="searchBtn" onclick="doSearch()">搜索</button>
 </div>
 
@@ -350,15 +390,11 @@ mark {
 
     <!-- 上传区 -->
     <div class="panel">
-      <h3>上传 PDF</h3>
+      <h3>上传 PDF → <span id="uploadCollLabel" style="color:var(--primary)"></span></h3>
       <form class="upload-form" id="uploadForm">
         <div class="field">
           <label>文件</label>
           <input type="file" id="fileInput" accept=".pdf" required>
-        </div>
-        <div class="field">
-          <label>书架 (collection)</label>
-          <input type="text" id="upCollection" placeholder="如: 唐代文献" required>
         </div>
         <div class="field">
           <label>cite_key (可选)</label>
@@ -402,7 +438,6 @@ function escapeHtml(s) {
 function highlight(text, query) {
   if (!text || !query) return escapeHtml(text);
   const escaped = escapeHtml(text);
-  // 分词高亮: 对 query 中的每个非空白片段
   const tokens = query.split(/\s+/).filter(t => t.length > 0);
   let result = escaped;
   for (const tok of tokens) {
@@ -413,6 +448,90 @@ function highlight(text, query) {
   }
   return result;
 }
+
+// ── Collection 管理 ──────────────────────────
+
+let currentCollection = '';
+
+async function loadCollections() {
+  try {
+    const res = await fetch('/api/collections');
+    const data = await res.json();
+    const sel = document.getElementById('collSelect');
+    const prev = currentCollection;
+
+    sel.innerHTML = '';
+    const colls = data.collections || [];
+    if (colls.length > 0) {
+      for (const c of colls) {
+        const opt = document.createElement('option');
+        opt.value = c;
+        opt.textContent = c;
+        sel.appendChild(opt);
+      }
+      // 保持之前选择，否则选第一个
+      if (prev && colls.includes(prev)) {
+        sel.value = prev;
+      } else {
+        sel.value = colls[0];
+      }
+    } else {
+      sel.innerHTML = '<option value="">（暂无书架）</option>';
+    }
+    currentCollection = sel.value;
+    updateCollectionUI();
+  } catch (e) {
+    console.error('load collections error:', e);
+  }
+}
+
+function updateCollectionUI() {
+  document.getElementById('uploadCollLabel').textContent =
+    currentCollection || '（未选择）';
+  document.getElementById('collInfo').textContent =
+    currentCollection ? `当前: ${currentCollection}` : '';
+  const uploadBtn = document.getElementById('uploadBtn');
+  uploadBtn.disabled = !currentCollection;
+  const searchBtn = document.getElementById('searchBtn');
+  searchBtn.disabled = !currentCollection;
+}
+
+async function createCollection() {
+  const name = prompt('输入新书架名:');
+  if (!name || !name.trim()) return;
+  const coll = name.trim();
+  // 添加到下拉（DB 在首次上传时自动创建）
+  const sel = document.getElementById('collSelect');
+  let exists = false;
+  for (const opt of sel.options) {
+    if (opt.value === coll) { exists = true; break; }
+  }
+  if (!exists) {
+    // 移除"暂无书架"占位
+    if (sel.options.length === 1 && !sel.options[0].value) {
+      sel.innerHTML = '';
+    }
+    const opt = document.createElement('option');
+    opt.value = coll;
+    opt.textContent = coll + ' (新)';
+    sel.appendChild(opt);
+  }
+  sel.value = coll;
+  currentCollection = coll;
+  updateCollectionUI();
+  loadStats();
+  loadDocs();
+}
+
+document.getElementById('collSelect').addEventListener('change', (e) => {
+  currentCollection = e.target.value;
+  updateCollectionUI();
+  loadStats();
+  loadDocs();
+  // 清空搜索结果
+  document.getElementById('results').innerHTML = '';
+  document.getElementById('resultCount').textContent = '';
+});
 
 // ── 统计 ──────────────────────────────────
 
@@ -425,7 +544,7 @@ async function loadStats() {
     document.getElementById('statOcr').textContent = data.ocr_docs ?? 0;
     document.getElementById('statBlocks').textContent = data.blocks ?? 0;
 
-    // 书架列表
+    // 全库书架列表
     const collList = document.getElementById('collList');
     collList.innerHTML = '';
     if (data.collections && data.collections.length > 0) {
@@ -436,20 +555,6 @@ async function loadStats() {
         collList.appendChild(div);
       }
     }
-
-    // 更新搜索筛选下拉
-    const sel = document.getElementById('collFilter');
-    const current = sel.value;
-    sel.innerHTML = '<option value="">全部书架</option>';
-    if (data.collections) {
-      for (const c of data.collections) {
-        const opt = document.createElement('option');
-        opt.value = c.name;
-        opt.textContent = `${c.name} (${c.count})`;
-        sel.appendChild(opt);
-      }
-    }
-    sel.value = current;
   } catch (e) {
     console.error('stats error:', e);
   }
@@ -461,8 +566,7 @@ let currentQuery = '';
 
 async function doSearch() {
   const q = document.getElementById('searchInput').value.trim();
-  const collection = document.getElementById('collFilter').value;
-  if (!q) return;
+  if (!q || !currentCollection) return;
 
   currentQuery = q;
   const btn = document.getElementById('searchBtn');
@@ -471,8 +575,9 @@ async function doSearch() {
 
   try {
     const params = new URLSearchParams({ q, limit: 30 });
-    if (collection) params.set('collection', collection);
-    const res = await fetch('/api/search?' + params);
+    const res = await fetch(
+      `/collections/${encodeURIComponent(currentCollection)}/search?${params}`
+    );
     const data = await res.json();
     renderResults(data);
   } catch (e) {
@@ -508,7 +613,7 @@ function renderResults(data) {
 
     div.innerHTML = `
       <div class="result-meta">
-        <span class="badge">${escapeHtml(r.collection)}</span>
+        <span class="badge">${escapeHtml(currentCollection)}</span>
         <span>第 ${r.page_num} 页 / 段 ${r.block_num}</span>
         ${r.cite_key ? `<span>[${escapeHtml(r.cite_key)}]</span>` : ''}
       </div>
@@ -535,11 +640,9 @@ async function toggleContext(el, r) {
   ctxBox.innerHTML = '<div style="color:var(--text-muted)">加载上下文...</div>';
 
   try {
-    const params = new URLSearchParams({
-      radius: '1',
-    });
+    const params = new URLSearchParams({ radius: '1' });
     const res = await fetch(
-      `/api/context/${r.doc_id}/${r.page_num}/${r.block_num}?${params}`
+      `/collections/${encodeURIComponent(currentCollection)}/context/${r.doc_id}/${r.page_num}/${r.block_num}?${params}`
     );
     const data = await res.json();
 
@@ -573,6 +676,10 @@ async function toggleContext(el, r) {
 
 document.getElementById('uploadForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (!currentCollection) {
+    alert('请先选择或新建书架');
+    return;
+  }
   const statusEl = document.getElementById('uploadStatus');
   const btn = document.getElementById('uploadBtn');
   const fileInput = document.getElementById('fileInput');
@@ -586,14 +693,16 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
 
   const formData = new FormData();
   formData.append('file', fileInput.files[0]);
-  formData.append('collection', document.getElementById('upCollection').value);
   formData.append('cite_key', document.getElementById('upCiteKey').value);
   formData.append('title', document.getElementById('upTitle').value);
   formData.append('author', document.getElementById('upAuthor').value);
   formData.append('ocr', document.getElementById('upOcr').checked);
 
   try {
-    const res = await fetch('/api/add', { method: 'POST', body: formData });
+    const res = await fetch(
+      `/collections/${encodeURIComponent(currentCollection)}/add`,
+      { method: 'POST', body: formData }
+    );
     const data = await res.json();
 
     if (res.ok && data.status === 'ok') {
@@ -601,6 +710,10 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
       statusEl.className = 'upload-status show ok';
       statusEl.textContent = `入库成功! 页:${r.pages} 块:${r.blocks} 行:${r.lines}`;
       document.getElementById('uploadForm').reset();
+      // 刷新 collection 列表（新书架首次上传后会出现在列表中）
+      await loadCollections();
+      currentCollection = document.getElementById('collSelect').value;
+      updateCollectionUI();
       loadStats();
       loadDocs();
     } else {
@@ -619,8 +732,15 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
 // ── 文献列表 ──────────────────────────────
 
 async function loadDocs() {
+  if (!currentCollection) {
+    document.getElementById('docList').innerHTML =
+      '<div style="color:var(--text-muted);font-size:0.8rem;">请先选择书架</div>';
+    return;
+  }
   try {
-    const res = await fetch('/api/docs?limit=100');
+    const res = await fetch(
+      `/collections/${encodeURIComponent(currentCollection)}/docs?limit=100`
+    );
     const data = await res.json();
     const container = document.getElementById('docList');
 
@@ -640,7 +760,7 @@ async function loadDocs() {
       div.innerHTML = `
         <div class="doc-info">
           <div class="doc-title">${escapeHtml(title)}</div>
-          <div class="doc-meta">#${d.id} · ${escapeHtml(d.collection)} · ${d.page_count || '?'}页 ${typeTag}</div>
+          <div class="doc-meta">#${d.id} · ${d.page_count || '?'}页 ${typeTag}</div>
         </div>
         <button class="doc-del" title="删除" onclick="deleteDoc(${d.id}, '${escapeHtml(title)}')">×</button>
       `;
@@ -655,7 +775,10 @@ async function deleteDoc(docId, title) {
   if (!confirm(`确定删除「${title}」(ID: ${docId})？`)) return;
 
   try {
-    const res = await fetch(`/api/doc/${docId}`, { method: 'DELETE' });
+    const res = await fetch(
+      `/collections/${encodeURIComponent(currentCollection)}/doc/${docId}`,
+      { method: 'DELETE' }
+    );
     const data = await res.json();
     if (res.ok && data.status === 'ok') {
       loadStats();
@@ -676,8 +799,11 @@ document.getElementById('searchInput').addEventListener('keydown', (e) => {
 
 // ── 初始化 ────────────────────────────────
 
-loadStats();
-loadDocs();
+(async function init() {
+  await loadCollections();
+  loadStats();
+  loadDocs();
+})();
 </script>
 </body>
 </html>

@@ -23,13 +23,13 @@ def ingest_pdf(pdf_path: str | Path, collection: str,
     if not author:
         author = meta.get('author') or None
 
-    conn = get_conn()
+    conn = get_conn(collection)
     try:
         cur = conn.execute(
             '''INSERT INTO documents
-               (collection, cite_key, title, author, filename, page_count)
-               VALUES (?, ?, ?, ?, ?, ?)''',
-            (collection, cite_key, title, author,
+               (cite_key, title, author, filename, page_count)
+               VALUES (?, ?, ?, ?, ?)''',
+            (cite_key, title, author,
              pdf_path.name, len(doc))
         )
         doc_id = cur.lastrowid
@@ -116,13 +116,13 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
     provider = get_provider()
     pages = provider.ocr(str(pdf_path))
 
-    conn = get_conn()
+    conn = get_conn(collection)
     try:
         cur = conn.execute(
             '''INSERT INTO documents
-               (collection, cite_key, title, author, filename, page_count, doc_type)
-               VALUES (?, ?, ?, ?, ?, ?, 'ocr')''',
-            (collection, cite_key, title, author, pdf_path.name, page_count)
+               (cite_key, title, author, filename, page_count, doc_type)
+               VALUES (?, ?, ?, ?, ?, 'ocr')''',
+            (cite_key, title, author, pdf_path.name, page_count)
         )
         doc_id = cur.lastrowid
 
@@ -185,9 +185,9 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
     }
 
 
-def remove_doc(doc_id: int):
+def remove_doc(doc_id: int, collection: str):
     """删除文献及其所有行和 FTS 条目"""
-    conn = get_conn()
+    conn = get_conn(collection)
     try:
         conn.execute('DELETE FROM lines WHERE doc_id = ?', (doc_id,))
         conn.execute(

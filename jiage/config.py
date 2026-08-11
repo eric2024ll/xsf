@@ -10,8 +10,19 @@ def get_data_dir() -> Path:
     return path
 
 
-def get_db_path() -> Path:
-    return get_data_dir() / 'jiage.db'
+def get_db_path(collection: str) -> Path:
+    """每个 collection 独立 DB: collections/<collection>/jiage.db"""
+    return get_collections_dir() / collection / 'jiage.db'
+
+
+def list_collections() -> list[str]:
+    """扫描 collections 目录下含 jiage.db 的子目录，返回 collection 名称列表"""
+    coll_dir = get_collections_dir()
+    result = []
+    for child in sorted(coll_dir.iterdir()):
+        if child.is_dir() and (child / 'jiage.db').exists():
+            result.append(child.name)
+    return result
 
 
 def get_collections_dir() -> Path:
