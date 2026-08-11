@@ -371,6 +371,22 @@ async def api_add(
 
         init_db(collection)
 
+        # 去重检查: 同 filename 已入库则直接返回
+        conn = get_conn(collection)
+        existing = conn.execute(
+            "SELECT id, title FROM documents WHERE filename = ?",
+            (file.filename,),
+        ).fetchone()
+        conn.close()
+        if existing:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": f"'{file.filename}' 已在书架「{collection}」中 (id={existing['id']})",
+                    "doc_id": existing["id"],
+                },
+            )
+
         upload_dir = get_collections_dir() / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = upload_dir / file.filename
