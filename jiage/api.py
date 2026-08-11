@@ -1,25 +1,45 @@
 """jiage FastAPI Web 界面"""
 
+import html
+import io
 import json
+import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import pymupdf
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .config import get_data_dir, get_collections_dir, list_collections, get_auth_token
+from .config import get_collections_dir, list_collections, get_auth_token
 from .db import init_db, get_conn
 from .search import search, get_block_lines, get_context
-from .ingest import ingest_pdf, ingest_scanned_pdf, remove_doc
+from .ingest import ingest_pdf, ingest_scanned_pdf, remove_doc, _tokenize
 
 _VERSION = "0.1.0"
 
 _BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+
+
+def _first_line_id_for_block(doc_id: int, page_num: int, block_num: int,
+                             collection: str) -> int | None:
+    """取某 block 的第一行 id，供搜索结果跳转到校对页。"""
+    conn = get_conn(collection)
+    try:
+        row = conn.execute(
+            """SELECT id FROM lines
+               WHERE doc_id = ? AND page_num = ? AND block_num = ?
+               ORDER BY line_num LIMIT 1""",
+            (doc_id, page_num, block_num),
+        ).fetchone()
+        return row["id"] if row else None
+    finally:
+        conn.close()
 
 
 @asynccontextmanager
@@ -149,10 +169,14 @@ async def api_search(collection: str, q: str, limit: int = 20,
                 r["doc_id"], r["page_num"], r["block_num"], collection
             )
             text = " ".join(lines)
+            line_id = _first_line_id_for_block(
+                r["doc_id"], r["page_num"], r["block_num"], collection
+            )
             out.append({
                 "doc_id": r["doc_id"],
                 "page_num": r["page_num"],
                 "block_num": r["block_num"],
+                "line_id": line_id,
                 "filename": r.get("filename"),
                 "title": r.get("title") or r.get("filename"),
                 "cite_key": r.get("cite_key"),
@@ -524,3 +548,319 @@ async def api_doc_content(collection: str, doc_id: int,
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── 关键词高亮 helper ───────────────────────────────────
+
+def _highlight_keyword(text: str, keyword: str) -> str:
+    """把 keyword 中的空格/空白分隔词在 text 里高亮为 <mark>。"""
+    if not text or not keyword:
+        return html.escape(text or "")
+    tokens = [t for t in keyword.split() if t.strip()]
+    if not tokens:
+        return html.escape(text)
+    result = html.escape(text)
+    for tok in tokens:
+        pattern = re.compile(
+            f'({re.escape(tok)})',
+            re.IGNORECASE,
+        )
+        result = pattern.sub(r'<mark>\1</mark>', result)
+    return result
+
+
+# ── OCR 校对页 ──────────────────────────────────────────
+
+@app.get("/collections/{collection}/doc/{doc_id}/proofread")
+async def proofread_page(
+    request: Request,
+    collection: str,
+    doc_id: int,
+    page: int = 1,
+    keyword: str = None,
+    block: int = None,
+    line: int = None,
+):
+    """图文对照 OCR 校对页。"""
+    try:
+        conn = get_conn(collection)
+        try:
+            doc = conn.execute(
+                """SELECT id, title, filename, page_count, doc_type
+                   FROM documents WHERE id = ?""",
+                (doc_id,),
+            ).fetchone()
+            if doc is None:
+                return templates.TemplateResponse(
+                    request,
+                    "proofread.html",
+                    {
+                        "error": f"文献 id={doc_id} 不存在",
+                        "collection": collection,
+                    },
+                    status_code=404,
+                )
+
+            page_count = doc["page_count"] or 1
+            page_num = max(1, min(page, page_count))
+
+            rows = conn.execute(
+                """SELECT id, page_num, block_num, line_num, text,
+                          bbox, block_label
+                   FROM lines
+                   WHERE doc_id = ? AND page_num = ?
+                   ORDER BY block_num, line_num""",
+                (doc_id, page_num),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        # 按 block 分组
+        blocks_map = {}
+        for r in rows:
+            bn = r["block_num"]
+            if bn not in blocks_map:
+                block_bbox = None
+                if r["bbox"]:
+                    try:
+                        block_bbox = json.loads(r["bbox"])
+                    except (json.JSONDecodeError, ValueError):
+                        block_bbox = None
+                blocks_map[bn] = {
+                    "block_num": bn,
+                    "block_label": r["block_label"],
+                    "bbox": block_bbox,
+                    "lines": [],
+                }
+            line_bbox = None
+            if r["bbox"]:
+                try:
+                    line_bbox = json.loads(r["bbox"])
+                except (json.JSONDecodeError, ValueError):
+                    line_bbox = None
+            blocks_map[bn]["lines"].append({
+                "id": r["id"],
+                "line_num": r["line_num"],
+                "text": r["text"],
+                "bbox": line_bbox,
+            })
+        blocks = [blocks_map[bn] for bn in sorted(blocks_map)]
+
+        # 从 bbox 推断 OCR 原始页面尺寸
+        orig_width = 0
+        orig_height = 0
+        for b in blocks:
+            for ln in b["lines"]:
+                bb = ln.get("bbox")
+                if bb and len(bb) >= 4:
+                    orig_width = max(orig_width, bb[2])
+                    orig_height = max(orig_height, bb[3])
+            bb = b.get("bbox")
+            if bb and len(bb) >= 4:
+                orig_width = max(orig_width, bb[2])
+                orig_height = max(orig_height, bb[3])
+
+        # 按 150 DPI 渲染时图片自然尺寸
+        render_width = None
+        render_height = None
+        pdf_path = get_collections_dir() / "uploads" / doc["filename"]
+        if pdf_path.exists():
+            try:
+                pdf_doc = pymupdf.open(pdf_path)
+                page_obj = pdf_doc[page_num - 1]
+                rect = page_obj.rect
+                dpi = 150
+                render_width = rect.width * dpi / 72.0
+                render_height = rect.height * dpi / 72.0
+                pdf_doc.close()
+            except Exception:
+                pass
+
+        # 图片到原始 OCR 坐标系的缩放；前端再乘 clientWidth/naturalWidth
+        scale = 1.0
+        if render_width and orig_width:
+            scale = render_width / orig_width
+
+        return templates.TemplateResponse(
+            request,
+            "proofread.html",
+            {
+                "collection": collection,
+                "doc": dict(doc),
+                "page_num": page_num,
+                "page_count": page_count,
+                "blocks": blocks,
+                "keyword": keyword or "",
+                "target_block": block,
+                "target_line": line,
+                "scale": scale,
+                "render_width": render_width,
+                "render_height": render_height,
+                "orig_width": orig_width,
+                "orig_height": orig_height,
+                "highlight": _highlight_keyword,
+            },
+        )
+    except Exception as e:
+        return templates.TemplateResponse(
+            request,
+            "proofread.html",
+            {
+                "error": str(e),
+                "collection": collection,
+            },
+            status_code=500,
+        )
+
+
+# ── 页面图片 ────────────────────────────────────────────
+
+@app.get("/collections/{collection}/doc/{doc_id}/page/{page_num}/image")
+async def page_image(collection: str, doc_id: int, page_num: int):
+    """渲染 PDF 单页为 PNG（page_num 从 1 开始）。"""
+    try:
+        conn = get_conn(collection)
+        try:
+            doc = conn.execute(
+                "SELECT filename FROM documents WHERE id = ?",
+                (doc_id,),
+            ).fetchone()
+            if doc is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": "文献不存在"},
+                )
+            filename = doc["filename"]
+        finally:
+            conn.close()
+
+        pdf_path = get_collections_dir() / "uploads" / filename
+        if not pdf_path.exists():
+            return JSONResponse(
+                status_code=404,
+                content={"error": "PDF 文件不存在"},
+            )
+
+        pdf_doc = pymupdf.open(pdf_path)
+        try:
+            if page_num < 1 or page_num > len(pdf_doc):
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": "页码超出范围"},
+                )
+            page_obj = pdf_doc[page_num - 1]
+            pix = page_obj.get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            return StreamingResponse(
+                io.BytesIO(img_bytes),
+                media_type="image/png",
+            )
+        finally:
+            pdf_doc.close()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── 保存行编辑 ──────────────────────────────────────────
+
+@app.post("/collections/{collection}/doc/{doc_id}/line/{line_id}/edit")
+async def edit_line(
+    collection: str,
+    doc_id: int,
+    line_id: int,
+    text: str = Form(...),
+):
+    """更新某行文本，并重聚 block 全文更新 FTS。"""
+    try:
+        conn = get_conn(collection)
+        try:
+            line = conn.execute(
+                """SELECT id, doc_id, page_num, block_num
+                   FROM lines WHERE id = ?""",
+                (line_id,),
+            ).fetchone()
+            if line is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": "行不存在"},
+                )
+            if line["doc_id"] != doc_id:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "行不属于该文献"},
+                )
+
+            conn.execute(
+                "UPDATE lines SET text = ? WHERE id = ?",
+                (text, line_id),
+            )
+
+            # 重新聚合该 block 全文
+            block_rows = conn.execute(
+                """SELECT text FROM lines
+                   WHERE doc_id = ? AND page_num = ? AND block_num = ?
+                   ORDER BY line_num""",
+                (line["doc_id"], line["page_num"], line["block_num"]),
+            ).fetchall()
+            block_text = "\n".join(r["text"] for r in block_rows)
+
+            # 更新 FTS
+            conn.execute(
+                """DELETE FROM blocks_fts
+                   WHERE doc_id = ? AND page_num = ? AND block_num = ?""",
+                (line["doc_id"], line["page_num"], line["block_num"]),
+            )
+            conn.execute(
+                """INSERT INTO blocks_fts(doc_id, page_num, block_num, text)
+                   VALUES (?, ?, ?, ?)""",
+                (
+                    line["doc_id"],
+                    line["page_num"],
+                    line["block_num"],
+                    _tokenize(block_text),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── 命中文档检索（校对页内搜索）─────────────────────────
+
+@app.get("/collections/{collection}/doc/{doc_id}/hits")
+async def doc_hits(collection: str, doc_id: int, keyword: str):
+    """返回某文档中匹配关键词的所有 page/block/first_line_id。"""
+    try:
+        from .search import _fts_query
+
+        fts_q = _fts_query(keyword)
+        if not fts_q:
+            return {"keyword": keyword, "hits": []}
+
+        conn = get_conn(collection)
+        try:
+            rows = conn.execute(
+                """SELECT f.page_num, f.block_num, MIN(l.id) as line_id
+                   FROM blocks_fts f
+                   JOIN lines l ON l.doc_id = f.doc_id
+                               AND l.page_num = f.page_num
+                               AND l.block_num = f.block_num
+                   WHERE f.doc_id = ? AND blocks_fts MATCH ?
+                   GROUP BY f.page_num, f.block_num
+                   ORDER BY f.page_num, f.block_num""",
+                (doc_id, fts_q),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        return {
+            "keyword": keyword,
+            "hits": [dict(r) for r in rows],
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+

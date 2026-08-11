@@ -797,9 +797,22 @@ function renderResults(data) {
       <div class="context-box"></div>
     `;
 
-    div.addEventListener('click', () => toggleContext(div, r));
+    div.addEventListener('click', () => openProofread(r));
     container.appendChild(div);
   }
+}
+
+function openProofread(r) {
+  const params = new URLSearchParams({
+    page: r.page_num,
+    keyword: currentQuery,
+    block: r.block_num,
+  });
+  if (r.line_id) {
+    params.append('line', r.line_id);
+  }
+  const url = `/collections/${encodeURIComponent(currentCollection)}/doc/${r.doc_id}/proofread?${params}`;
+  window.open(url, '_blank');
 }
 
 async function toggleContext(el, r) {
@@ -953,6 +966,7 @@ async function loadDocs() {
           <div class="doc-meta">#${d.id} · ${d.page_count || '?'}页 ${typeTag}</div>
         </div>
         <button class="doc-browse" title="浏览内容" onclick="openDocViewer(${d.id}, '${currentCollection}')">浏览</button>
+        <button class="doc-browse" title="校对" onclick="openProofreadFromDoc(${d.id}, '${currentCollection}')">校对</button>
         <button class="doc-del" title="删除" onclick="deleteDoc(${d.id}, '${escapeHtml(title)}')">×</button>
       `;
       container.appendChild(div);
@@ -960,6 +974,11 @@ async function loadDocs() {
   } catch (e) {
     console.error('docs error:', e);
   }
+}
+
+function openProofreadFromDoc(docId, coll) {
+  const url = `/collections/${encodeURIComponent(coll)}/doc/${docId}/proofread?page=1`;
+  window.open(url, '_blank');
 }
 
 async function deleteDoc(docId, title) {

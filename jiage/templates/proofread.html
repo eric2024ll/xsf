@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% if error %}校对页错误{% else %}校对 - {{ doc.title or doc.filename }} · 第 {{ page_num }} 页{% endif %}</title>
+<style>
+:root {
+  --bg: #f8f9fa;
+  --card-bg: #ffffff;
+  --text: #1a1a2e;
+  --text-muted: #6c757d;
+  --primary: #4361ee;
+  --primary-hover: #3a56d4;
+  --border: #dee2e6;
+  --accent: #e8f0fe;
+  --danger: #e5383b;
+  --success: #2a9d8f;
+  --radius: 8px;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+header {
+  height: 60px;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-shrink: 0;
+}
+header h1 {
+  font-size: 1rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40vw;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.nav select {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: white;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.nav button {
+  padding: 6px 12px;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.nav button:hover:not(:disabled) { background: var(--accent); }
+.nav button:disabled { opacity: 0.5; cursor: not-allowed; }
+.nav a {
+  text-decoration: none;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.nav a:hover { background: var(--accent); }
+
+.in-page-search {
+  display: flex;
+  gap: 6px;
+  margin-left: 8px;
+}
+.in-page-search input {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  width: 120px;
+}
+.in-page-search button {
+  padding: 5px 10px;
+  background: var(--primary);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.in-page-search button:hover { background: var(--primary-hover); }
+
+.main {
+  display: flex;
+  height: calc(100vh - 60px);
+  overflow: hidden;
+}
+
+.left {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: #e9ecef;
+  padding: 20px;
+  display: flex;
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+
+.image-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  background: white;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  line-height: 0;
+}
+.image-wrap img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  user-select: none;
+}
+
+.bbox-overlay {
+  position: absolute;
+  border: 1px solid rgba(67, 97, 238, 0.35);
+  background: rgba(67, 97, 238, 0.08);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: all 0.15s ease;
+}
+.bbox-overlay:hover,
+.bbox-overlay.active {
+  border-color: var(--danger);
+  background: rgba(229, 56, 59, 0.18);
+  z-index: 10;
+  box-shadow: 0 0 0 1px rgba(229, 56, 59, 0.4);
+}
+
+.right {
+  width: 460px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  background: var(--card-bg);
+  border-left: 1px solid var(--border);
+  padding: 16px;
+}
+
+.block-group {
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  transition: all 0.15s ease;
+}
+.block-group:hover,
+.block-group.active {
+  border-color: #b8d0ff;
+  background: #f8fafc;
+}
+
+.block-header {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.badge {
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  background: var(--accent);
+  color: var(--primary);
+  border-radius: 4px;
+}
+
+.line-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+  cursor: pointer;
+}
+.line-item:hover,
+.line-item.active {
+  background: var(--accent);
+}
+
+.line-num {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  min-width: 34px;
+  padding-top: 6px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.line-text {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: white;
+  line-height: 1.6;
+  min-height: 1.6em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.9rem;
+}
+.line-text:focus {
+  outline: 2px solid var(--primary);
+  border-color: var(--primary);
+}
+.line-text.edited {
+  background: #fff3a0;
+}
+
+.save-btn {
+  font-size: 0.72rem;
+  padding: 5px 10px;
+  background: var(--primary);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.save-btn:hover:not(:disabled) { background: var(--primary-hover); }
+.save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.save-btn.saved { background: var(--success); }
+
+mark {
+  background: #fff3a0;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+.empty-tip {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.error-box {
+  padding: 20px;
+  color: var(--danger);
+  background: #fff5f5;
+  border-radius: var(--radius);
+  margin: 20px;
+}
+
+@media (max-width: 900px) {
+  .main { flex-direction: column; height: auto; }
+  .right { width: 100%; border-left: none; border-top: 1px solid var(--border); }
+  .left { justify-content: center; }
+}
+</style>
+</head>
+<body>
+
+{% if error %}
+<div class="error-box">{{ error }}</div>
+{% else %}
+
+<header>
+  <h1 title="{{ doc.title or doc.filename }}">{{ doc.title or doc.filename }}</h1>
+  <div class="nav">
+    <button onclick="goPage({{ page_num - 1 }})" {% if page_num <= 1 %}disabled{% endif %}>上一页</button>
+    <select id="pageSelect" onchange="goPage(this.value)">
+      {% for p in range(1, page_count + 1) %}
+      <option value="{{ p }}" {% if p == page_num %}selected{% endif %}>第 {{ p }} / {{ page_count }} 页</option>
+      {% endfor %}
+    </select>
+    <button onclick="goPage({{ page_num + 1 }})" {% if page_num >= page_count %}disabled{% endif %}>下一页</button>
+    <div class="in-page-search">
+      <input type="text" id="inPageSearch" placeholder="页内搜索..." value="{{ keyword }}" onkeydown="if(event.key==='Enter')doInPageSearch()">
+      <button onclick="doInPageSearch()">查找</button>
+    </div>
+    <a href="/">首页</a>
+  </div>
+</header>
+
+<div class="main">
+  <div class="left" id="leftPanel">
+    <div class="image-wrap" id="imageWrap">
+      <img id="pageImage" src="/collections/{{ collection }}/doc/{{ doc.id }}/page/{{ page_num }}/image" alt="第 {{ page_num }} 页" onload="onImageLoad()">
+      {% for b in blocks %}
+        {% for ln in b.lines %}
+          {% if ln.bbox %}
+          <div class="bbox-overlay"
+               id="bbox-{{ ln.id }}"
+               data-line-id="{{ ln.id }}"
+               data-block-num="{{ b.block_num }}"
+               data-x0="{{ ln.bbox[0] }}"
+               data-y0="{{ ln.bbox[1] }}"
+               data-x1="{{ ln.bbox[2] }}"
+               data-y1="{{ ln.bbox[3] }}"
+               onclick="onOverlayClick(event, this)"
+               onmouseenter="onOverlayHover(this)"
+               onmouseleave="onOverlayLeave(this)"></div>
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="right" id="textPanel">
+    {% for b in blocks %}
+    <div class="block-group" id="block-{{ b.block_num }}" data-block-num="{{ b.block_num }}">
+      <div class="block-header">
+        <span>段 {{ b.block_num }}</span>
+        {% if b.block_label %}<span class="badge">{{ b.block_label }}</span>{% endif %}
+      </div>
+      {% for ln in b.lines %}
+      <div class="line-item"
+           id="line-{{ ln.id }}"
+           data-line-id="{{ ln.id }}"
+           data-block-num="{{ b.block_num }}"
+           data-original-text="{{ ln.text }}"
+           onmouseenter="onLineHover(this)"
+           onmouseleave="onLineLeave(this)"
+           onclick="onLineClick(this)">
+        <span class="line-num">{{ ln.line_num }}</span>
+        <div class="line-text"
+             contenteditable="true"
+             id="text-{{ ln.id }}"
+             data-line-id="{{ ln.id }}"
+             oninput="onLineEdit({{ ln.id }})"
+             onclick="event.stopPropagation()">{{ highlight(ln.text, keyword) | safe }}</div>
+        <button class="save-btn"
+                id="save-{{ ln.id }}"
+                onclick="event.stopPropagation(); saveLine({{ ln.id }})">保存</button>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+{% endif %}
+
+{% if not error %}
+<script>
+const collection = {{ collection | tojson }};
+const docId = {{ doc.id | default('null') | tojson }};
+const origWidth = {{ orig_width | default(0) }};
+const origHeight = {{ orig_height | default(0) }};
+const targetLineId = {{ target_line or 'null' }};
+const targetBlockNum = {{ target_block or 'null' }};
+const keyword = {{ keyword | tojson }};
+
+let _persistLineId = null;
+
+function onImageLoad() {
+  applyScale();
+
+  if (targetLineId) {
+    setTimeout(() => highlightLine(targetLineId), 120);
+  } else if (targetBlockNum) {
+    setTimeout(() => {
+      const el = document.getElementById('block-' + targetBlockNum);
+      if (el) {
+        el.classList.add('active');
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 120);
+  }
+
+  if (keyword) {
+    setTimeout(scrollToFirstHit, 200);
+  }
+}
+
+function applyScale() {
+  const img = document.getElementById('pageImage');
+  if (!img || !img.naturalWidth || origWidth <= 0) return;
+
+  const totalScale = img.clientWidth / origWidth;
+  document.querySelectorAll('.bbox-overlay').forEach(el => {
+    const x0 = parseFloat(el.dataset.x0);
+    const y0 = parseFloat(el.dataset.y0);
+    const x1 = parseFloat(el.dataset.x1);
+    const y1 = parseFloat(el.dataset.y1);
+    el.style.left = (x0 * totalScale) + 'px';
+    el.style.top = (y0 * totalScale) + 'px';
+    el.style.width = ((x1 - x0) * totalScale) + 'px';
+    el.style.height = ((y1 - y0) * totalScale) + 'px';
+  });
+}
+
+function onLineHover(el) {
+  activate(el.dataset.lineId, false);
+}
+function onLineLeave(el) {
+  if (!_persistLineId) deactivate();
+}
+function onLineClick(el) {
+  _persistLineId = el.dataset.lineId;
+  activate(_persistLineId, true);
+}
+
+function onOverlayHover(el) {
+  activate(el.dataset.lineId, false);
+}
+function onOverlayLeave(el) {
+  if (!_persistLineId) deactivate();
+}
+function onOverlayClick(event, el) {
+  event.stopPropagation();
+  _persistLineId = el.dataset.lineId;
+  activate(_persistLineId, true);
+  const lineEl = document.getElementById('line-' + el.dataset.lineId);
+  if (lineEl) lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function activate(lineId, persist) {
+  deactivate();
+
+  const lineEl = document.getElementById('line-' + lineId);
+  const overlayEl = document.getElementById('bbox-' + lineId);
+  if (lineEl) {
+    lineEl.classList.add('active');
+    const blockEl = lineEl.closest('.block-group');
+    if (blockEl) blockEl.classList.add('active');
+  }
+  if (overlayEl) overlayEl.classList.add('active');
+}
+
+function deactivate() {
+  document.querySelectorAll('.line-item.active').forEach(e => e.classList.remove('active'));
+  document.querySelectorAll('.bbox-overlay.active').forEach(e => e.classList.remove('active'));
+  document.querySelectorAll('.block-group.active').forEach(e => e.classList.remove('active'));
+  _persistLineId = null;
+}
+
+function onLineEdit(lineId) {
+  const textEl = document.getElementById('text-' + lineId);
+  const saveBtn = document.getElementById('save-' + lineId);
+  const lineEl = document.getElementById('line-' + lineId);
+  const original = lineEl.dataset.originalText || '';
+  const current = textEl.textContent || '';
+  if (current !== original) {
+    textEl.classList.add('edited');
+    saveBtn.textContent = '保存';
+    saveBtn.classList.remove('saved');
+    saveBtn.disabled = false;
+  } else {
+    textEl.classList.remove('edited');
+    saveBtn.textContent = '保存';
+    saveBtn.classList.remove('saved');
+  }
+}
+
+async function saveLine(lineId) {
+  const textEl = document.getElementById('text-' + lineId);
+  const saveBtn = document.getElementById('save-' + lineId);
+  const lineEl = document.getElementById('line-' + lineId);
+  const text = textEl.textContent || '';
+
+  saveBtn.disabled = true;
+  saveBtn.textContent = '保存中...';
+
+  try {
+    const params = new URLSearchParams();
+    params.append('text', text);
+    const res = await fetch(
+      `/collections/${encodeURIComponent(collection)}/doc/${docId}/line/${lineId}/edit`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+      }
+    );
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      lineEl.dataset.originalText = text;
+      textEl.classList.remove('edited');
+      saveBtn.textContent = '已保存';
+      saveBtn.classList.add('saved');
+    } else {
+      saveBtn.textContent = '失败';
+      alert('保存失败: ' + (data.error || '未知错误'));
+      saveBtn.disabled = false;
+    }
+  } catch (e) {
+    saveBtn.textContent = '失败';
+    alert('保存出错: ' + e.message);
+    saveBtn.disabled = false;
+  }
+}
+
+function goPage(page) {
+  const url = new URL(window.location.href);
+  url.searchParams.set('page', page);
+  window.location.href = url.toString();
+}
+
+function highlightLine(lineId) {
+  deactivate();
+  const lineEl = document.getElementById('line-' + lineId);
+  if (lineEl) {
+    lineEl.classList.add('active');
+    lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const overlay = document.getElementById('bbox-' + lineId);
+    if (overlay) overlay.classList.add('active');
+  }
+}
+
+function scrollToFirstHit() {
+  const textPanel = document.getElementById('textPanel');
+  const firstMark = textPanel.querySelector('mark');
+  if (!firstMark) return;
+
+  const lineEl = firstMark.closest('.line-item');
+  if (lineEl) {
+    lineEl.classList.add('active');
+    lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const lineId = lineEl.dataset.lineId;
+    const overlay = document.getElementById('bbox-' + lineId);
+    if (overlay) overlay.classList.add('active');
+  }
+}
+
+function doInPageSearch() {
+  const kw = document.getElementById('inPageSearch').value.trim();
+  if (!kw) return;
+  const url = new URL(window.location.href);
+  url.searchParams.set('keyword', kw);
+  url.searchParams.delete('block');
+  url.searchParams.delete('line');
+  window.location.href = url.toString();
+}
+
+window.addEventListener('resize', applyScale);
+</script>
+{% endif %}
+
+</body>
+</html>
