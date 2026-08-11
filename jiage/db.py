@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS documents (
     is_secondary BOOLEAN DEFAULT 0,
     is_reference BOOLEAN DEFAULT 0,
     source_tags TEXT DEFAULT '["primary"]',
+    bib_type TEXT DEFAULT NULL,
+    bib_data TEXT DEFAULT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(filename)
 );
@@ -90,6 +92,11 @@ def _migrate(conn):
                 "UPDATE documents SET source_tags = ? WHERE id = ?",
                 (json.dumps(tags), r["id"]),
             )
+
+    if "bib_type" not in doc_cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN bib_type TEXT DEFAULT NULL")
+    if "bib_data" not in doc_cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN bib_data TEXT DEFAULT NULL")
 
 
 def init_db(collection: str):

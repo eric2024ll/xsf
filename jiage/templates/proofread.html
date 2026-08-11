@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.ico">
 <title>{% if error %}校对页错误{% else %}校对 - {{ doc.title or doc.filename }} · 第 {{ page_num }} 页{% endif %}</title>
 <style>
 :root {
@@ -72,6 +73,54 @@ header h1 {
   padding:1px 6px; font-size:0.66rem; width:55px;
   border:1px dashed var(--border); border-radius:10px; outline:none;
 }
+
+/* ── 书目元数据 ── */
+.bib-bar { display:flex; align-items:center; gap:8px; padding:5px 16px;
+  background:var(--accent); border-bottom:1px solid var(--border);
+  font-size:0.74rem; cursor:pointer; user-select:none; }
+.bib-bar .bib-bar-label { font-weight:600; color:var(--primary); white-space:nowrap; }
+.bib-bar .bib-bar-summary { color:var(--text-muted); flex:1; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.bib-bar .bib-bar-toggle { font-size:0.68rem; color:var(--text-muted); transition:transform .2s; }
+.bib-panel { display:none; padding:10px 16px; border-bottom:1px solid var(--border);
+  background:var(--card-bg); max-height:400px; overflow-y:auto; }
+.bib-panel.show { display:block; }
+.bib-row { display:flex; align-items:center; gap:8px; margin-bottom:5px; }
+.bib-row label { width:90px; font-size:0.72rem; color:var(--text-muted); text-align:right; flex-shrink:0; }
+.bib-row input, .bib-row select {
+  flex:1; padding:3px 8px; font-size:0.76rem;
+  border:1px solid var(--border); border-radius:4px; outline:none; background:var(--card-bg);
+}
+.bib-row input:focus { border-color:var(--primary); }
+.bib-type-row { margin-bottom:6px; }
+.bib-citekey-row { margin-top:6px; padding-top:6px; border-top:1px dashed var(--border); }
+.bib-citekey-row .bib-citekey-val {
+  font-family:monospace; font-size:0.78rem; color:var(--primary); font-weight:600; }
+.bib-add-field { display:flex; gap:8px; margin-top:4px; }
+.bib-add-field input {
+  flex:1; padding:3px 8px; font-size:0.72rem;
+  border:1px dashed var(--border); border-radius:4px; outline:none;
+}
+.bib-import-row { display:flex; gap:8px; align-items:center; margin-bottom:6px; }
+.bib-import-btn {
+  padding:3px 10px; font-size:0.74rem;
+  border:1px solid var(--border); border-radius:4px;
+  background:var(--accent); cursor:pointer; white-space:nowrap;
+}
+.bib-import-btn:hover { background:var(--bg-secondary); }
+.bib-paste-input { flex:1; min-width:0; padding:4px 8px; font-size:0.75rem;
+  border:1px dashed var(--border); border-radius:5px; outline:none; resize:none; }
+.bib-paste-input:focus { border-color:var(--primary); border-style:solid; }
+.bib-import-msg { font-size:0.72rem; color:var(--text-muted); }
+.bib-save-row { margin-top:6px; display:flex; gap:8px; align-items:center; }
+.bib-save-btn {
+  padding:3px 14px; font-size:0.76rem; background:var(--primary); color:#fff;
+  border:none; border-radius:4px; cursor:pointer;
+}
+.bib-save-btn:hover { opacity:0.9; }
+.bib-save-btn:disabled { opacity:0.5; cursor:default; }
+.bib-saved-msg { font-size:0.72rem; color:#2d8a2d; }
+.bib-field-del { color:var(--danger); cursor:pointer; font-size:0.82rem; padding:0 4px; }
 
 .nav {
   display: flex;
@@ -532,6 +581,13 @@ mark {
   </div>
 </header>
 
+<div class="bib-bar" id="proofBibBar" onclick="toggleBibPanel()">
+  <span class="bib-bar-label">书目元数据</span>
+  <span class="bib-bar-summary" id="proofBibSummary"></span>
+  <span class="bib-bar-toggle" id="proofBibToggle">▾</span>
+</div>
+<div class="bib-panel" id="proofBibPanel"></div>
+
 <div class="main" id="main" data-tab="img">
   {% if not is_md %}
   <div class="mobile-tabs">
@@ -621,6 +677,7 @@ mark {
 <script>
 const collection = {{ collection | tojson }};
 const docId = {{ doc.id | default('null') | tojson }};
+const doc = {{ doc | tojson }};
 const page = {{ page_num | default(1) }};
 const origWidth = {{ orig_width | default(0) }};
 const origHeight = {{ orig_height | default(0) }};
@@ -674,6 +731,172 @@ async function removeDocTag(i) {
 }
 
 renderDocTags();
+
+// ── 书目元数据 ──
+const _BIB_TYPES = {{ bib_type_labels | default({}) | tojson }};
+const _BIB_FIELDS = {{ bib_type_fields | default({}) | tojson }};
+const _BIB_LABELS = {{ bib_field_labels | default({}) | tojson }};
+let _bibType = {{ bib_type | default('') | tojson }};
+let _bibData = Object.assign({}, {{ bib_data | default({}) | tojson }});
+let _bibExtra = [];
+
+function bibLabel(f) { return _BIB_LABELS[f] || f; }
+
+(function initBib() {
+  const preset = _BIB_FIELDS[_bibType] || [];
+  for (const k of Object.keys(_bibData)) {
+    if (!preset.includes(k)) _bibExtra.push(k);
+  }
+  const parts = [];
+  if (doc && doc.cite_key) parts.push(doc.cite_key);
+  if (doc && doc.title) parts.push(doc.title);
+  if (doc && doc.author) parts.push(doc.author);
+  document.getElementById('proofBibSummary').textContent = parts.join(' · ') || '点击编辑';
+  renderBibPanel();
+})();
+
+function toggleBibPanel() {
+  const p = document.getElementById('proofBibPanel');
+  const t = document.getElementById('proofBibToggle');
+  p.classList.toggle('show');
+  t.textContent = p.classList.contains('show') ? '▴' : '▾';
+}
+
+function renderBibPanel() {
+  const presetFields = _BIB_FIELDS[_bibType] || [];
+  const allFields = [...presetFields, ..._bibExtra];
+  let html = '';
+  html += `<div class="bib-row bib-type-row"><label>文献类型</label><select onchange="_bibType=this.value;renderBibPanel()">`;
+  html += `<option value="">— 未指定 —</option>`;
+  for (const [t, l] of Object.entries(_BIB_TYPES)) {
+    html += `<option value="${t}" ${t===_bibType?'selected':''}>${escapeHtml(l)}</option>`;
+  }
+  html += `</select></div><div id="bibFields">`;
+  html += `<div class="bib-import-row">`;
+  html += `<input type="file" id="proofBibFile" accept=".bib,.bibtex,.txt" style="display:none" onchange="importBibFile(event)">`;
+  html += `<button type="button" class="bib-import-btn" onclick="document.getElementById('proofBibFile').click()">导入 .bib 文件</button>`;
+  html += `<textarea class="bib-paste-input" placeholder="或粘贴 BibTeX 自动识别…" rows="1" oninput="onBibPaste(this)"></textarea>`;
+  html += `<span class="bib-import-msg" id="proofBibImportMsg"></span></div>`;
+  for (const f of allFields) {
+    html += `<div class="bib-row"><label>${escapeHtml(bibLabel(f))}</label><input type="text" data-bk="${escapeHtml(f)}" value="${escapeHtml(_bibData[f]||'')}" placeholder="${escapeHtml(bibLabel(f))}">`;
+    if (!presetFields.includes(f)) html += `<span class="bib-field-del" onclick="rmBibField('${escapeHtml(f)}')">&times;</span>`;
+    html += `</div>`;
+  }
+  html += `</div>`;
+  html += `<div class="bib-add-field"><input id="bibNewKey" placeholder="自定义字段名" onkeydown="if(event.key==='Enter')addBibField()"><button class="bib-save-btn" style="padding:2px 10px;font-size:0.7rem;" onclick="addBibField()">+</button></div>`;
+  html += `<div class="bib-row bib-citekey-row"><label>cite_key</label><span class="bib-citekey-val" id="proofBibCK">${escapeHtml(doc&&doc.cite_key||'(自动生成)')}</span></div>`;
+  html += `<div class="bib-save-row"><button class="bib-save-btn" id="proofBibSave" onclick="saveProofBib()">保存元数据</button><span class="bib-saved-msg" id="proofBibMsg"></span></div>`;
+  document.getElementById('proofBibPanel').innerHTML = html;
+}
+
+function addBibField() {
+  const inp = document.getElementById('bibNewKey');
+  const k = inp.value.trim();
+  if (!k) return;
+  if ((_BIB_FIELDS[_bibType]||[]).includes(k) || _bibExtra.includes(k)) return;
+  _bibExtra.push(k); inp.value = ''; renderBibPanel();
+}
+
+function rmBibField(k) {
+  _bibExtra = _bibExtra.filter(f=>f!==k); delete _bibData[k]; renderBibPanel();
+}
+
+async function saveProofBib() {
+  const btn = document.getElementById('proofBibSave');
+  const msg = document.getElementById('proofBibMsg');
+  btn.disabled = true; btn.textContent = '保存中…'; msg.textContent = '';
+  const data = {};
+  document.querySelectorAll('#bibFields input[data-bk]').forEach(i => {
+    const v = i.value.trim(); if (v) data[i.dataset.bk] = v;
+  });
+  const body = new URLSearchParams();
+  body.append('bib_type', _bibType);
+  body.append('bib_data', JSON.stringify(data));
+  try {
+    const res = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}`, {method:'PATCH', body});
+    const r = await res.json();
+    if (!res.ok) { msg.textContent = '✗ '+(r.error||'失败'); return; }
+    msg.textContent = '✓ 已保存';
+    if (r.cite_key) { document.getElementById('proofBibCK').textContent = r.cite_key; }
+    _bibData = data;
+    setTimeout(()=>{msg.textContent='';}, 3000);
+  } catch(e) { msg.textContent='✗ '+e.message; }
+  finally { btn.disabled=false; btn.textContent='保存元数据'; }
+}
+
+function parseBibtex(text) {
+  const atIdx = text.indexOf('@');
+  if (atIdx < 0) return null;
+  let i = atIdx + 1;
+  while (i < text.length && /[a-zA-Z]/.test(text[i])) i++;
+  const type = text.slice(atIdx + 1, i).toLowerCase();
+  while (i < text.length && /\s/.test(text[i])) i++;
+  if (text[i] !== '{') return null;
+  let depth = 1, j = i + 1;
+  const chars = [];
+  while (j < text.length && depth > 0) {
+    if (text[j] === '{') depth++;
+    else if (text[j] === '}') { depth--; if (depth === 0) break; }
+    chars.push(text[j]);
+    j++;
+  }
+  const body = chars.join('');
+  const commaIdx = body.indexOf(',');
+  if (commaIdx < 0) return null;
+  const citeKey = body.slice(0, commaIdx).trim();
+  const fieldsStr = body.slice(commaIdx + 1);
+  const data = {};
+  const fieldRe = /(\w+)\s*=\s*(?:\{([^}]*)\}|"([^"]*)")/g;
+  let fm;
+  while ((fm = fieldRe.exec(fieldsStr)) !== null) {
+    const key = fm[1].toLowerCase();
+    const val = (fm[2] !== undefined ? fm[2] : fm[3]).trim();
+    if (val) data[key] = val;
+  }
+  return { bib_type: '@' + type, cite_key: citeKey, bib_data: data };
+}
+
+function _applyBibResult(result, msg) {
+  if (!result || !result.bib_data || Object.keys(result.bib_data).length === 0) {
+    if (msg) msg.textContent = '✗ 解析失败，请检查 BibTeX 格式';
+    return;
+  }
+  _bibType = result.bib_type;
+  _bibData = result.bib_data;
+  _bibExtra = [];
+  const preset = _BIB_FIELDS[result.bib_type] || [];
+  for (const k of Object.keys(result.bib_data)) {
+    if (!preset.includes(k)) _bibExtra.push(k);
+  }
+  const ckEl = document.getElementById('proofBibCK');
+  if (ckEl) ckEl.textContent = result.cite_key || '(自动生成)';
+  renderBibPanel();
+  if (msg) {
+    msg.textContent = '✓ 导入 ' + Object.keys(result.bib_data).length + ' 字段';
+    setTimeout(() => { msg.textContent = ''; }, 4000);
+  }
+}
+
+function importBibFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const msg = document.getElementById('proofBibImportMsg');
+  if (msg) msg.textContent = '解析中…';
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    _applyBibResult(parseBibtex(e.target.result), msg);
+  };
+  reader.readAsText(file);
+  event.target.value = '';
+}
+
+function onBibPaste(el) {
+  const text = el.value.trim();
+  if (!text || text.indexOf('@') < 0) return;
+  const msg = document.getElementById('proofBibImportMsg');
+  _applyBibResult(parseBibtex(text), msg);
+  el.value = '';
+}
 
 let _persistLineId = null;
 

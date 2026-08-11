@@ -12,13 +12,17 @@ from typing import List
 import pymupdf
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import get_collections_dir, list_collections, get_auth_token
 from .db import init_db, get_conn
 from .search import search, get_block_lines, get_context
+from .bib_utils import (
+    generate_cite_key, sync_doc_fields, parse_bib_data,
+    BIB_TYPE_FIELDS, BIB_TYPE_LABELS, BIB_FIELD_LABELS,
+)
 from .ingest import (
     ingest_pdf, ingest_scanned_pdf, ingest_markdown, ingest_image,
     remove_doc, _tokenize,
@@ -63,6 +67,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="4" fill="#3b5998"/>'
+    '<text x="16" y="23" font-size="18" text-anchor="middle" '
+    'fill="#fff" font-family="serif">架</text></svg>'
+).encode('utf-8')
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(content=_FAVICON_SVG, media_type="image/svg+xml")
+
 
 # ── Auth Middleware ────────────────────────────────────
 
@@ -472,39 +489,109 @@ async def api_remove(collection: str, doc_id: int):
 
 @app.patch("/collections/{collection}/doc/{doc_id}")
 async def api_update_doc(collection: str, doc_id: int,
-                         source_tags: str = Form(None)):
-    """更新文献元数据。当前支持 source_tags（JSON 数组字符串）。"""
+                         source_tags: str = Form(None),
+                         bib_type: str = Form(None),
+                         bib_data: str = Form(None)):
+    """更新文献元数据。
+
+    可选字段（至少传一个）:
+    - source_tags: JSON 数组字符串（来源标签）
+    - bib_type: 文献类型（@book/@article/@online/@manuscript/@incollection）
+    - bib_data: JSON 对象字符串（biblatex 字段）
+    """
     try:
-        if source_tags is None:
+        if source_tags is None and bib_type is None and bib_data is None:
             return JSONResponse(
                 status_code=400,
                 content={"error": "未提供可更新字段"},
             )
-        tags = json.loads(source_tags)
-        if not isinstance(tags, list) or not tags:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "source_tags 必须是非空 JSON 数组"},
-            )
-        tags = [str(t).strip() for t in tags if str(t).strip()]
-        if not tags:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "source_tags 不能全为空"},
-            )
-        tags_json = json.dumps(tags)
-        is_p = 1 if "primary" in tags else 0
-        is_s = 1 if "secondary" in tags else 0
-        is_r = 1 if "reference" in tags else 0
+
+        updates = []
+        params = []
+        result_extra = {}
+
+        # ── source_tags ──
+        if source_tags is not None:
+            tags = json.loads(source_tags)
+            if not isinstance(tags, list) or not tags:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "source_tags 必须是非空 JSON 数组"},
+                )
+            tags = [str(t).strip() for t in tags if str(t).strip()]
+            if not tags:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "source_tags 不能全为空"},
+                )
+            tags_json = json.dumps(tags)
+            is_p = 1 if "primary" in tags else 0
+            is_s = 1 if "secondary" in tags else 0
+            is_r = 1 if "reference" in tags else 0
+            updates.extend([
+                "source_tags = ?", "is_primary = ?",
+                "is_secondary = ?", "is_reference = ?",
+            ])
+            params.extend([tags_json, is_p, is_s, is_r])
+            result_extra["source_tags"] = tags
+
+        # ── bib_type + bib_data ──
+        if bib_type is not None or bib_data is not None:
+            conn = get_conn(collection)
+            try:
+                row = conn.execute(
+                    "SELECT cite_key, bib_type, bib_data FROM documents WHERE id = ?",
+                    (doc_id,),
+                ).fetchone()
+                if row is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"error": f"文献 id={doc_id} 不存在"},
+                    )
+                cur_bib_type = bib_type if bib_type is not None else row["bib_type"]
+                cur_bib_data_str = bib_data if bib_data is not None else row["bib_data"]
+                cur_bib_data = parse_bib_data(cur_bib_data_str) or {}
+
+                # 同步 title/author 冗余列
+                synced = sync_doc_fields(cur_bib_data)
+                updates.extend(["title = ?", "author = ?"])
+                params.extend([synced["title"], synced["author"]])
+                result_extra["title"] = synced["title"]
+                result_extra["author"] = synced["author"]
+
+                # 自动重算 cite_key
+                existing_rows = conn.execute(
+                    "SELECT cite_key FROM documents WHERE id != ?",
+                    (doc_id,),
+                ).fetchall()
+                existing_keys = {
+                    r["cite_key"] for r in existing_rows if r["cite_key"]
+                }
+                new_cite_key = generate_cite_key(
+                    cur_bib_data, existing_keys,
+                    exclude_key=row["cite_key"],
+                )
+                updates.append("cite_key = ?")
+                params.append(new_cite_key)
+                result_extra["cite_key"] = new_cite_key
+
+                if bib_type is not None:
+                    updates.append("bib_type = ?")
+                    params.append(cur_bib_type or None)
+                    result_extra["bib_type"] = cur_bib_type
+                if bib_data is not None:
+                    updates.append("bib_data = ?")
+                    params.append(json.dumps(cur_bib_data, ensure_ascii=False))
+                    result_extra["bib_data"] = cur_bib_data
+            finally:
+                conn.close()
+
+        params.append(doc_id)
+        sql = f"UPDATE documents SET {', '.join(updates)} WHERE id = ?"
 
         conn = get_conn(collection)
         try:
-            cur = conn.execute(
-                """UPDATE documents
-                   SET source_tags = ?, is_primary = ?, is_secondary = ?, is_reference = ?
-                   WHERE id = ?""",
-                (tags_json, is_p, is_s, is_r, doc_id),
-            )
+            cur = conn.execute(sql, params)
             if cur.rowcount == 0:
                 return JSONResponse(
                     status_code=404,
@@ -513,11 +600,11 @@ async def api_update_doc(collection: str, doc_id: int,
             conn.commit()
         finally:
             conn.close()
-        return {"status": "ok", "doc_id": doc_id, "source_tags": tags}
+        return {"status": "ok", "doc_id": doc_id, **result_extra}
     except json.JSONDecodeError:
         return JSONResponse(
             status_code=400,
-            content={"error": "source_tags 不是合法 JSON"},
+            content={"error": "JSON 解析失败"},
         )
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -563,7 +650,8 @@ async def api_doc_content(collection: str, doc_id: int,
         conn = get_conn(collection)
         try:
             doc = conn.execute(
-                """SELECT id, title, filename, doc_type, page_count, source_tags
+                """SELECT id, title, author, filename, doc_type, page_count,
+                          source_tags, bib_type, bib_data, cite_key
                    FROM documents WHERE id = ?""",
                 (doc_id,),
             ).fetchone()
@@ -627,6 +715,7 @@ async def api_doc_content(collection: str, doc_id: int,
             )
         except (json.JSONDecodeError, TypeError):
             doc_data["source_tags"] = ["primary"]
+        doc_data["bib_data"] = parse_bib_data(doc_data.get("bib_data")) or {}
 
         return {
             "doc": doc_data,
@@ -673,7 +762,8 @@ async def proofread_page(
         conn = get_conn(collection)
         try:
             doc = conn.execute(
-                """SELECT id, title, filename, page_count, doc_type, source_tags
+                """SELECT id, title, author, filename, page_count, doc_type,
+                          source_tags, bib_type, bib_data, cite_key
                    FROM documents WHERE id = ?""",
                 (doc_id,),
             ).fetchone()
@@ -776,6 +866,10 @@ async def proofread_page(
         except (json.JSONDecodeError, TypeError):
             source_tags = ["primary"]
 
+        # 解析 bib 元数据供模板显示
+        bib_data = parse_bib_data(doc["bib_data"]) or {}
+        bib_type = doc["bib_type"] or ""
+
         return templates.TemplateResponse(
             request,
             "proofread.html",
@@ -795,6 +889,11 @@ async def proofread_page(
                 "orig_height": orig_height,
                 "highlight": _highlight_keyword,
                 "source_tags": source_tags,
+                "bib_type": bib_type,
+                "bib_data": bib_data,
+                "bib_type_labels": BIB_TYPE_LABELS,
+                "bib_field_labels": BIB_FIELD_LABELS,
+                "bib_type_fields": BIB_TYPE_FIELDS,
             },
         )
     except Exception as e:
