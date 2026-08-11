@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .config import get_data_dir, get_collections_dir
 from .db import init_db, get_conn
-from .ingest import ingest_pdf, remove_doc
+from .ingest import ingest_pdf, ingest_scanned_pdf, remove_doc
 from .search import search, get_block_lines, get_context
 
 
@@ -36,7 +36,8 @@ def cmd_add(args):
         sys.exit(1)
 
     try:
-        result = ingest_pdf(
+        ingest_func = ingest_scanned_pdf if args.ocr else ingest_pdf
+        result = ingest_func(
             pdf_path,
             collection=args.collection,
             cite_key=args.cite_key,
@@ -139,6 +140,8 @@ def main():
     p_add.add_argument('--cite-key', help='关联 cite_key')
     p_add.add_argument('--title', help='标题')
     p_add.add_argument('--author', help='作者')
+    p_add.add_argument('--ocr', action='store_true',
+                       help='扫描件OCR（PaddleOCR-VL）')
 
     p_s = sub.add_parser('search', help='全文搜索')
     p_s.add_argument('query', help='搜索词')

@@ -180,7 +180,7 @@ python -m jiage.cli --help
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | P0 | 建仓、SQLite schema、基础 CLI、born-digital PDF 解析、FTS 搜索 | ✅ 完成 |
-| P1 | 扫描件 OCR 接入（PP-OCRv5 行检测 + LLM 文字增强） | 待做 |
+| P1 | 扫描件 OCR 接入（主力 PaddleOCR-VL 封装流水线，设计见 histflow-plan/system/tools/14-ocr-pipeline.md） | 待做 |
 | P2 | 增加书架/集合管理命令；搜索 snippet 高亮；重复文件检测 | 待做 |
 | P3 | Web 界面（FastAPI） | 待做 |
 | P4 | 与 histflow L1 条目格式联动，导出 `摘录/摘要/综述/线索` | 待做 |

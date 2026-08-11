@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS lines (
     page_num INTEGER NOT NULL,
     block_num INTEGER NOT NULL,
     line_num INTEGER NOT NULL,
-    text TEXT NOT NULL
+    text TEXT NOT NULL,
+    bbox TEXT,
+    block_label TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_lines_doc_page
@@ -45,8 +47,18 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn):
+    """给旧 DB 的 lines 表补 bbox/block_label 列 (P1 OCR)。"""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(lines)")}
+    if "bbox" not in cols:
+        conn.execute("ALTER TABLE lines ADD COLUMN bbox TEXT")
+    if "block_label" not in cols:
+        conn.execute("ALTER TABLE lines ADD COLUMN block_label TEXT")
+
+
 def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
     conn.close()
