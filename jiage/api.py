@@ -1,5 +1,6 @@
 """jiage FastAPI Web 界面"""
 
+import json
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -440,6 +441,86 @@ async def api_docs(collection: str, limit: int = 50):
         return {
             "count": len(rows),
             "docs": [dict(r) for r in rows],
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── 文献内容浏览 ────────────────────────────────────────
+
+@app.get("/collections/{collection}/doc/{doc_id}/content")
+async def api_doc_content(collection: str, doc_id: int,
+                          page: int = None, limit: int = 0):
+    """返回单个文献的内容，按页/块/行组织。
+
+    page: 指定页码则只返回该页；省略则返回所有页。
+    limit: 限制返回的最大行数（0 = 不限），用于大文献截断。
+    """
+    try:
+        conn = get_conn(collection)
+        try:
+            doc = conn.execute(
+                """SELECT id, title, filename, doc_type, page_count
+                   FROM documents WHERE id = ?""",
+                (doc_id,),
+            ).fetchone()
+            if doc is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"文献 id={doc_id} 不存在"},
+                )
+
+            query = (
+                "SELECT page_num, block_num, line_num, text, bbox, block_label "
+                "FROM lines WHERE doc_id = ?"
+            )
+            params = [doc_id]
+            if page is not None:
+                query += " AND page_num = ?"
+                params.append(page)
+            query += " ORDER BY page_num, block_num, line_num"
+            if limit and limit > 0:
+                query += " LIMIT ?"
+                params.append(limit)
+
+            rows = conn.execute(query, params).fetchall()
+        finally:
+            conn.close()
+
+        # 按 page → block 分组组装
+        pages_map = {}
+        total_lines = 0
+        for r in rows:
+            pn = r["page_num"]
+            bn = r["block_num"]
+            if pn not in pages_map:
+                pages_map[pn] = {}
+            if bn not in pages_map[pn]:
+                try:
+                    bbox = json.loads(r["bbox"]) if r["bbox"] else None
+                except (json.JSONDecodeError, ValueError):
+                    bbox = None
+                pages_map[pn][bn] = {
+                    "block_num": bn,
+                    "block_label": r["block_label"],
+                    "bbox": bbox,
+                    "lines": [],
+                }
+            pages_map[pn][bn]["lines"].append({
+                "line_num": r["line_num"],
+                "text": r["text"],
+            })
+            total_lines += 1
+
+        pages = []
+        for pn in sorted(pages_map):
+            blocks = [pages_map[pn][bn] for bn in sorted(pages_map[pn])]
+            pages.append({"page_num": pn, "blocks": blocks})
+
+        return {
+            "doc": dict(doc),
+            "pages": pages,
+            "total_lines": total_lines,
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
