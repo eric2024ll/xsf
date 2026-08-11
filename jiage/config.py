@@ -10,26 +10,38 @@ def get_data_dir() -> Path:
     return path
 
 
+def get_db_dir() -> Path:
+    """数据库目录（本地磁盘）。
+
+    ossfs 不支持 SQLite 文件锁+随机写，jiage.db 必须留本地磁盘。
+    JIAGE_DB_DIR 环境变量 → 默认 JIAGE_DATA/db/。
+    服务器上保持 ~/jiage-data/db/，不要指向 OSS。
+    """
+    d = Path(os.environ.get('JIAGE_DB_DIR', str(get_data_dir() / 'db')))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def get_db_path(collection: str) -> Path:
-    """每个 collection 独立 DB: collections/<collection>/jiage.db"""
-    return get_collections_dir() / collection / 'jiage.db'
+    """每个 collection 独立 DB: db/<collection>/jiage.db（本地磁盘）"""
+    return get_db_dir() / collection / 'jiage.db'
 
 
 def list_collections() -> list[str]:
-    """扫描 collections 目录下含 jiage.db 的子目录，返回 collection 名称列表"""
-    coll_dir = get_collections_dir()
+    """扫描 db 目录下含 jiage.db 的子目录，返回 collection 名称列表"""
+    db_dir = get_db_dir()
     result = []
-    for child in sorted(coll_dir.iterdir()):
+    for child in sorted(db_dir.iterdir()):
         if child.is_dir() and (child / 'jiage.db').exists():
             result.append(child.name)
     return result
 
 
 def get_collections_dir() -> Path:
-    """书架目录。可通过 JIAGE_COLLECTIONS_DIR 指向 OSS（服务器）。
+    """书架目录（源文件/uploads）。可通过 JIAGE_COLLECTIONS_DIR 指向 OSS（服务器）。
 
     默认 JIAGE_DATA/collections/（本地）；服务器设 /mnt/oss/sources/jiage/collections/。
-    jiage.db 必须留本地（ossfs 不支持 SQLite 文件锁）。
+    注意: jiage.db 不放这里，放 get_db_dir()（本地磁盘）。
     """
     d = Path(os.environ.get('JIAGE_COLLECTIONS_DIR', str(get_data_dir() / 'collections')))
     d.mkdir(parents=True, exist_ok=True)

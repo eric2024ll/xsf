@@ -163,6 +163,20 @@ chmod 600 /root/jiage/.env
 > **JIAGE_AUTH_TOKEN**: 设为你的登录密码. 留空或不设则无认证（开发模式）.
 > 设了之后访问任何页面都需先登录 (`/login`).
 
+> **⚠ DB 存储位置**: jiage.db 必须在**本地磁盘** (`JIAGE_DB_DIR`, 默认 `~/jiage-data/db/`),
+> 不能放 OSS (ossfs 不支持 SQLite 文件锁, 会报 `disk I/O error`).
+> 如果旧版 collection 重构时 DB 被放到了 OSS 上, 需迁移到本地:
+> ```bash
+> mkdir -p ~/jiage-data/db
+> for d in /mnt/oss/sources/jiage/collections/*/; do
+>   coll=$(basename "$d")
+>   if [ -f "$d/jiage.db" ]; then
+>     mkdir -p ~/jiage-data/db/"$coll"
+>     mv "$d/jiage.db" ~/jiage-data/db/"$coll"/
+>   fi
+> done
+> ```
+
 #### 3. 部署命令
 
 ```bash
@@ -214,8 +228,9 @@ curl -s -b /tmp/jiage_cookie http://localhost:8090/ -o /dev/null -w '%{http_code
 |------|------|------|
 | `PADDLE_OCR_TOKEN` | OCR 时必填 | aistudio bearer token |
 | `JIAGE_AUTH_TOKEN` | 可选 | Web 登录密码. 未设则无认证（开发模式）; 设了则所有页面需登录 |
-| `JIAGE_DATA` | 可选 | 数据目录(含 jiage.db), 默认 `~/jiage-data/` |
-| `JIAGE_COLLECTIONS_DIR` | 可选 | 书架+上传目录, 默认 `JIAGE_DATA/collections/`; 服务器指向 OSS `/mnt/oss/sources/jiage/collections/` |
+| `JIAGE_DATA` | 可选 | 数据根目录, 默认 `~/jiage-data/` |
+| `JIAGE_DB_DIR` | 可选 | **数据库目录(本地磁盘!)**, 默认 `JIAGE_DATA/db/`. ossfs 不支持 SQLite 文件锁, 服务器上**不要**指向 OSS |
+| `JIAGE_COLLECTIONS_DIR` | 可选 | 源文件+上传目录, 默认 `JIAGE_DATA/collections/`; 服务器指向 OSS `/mnt/oss/sources/jiage/collections/` |
 | `JIAGE_OCR_METHOD` | 可选 | OCR provider, 默认 `paddle_api` |
 
 ## 常用命令速查
