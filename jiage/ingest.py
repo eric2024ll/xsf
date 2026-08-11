@@ -11,7 +11,9 @@ def _tokenize(text: str) -> str:
 
 def ingest_pdf(pdf_path: str | Path, collection: str,
                cite_key: str = None, title: str = None,
-               author: str = None) -> dict:
+               author: str = None,
+               is_primary: bool = True, is_secondary: bool = False,
+               is_reference: bool = False) -> dict:
     """将 PDF 导入数据库，返回统计信息"""
     pdf_path = Path(pdf_path)
     doc = pymupdf.open(pdf_path)
@@ -27,10 +29,12 @@ def ingest_pdf(pdf_path: str | Path, collection: str,
     try:
         cur = conn.execute(
             '''INSERT INTO documents
-               (cite_key, title, author, filename, page_count)
-               VALUES (?, ?, ?, ?, ?)''',
+               (cite_key, title, author, filename, page_count,
+                is_primary, is_secondary, is_reference)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
             (cite_key, title, author,
-             pdf_path.name, len(doc))
+             pdf_path.name, len(doc),
+             is_primary, is_secondary, is_reference)
         )
         doc_id = cur.lastrowid
 
@@ -95,7 +99,9 @@ def ingest_pdf(pdf_path: str | Path, collection: str,
 
 def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
                        cite_key: str = None, title: str = None,
-                       author: str = None) -> dict:
+                       author: str = None,
+                       is_primary: bool = True, is_secondary: bool = False,
+                       is_reference: bool = False) -> dict:
     """扫描件 OCR 入库（PaddleOCR-VL）。bbox+block_label 入库，doc_type='ocr'。"""
     import json
     from .ocr import get_provider
@@ -120,9 +126,11 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
     try:
         cur = conn.execute(
             '''INSERT INTO documents
-               (cite_key, title, author, filename, page_count, doc_type)
-               VALUES (?, ?, ?, ?, ?, 'ocr')''',
-            (cite_key, title, author, pdf_path.name, page_count)
+               (cite_key, title, author, filename, page_count, doc_type,
+                is_primary, is_secondary, is_reference)
+               VALUES (?, ?, ?, ?, ?, 'ocr', ?, ?, ?)''',
+            (cite_key, title, author, pdf_path.name, page_count,
+             is_primary, is_secondary, is_reference)
         )
         doc_id = cur.lastrowid
 

@@ -338,6 +338,15 @@ mark {
 <header>
   <h1>籍 jiAge 文献池</h1>
   <span class="version">v{{ version }}</span>
+  <a href="/logout" style="
+    margin-left:auto;
+    font-size:0.82rem;
+    color:var(--text-muted);
+    text-decoration:none;
+    padding:4px 12px;
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+  ">退出</a>
 </header>
 
 <!-- Collection 选择器 -->
@@ -411,6 +420,20 @@ mark {
         <div class="field checkbox-row">
           <input type="checkbox" id="upOcr">
           <label for="upOcr" style="margin:0;">OCR 扫描件模式</label>
+        </div>
+        <div class="field">
+          <label>来源类型</label>
+          <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:0.82rem;">
+            <label style="display:flex; align-items:center; gap:4px; cursor:pointer;">
+              <input type="checkbox" id="upPrimary" checked> 原始史料
+            </label>
+            <label style="display:flex; align-items:center; gap:4px; cursor:pointer;">
+              <input type="checkbox" id="upSecondary"> 研究文献
+            </label>
+            <label style="display:flex; align-items:center; gap:4px; cursor:pointer;">
+              <input type="checkbox" id="upReference"> 工具书
+            </label>
+          </div>
         </div>
         <button type="submit" id="uploadBtn">上传入库</button>
       </form>
@@ -697,6 +720,21 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
   formData.append('title', document.getElementById('upTitle').value);
   formData.append('author', document.getElementById('upAuthor').value);
   formData.append('ocr', document.getElementById('upOcr').checked);
+
+  const isP = document.getElementById('upPrimary').checked;
+  const isS = document.getElementById('upSecondary').checked;
+  const isR = document.getElementById('upReference').checked;
+  if (isP && isS && isR) {
+    formData.append('source_type', 'all');
+  } else if (isS && isR) {
+    formData.append('source_type', 'secondary');
+  } else if (isR) {
+    formData.append('source_type', 'reference');
+  } else if (isS) {
+    formData.append('source_type', 'secondary');
+  } else {
+    formData.append('source_type', 'primary');
+  }
 
   try {
     const res = await fetch(

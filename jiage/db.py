@@ -10,6 +10,9 @@ CREATE TABLE IF NOT EXISTS documents (
     filename TEXT NOT NULL,
     page_count INTEGER,
     doc_type TEXT DEFAULT 'born-digital',
+    is_primary BOOLEAN DEFAULT 1,
+    is_secondary BOOLEAN DEFAULT 0,
+    is_reference BOOLEAN DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(filename)
 );
@@ -49,12 +52,20 @@ def get_conn(collection: str) -> sqlite3.Connection:
 
 
 def _migrate(conn):
-    """给旧 DB 的 lines 表补 bbox/block_label 列 (P1 OCR)."""
+    """给旧 DB 补列: lines 表 bbox/block_label (P1); documents 表 source_type (P2)."""
     cols = {row[1] for row in conn.execute("PRAGMA table_info(lines)")}
     if "bbox" not in cols:
         conn.execute("ALTER TABLE lines ADD COLUMN bbox TEXT")
     if "block_label" not in cols:
         conn.execute("ALTER TABLE lines ADD COLUMN block_label TEXT")
+
+    doc_cols = {row[1] for row in conn.execute("PRAGMA table_info(documents)")}
+    if "is_primary" not in doc_cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN is_primary BOOLEAN DEFAULT 1")
+    if "is_secondary" not in doc_cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN is_secondary BOOLEAN DEFAULT 0")
+    if "is_reference" not in doc_cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN is_reference BOOLEAN DEFAULT 0")
 
 
 def init_db(collection: str):

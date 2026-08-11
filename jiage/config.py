@@ -50,3 +50,8 @@ def get_ocr_token() -> str:
 def get_ocr_method() -> str:
     """JIAGE_OCR_METHOD 环境变量，默认 paddle_api。"""
     return os.environ.get('JIAGE_OCR_METHOD', 'paddle_api')
+
+
+def get_auth_token() -> str | None:
+    """JIAGE_AUTH_TOKEN 环境变量。未设返回 None（开发模式，跳过认证）。"""
+    return os.environ.get('JIAGE_AUTH_TOKEN') or None

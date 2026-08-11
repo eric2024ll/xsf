@@ -31,6 +31,9 @@ def cmd_add(args):
 
     init_db(args.collection)
 
+    st = {'is_primary': args.primary, 'is_secondary': args.secondary,
+          'is_reference': args.reference}
+
     try:
         ingest_func = ingest_scanned_pdf if args.ocr else ingest_pdf
         result = ingest_func(
@@ -39,6 +42,7 @@ def cmd_add(args):
             cite_key=args.cite_key,
             title=args.title,
             author=args.author,
+            **st,
         )
     except Exception as e:
         if 'UNIQUE constraint' in str(e):
@@ -146,6 +150,14 @@ def main():
     p_add.add_argument('--author', help='作者')
     p_add.add_argument('--ocr', action='store_true',
                        help='扫描件OCR（PaddleOCR-VL）')
+    p_add.add_argument('--primary', dest='primary', action='store_true',
+                       default=True, help='原始史料（默认）')
+    p_add.add_argument('--no-primary', dest='primary', action='store_false',
+                       help='取消原始史料标记')
+    p_add.add_argument('--secondary', action='store_true', default=False,
+                       help='标记为研究文献')
+    p_add.add_argument('--reference', action='store_true', default=False,
+                       help='标记为工具书')
 
     p_s = sub.add_parser('search', help='全文搜索')
     p_s.add_argument('query', help='搜索词')

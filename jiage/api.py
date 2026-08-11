@@ -1,14 +1,16 @@
 """jiage FastAPI Web 界面"""
 
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from .config import get_data_dir, get_collections_dir, list_collections
+from .config import get_data_dir, get_collections_dir, list_collections, get_auth_token
 from .db import init_db, get_conn
 from .search import search, get_block_lines, get_context
 from .ingest import ingest_pdf, ingest_scanned_pdf, remove_doc
@@ -37,6 +39,82 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Auth Middleware ────────────────────────────────────
+
+_PUBLIC_PATHS = {'/login', '/logout'}
+_PUBLIC_PREFIXES = ('/login', '/static', '/favicon')
+
+
+def _is_authenticated(request: Request) -> bool:
+    token = get_auth_token()
+    if token is None:
+        return True
+    cookie_val = request.cookies.get('jiage_auth', '')
+    return secrets.compare_digest(cookie_val, token)
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        token = get_auth_token()
+        if token is None:
+            return await call_next(request)
+
+        path = request.url.path
+
+        if path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PREFIXES):
+            return await call_next(request)
+
+        if _is_authenticated(request):
+            return await call_next(request)
+
+        is_api = path.startswith('/api/') or path.startswith('/collections/')
+        if is_api:
+            return JSONResponse(
+                status_code=401,
+                content={"error": "未认证，请先登录"},
+            )
+        return RedirectResponse('/login', status_code=303)
+
+
+app.add_middleware(AuthMiddleware)
+
+
+# ── Auth: login / logout ──────────────────────────────
+
+@app.get("/login")
+async def login_page(request: Request, error: str = None):
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {"error": error},
+    )
+
+
+@app.post("/login")
+async def login_submit(request: Request, password: str = Form(...)):
+    token = get_auth_token()
+    if token is not None and secrets.compare_digest(password, token):
+        resp = RedirectResponse('/', status_code=303)
+        resp.set_cookie(
+            'jiage_auth', token,
+            httponly=True,
+            max_age=7 * 24 * 3600,
+            samesite='lax',
+        )
+        return resp
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {"error": "密码错误"},
+    )
+
+
+@app.get("/logout")
+async def logout():
+    resp = RedirectResponse('/login', status_code=303)
+    resp.delete_cookie('jiage_auth')
+    return resp
+
 
 # ── 页面 ──────────────────────────────────────────────
 
@@ -59,9 +137,11 @@ async def api_collections():
 # ── 搜索 ──────────────────────────────────────────────
 
 @app.get("/collections/{collection}/search")
-async def api_search(collection: str, q: str, limit: int = 20):
+async def api_search(collection: str, q: str, limit: int = 20,
+                     source_type: str = None):
     try:
-        results = search(q, collection=collection, limit=limit)
+        results = search(q, collection=collection, limit=limit,
+                         source_type=source_type)
         out = []
         for r in results:
             lines = get_block_lines(
@@ -106,6 +186,15 @@ async def api_coll_stats(collection: str):
                 """SELECT COUNT(*) FROM documents
                    WHERE doc_type = 'born-digital' OR doc_type IS NULL"""
             ).fetchone()[0]
+            n_primary = conn.execute(
+                "SELECT COUNT(*) FROM documents WHERE is_primary = 1"
+            ).fetchone()[0]
+            n_secondary = conn.execute(
+                "SELECT COUNT(*) FROM documents WHERE is_secondary = 1"
+            ).fetchone()[0]
+            n_reference = conn.execute(
+                "SELECT COUNT(*) FROM documents WHERE is_reference = 1"
+            ).fetchone()[0]
         finally:
             conn.close()
         return {
@@ -115,6 +204,11 @@ async def api_coll_stats(collection: str):
             "lines": n_lines,
             "ocr_docs": n_ocr,
             "born_digital_docs": n_bd,
+            "source_type": {
+                "primary": n_primary,
+                "secondary": n_secondary,
+                "reference": n_reference,
+            },
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -131,6 +225,9 @@ async def api_stats():
         total_blocks = 0
         total_ocr = 0
         total_bd = 0
+        total_primary = 0
+        total_secondary = 0
+        total_reference = 0
         coll_breakdown = []
 
         for coll in list_collections():
@@ -153,6 +250,15 @@ async def api_stats():
                         """SELECT COUNT(*) FROM documents
                            WHERE doc_type = 'born-digital' OR doc_type IS NULL"""
                     ).fetchone()[0]
+                    n_primary = conn.execute(
+                        "SELECT COUNT(*) FROM documents WHERE is_primary = 1"
+                    ).fetchone()[0]
+                    n_secondary = conn.execute(
+                        "SELECT COUNT(*) FROM documents WHERE is_secondary = 1"
+                    ).fetchone()[0]
+                    n_reference = conn.execute(
+                        "SELECT COUNT(*) FROM documents WHERE is_reference = 1"
+                    ).fetchone()[0]
                     pages = conn.execute(
                         "SELECT COALESCE(SUM(page_count), 0) FROM documents"
                     ).fetchone()[0]
@@ -163,6 +269,9 @@ async def api_stats():
                 total_blocks += n_blocks
                 total_ocr += n_ocr
                 total_bd += n_bd
+                total_primary += n_primary
+                total_secondary += n_secondary
+                total_reference += n_reference
                 coll_breakdown.append({
                     "name": coll, "count": n_docs, "pages": pages,
                 })
@@ -175,6 +284,11 @@ async def api_stats():
             "lines": total_lines,
             "ocr_docs": total_ocr,
             "born_digital_docs": total_bd,
+            "source_type": {
+                "primary": total_primary,
+                "secondary": total_secondary,
+                "reference": total_reference,
+            },
             "collections": coll_breakdown,
         }
     except Exception as e:
@@ -238,6 +352,7 @@ async def api_add(
     title: str = Form(None),
     author: str = Form(None),
     ocr: bool = Form(False),
+    source_type: str = Form('primary'),
 ):
     try:
         if not file.filename or not file.filename.lower().endswith(".pdf"):
@@ -245,6 +360,14 @@ async def api_add(
                 status_code=400,
                 content={"error": "仅支持 PDF 文件"},
             )
+
+        st_map = {
+            'primary':   {'is_primary': True,   'is_secondary': False, 'is_reference': False},
+            'secondary': {'is_primary': False,  'is_secondary': True,  'is_reference': False},
+            'reference': {'is_primary': False,  'is_secondary': False, 'is_reference': True},
+            'all':       {'is_primary': True,   'is_secondary': True,  'is_reference': True},
+        }
+        st = st_map.get(source_type, st_map['primary'])
 
         init_db(collection)
 
@@ -262,6 +385,7 @@ async def api_add(
             cite_key=cite_key or None,
             title=title or None,
             author=author or None,
+            **st,
         )
         return {"status": "ok", "result": result}
     except Exception as e:
@@ -288,7 +412,9 @@ async def api_docs(collection: str, limit: int = 50):
         try:
             rows = conn.execute(
                 """SELECT id, cite_key, title, author,
-                          filename, page_count, doc_type, created_at
+                          filename, page_count, doc_type,
+                          is_primary, is_secondary, is_reference,
+                          created_at
                    FROM documents
                    ORDER BY created_at DESC LIMIT ?""",
                 (limit,),

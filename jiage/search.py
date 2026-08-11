@@ -11,23 +11,34 @@ def _fts_query(query: str) -> str:
 
 
 def search(query: str, collection: str,
-           limit: int = 20) -> list[dict]:
-    """全文搜索，返回匹配块列表"""
+           limit: int = 20,
+           source_type: str = None) -> list[dict]:
+    """全文搜索，返回匹配块列表。
+
+    source_type: 'primary'/'secondary'/'reference' 之一，用于按来源类型过滤。
+    """
     fts_q = _fts_query(query)
     if not fts_q:
         return []
 
+    valid_types = {'primary', 'secondary', 'reference'}
+    extra_where = ''
+    params = [fts_q]
+
+    if source_type and source_type in valid_types:
+        extra_where = f' AND d.is_{source_type} = 1'
+
     conn = get_conn(collection)
     try:
         rows = conn.execute(
-            '''SELECT f.doc_id, f.page_num, f.block_num,
+            f'''SELECT f.doc_id, f.page_num, f.block_num,
                       d.filename, d.title, d.cite_key
-               FROM blocks_fts f
-               JOIN documents d ON d.id = f.doc_id
-               WHERE blocks_fts MATCH ?
-               ORDER BY rank
-               LIMIT ?''',
-            (fts_q, limit)
+                FROM blocks_fts f
+                JOIN documents d ON d.id = f.doc_id
+                WHERE blocks_fts MATCH ?{extra_where}
+                ORDER BY rank
+                LIMIT ?''',
+            params + [limit]
         ).fetchall()
     finally:
         conn.close()

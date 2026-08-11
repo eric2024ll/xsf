@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 — 籍 jiAge</title>
+<style>
+:root {
+  --bg: #f8f9fa;
+  --card-bg: #ffffff;
+  --text: #1a1a2e;
+  --text-muted: #6c757d;
+  --primary: #4361ee;
+  --primary-hover: #3a56d4;
+  --border: #dee2e6;
+  --accent: #e8f0fe;
+  --danger: #e5383b;
+  --radius: 8px;
+  --shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+.login-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 36px 32px;
+  width: 340px;
+  max-width: 90vw;
+}
+.login-card h1 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 6px;
+}
+.login-card .subtitle {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  text-align: center;
+  margin-bottom: 24px;
+}
+.login-card .field {
+  margin-bottom: 16px;
+}
+.login-card label {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  display: block;
+  margin-bottom: 4px;
+}
+.login-card input[type="password"] {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.92rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.login-card input[type="password"]:focus {
+  border-color: var(--primary);
+}
+.login-card button {
+  width: 100%;
+  padding: 10px;
+  background: var(--primary);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.92rem;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.login-card button:hover { background: var(--primary-hover); }
+.login-error {
+  background: #fce4e4;
+  color: var(--danger);
+  font-size: 0.82rem;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  text-align: center;
+}
+</style>
+</head>
+<body>
+
+<div class="login-card">
+  <h1>籍 jiAge</h1>
+  <div class="subtitle">文献池检索系统</div>
+  {% if error %}
+  <div class="login-error">{{ error }}</div>
+  {% endif %}
+  <form method="post" action="/login">
+    <div class="field">
+      <label for="password">密码</label>
+      <input type="password" id="password" name="password" autofocus required>
+    </div>
+    <button type="submit">登录</button>
+  </form>
+</div>
+
+</body>
+</html>
