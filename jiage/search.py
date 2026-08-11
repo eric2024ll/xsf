@@ -1,13 +1,27 @@
 import jieba
+from opencc import OpenCC
+
 from .db import get_conn
+
+_s2t = OpenCC('s2t')
+_t2s = OpenCC('t2s')
+
+
+def _expand_token(token: str) -> str:
+    """繁简互转扩展：返回覆盖繁/简的 FTS5 OR 表达式。"""
+    variants = {token, _s2t.convert(token), _t2s.convert(token)}
+    variants = {v for v in variants if v}
+    if len(variants) == 1:
+        return f'"{token}"'
+    return '(' + ' OR '.join(f'"{v}"' for v in sorted(variants)) + ')'
 
 
 def _fts_query(query: str) -> str:
-    """将搜索词转为 FTS5 MATCH 表达式"""
+    """将搜索词转为 FTS5 MATCH 表达式（繁简互转）"""
     tokens = [t for t in jieba.cut_for_search(query) if t.strip()]
     if not tokens:
         return ''
-    return ' AND '.join(f'"{t}"' for t in tokens)
+    return ' AND '.join(_expand_token(t) for t in tokens)
 
 
 def search(query: str, collection: str,

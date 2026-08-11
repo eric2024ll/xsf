@@ -12,6 +12,7 @@ dependencies = [
     "python-multipart",
     "jinja2",
     "pypinyin",
+    "opencc-python-reimplemented",
 ]
 
 [project.scripts]

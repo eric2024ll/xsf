@@ -57,12 +57,12 @@ def _slugify(text: str) -> str:
 
 
 def _title_slug(title: str) -> str:
-    """标题 → 拼音关键词（取前 4 字全拼，与 ref.bib 惯例一致）。"""
+    """标题 → 拼音关键词（取前 3 字全拼，与 ref.bib 惯例一致）。"""
     if not title:
         return "untitled"
     has_cjk = re.search(r"[\u4e00-\u9fff]", title)
     if has_cjk:
-        snippet = title[:4]
+        snippet = title[:3]
         parts = lazy_pinyin(snippet, style=Style.NORMAL, errors="default")
         s = "".join(parts).lower()
     else:
