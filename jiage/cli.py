@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -31,8 +32,16 @@ def cmd_add(args):
 
     init_db(args.collection)
 
-    st = {'is_primary': args.primary, 'is_secondary': args.secondary,
-          'is_reference': args.reference}
+    tags = []
+    if args.primary:
+        tags.append('primary')
+    if args.secondary:
+        tags.append('secondary')
+    if args.reference:
+        tags.append('reference')
+    if not tags:
+        tags = ['primary']
+    source_tags = json.dumps(tags)
 
     try:
         ingest_func = ingest_scanned_pdf if args.ocr else ingest_pdf
@@ -42,7 +51,7 @@ def cmd_add(args):
             cite_key=args.cite_key,
             title=args.title,
             author=args.author,
-            **st,
+            source_tags=source_tags,
         )
     except Exception as e:
         if 'UNIQUE constraint' in str(e):

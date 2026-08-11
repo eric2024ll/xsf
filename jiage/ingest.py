@@ -1,3 +1,4 @@
+import json
 import re
 
 import pymupdf
@@ -11,11 +12,25 @@ def _tokenize(text: str) -> str:
     return ' '.join(jieba.cut_for_search(text))
 
 
+def _source_flags(source_tags: str):
+    """从 source_tags JSON 推导旧三列布尔值（向后兼容 is_primary 等）"""
+    try:
+        tags = json.loads(source_tags)
+        if not isinstance(tags, list):
+            tags = ["primary"]
+    except (json.JSONDecodeError, TypeError):
+        tags = ["primary"]
+    return (
+        1 if "primary" in tags else 0,
+        1 if "secondary" in tags else 0,
+        1 if "reference" in tags else 0,
+    )
+
+
 def ingest_pdf(pdf_path: str | Path, collection: str,
                cite_key: str = None, title: str = None,
                author: str = None,
-               is_primary: bool = True, is_secondary: bool = False,
-               is_reference: bool = False) -> dict:
+               source_tags: str = '["primary"]') -> dict:
     """将 PDF 导入数据库，返回统计信息"""
     pdf_path = Path(pdf_path)
     doc = pymupdf.open(pdf_path)
@@ -27,16 +42,17 @@ def ingest_pdf(pdf_path: str | Path, collection: str,
     if not author:
         author = meta.get('author') or None
 
+    is_primary, is_secondary, is_reference = _source_flags(source_tags)
     conn = get_conn(collection)
     try:
         cur = conn.execute(
             '''INSERT INTO documents
                (cite_key, title, author, filename, page_count,
-                is_primary, is_secondary, is_reference)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                is_primary, is_secondary, is_reference, source_tags)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (cite_key, title, author,
              pdf_path.name, len(doc),
-             is_primary, is_secondary, is_reference)
+             is_primary, is_secondary, is_reference, source_tags)
         )
         doc_id = cur.lastrowid
 
@@ -102,10 +118,8 @@ def ingest_pdf(pdf_path: str | Path, collection: str,
 def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
                        cite_key: str = None, title: str = None,
                        author: str = None,
-                       is_primary: bool = True, is_secondary: bool = False,
-                       is_reference: bool = False) -> dict:
+                       source_tags: str = '["primary"]') -> dict:
     """扫描件 OCR 入库（PaddleOCR-VL）。bbox+block_label 入库，doc_type='ocr'。"""
-    import json
     from .ocr import get_provider
 
     pdf_path = Path(pdf_path)
@@ -124,15 +138,16 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
     provider = get_provider()
     pages = provider.ocr(str(pdf_path))
 
+    is_primary, is_secondary, is_reference = _source_flags(source_tags)
     conn = get_conn(collection)
     try:
         cur = conn.execute(
             '''INSERT INTO documents
                (cite_key, title, author, filename, page_count, doc_type,
-                is_primary, is_secondary, is_reference)
-               VALUES (?, ?, ?, ?, ?, 'ocr', ?, ?, ?)''',
+                is_primary, is_secondary, is_reference, source_tags)
+               VALUES (?, ?, ?, ?, ?, 'ocr', ?, ?, ?, ?)''',
             (cite_key, title, author, pdf_path.name, page_count,
-             is_primary, is_secondary, is_reference)
+             is_primary, is_secondary, is_reference, source_tags)
         )
         doc_id = cur.lastrowid
 
@@ -204,8 +219,7 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
 def ingest_markdown(md_path: str | Path, collection: str,
                     cite_key: str = None, title: str = None,
                     author: str = None,
-                    is_primary: bool = True, is_secondary: bool = False,
-                    is_reference: bool = False) -> dict:
+                    source_tags: str = '["primary"]') -> dict:
     """Markdown 文本入库。按空行分段，每段一个 block，段内按行为 line。
 
     doc_type='markdown'，page_count=1（md 无页概念，统一页 1）。
@@ -215,15 +229,16 @@ def ingest_markdown(md_path: str | Path, collection: str,
     if not title:
         title = md_path.stem
 
+    is_primary, is_secondary, is_reference = _source_flags(source_tags)
     conn = get_conn(collection)
     try:
         cur = conn.execute(
             '''INSERT INTO documents
                (cite_key, title, author, filename, page_count, doc_type,
-                is_primary, is_secondary, is_reference)
-               VALUES (?, ?, ?, ?, 1, 'markdown', ?, ?, ?)''',
+                is_primary, is_secondary, is_reference, source_tags)
+               VALUES (?, ?, ?, ?, 1, 'markdown', ?, ?, ?, ?)''',
             (cite_key, title, author, md_path.name,
-             is_primary, is_secondary, is_reference)
+             is_primary, is_secondary, is_reference, source_tags)
         )
         doc_id = cur.lastrowid
 
@@ -279,8 +294,7 @@ def ingest_markdown(md_path: str | Path, collection: str,
 def ingest_image(img_path: str | Path, collection: str,
                  cite_key: str = None, title: str = None,
                  author: str = None,
-                 is_primary: bool = True, is_secondary: bool = False,
-                 is_reference: bool = False) -> dict:
+                 source_tags: str = '["primary"]') -> dict:
     """图片 OCR 入库。把图片包成单页 PDF，复用 ingest_scanned_pdf 的 OCR 流程。
 
     doc_type='ocr'，page_count=1，filename 记原图片名（非临时 PDF 名）。
@@ -310,9 +324,7 @@ def ingest_image(img_path: str | Path, collection: str,
             cite_key=cite_key,
             title=title or img_path.stem,
             author=author,
-            is_primary=is_primary,
-            is_secondary=is_secondary,
-            is_reference=is_reference,
+            source_tags=source_tags,
         )
         # 2. 修正 documents.filename 为原图片名（ingest_scanned_pdf 记的是临时 pdf 名）
         doc_id = result['doc_id']

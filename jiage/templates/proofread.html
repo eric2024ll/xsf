@@ -58,6 +58,21 @@ header h1 {
 }
 .site-name:hover { background: var(--accent); }
 
+/* ── 来源标签 ── */
+.doc-tags { display:flex; gap:4px; flex-wrap:wrap; align-items:center; }
+.tag-chip {
+  display:inline-flex; align-items:center; gap:2px;
+  padding:1px 8px; border-radius:10px; font-size:0.68rem;
+  cursor:pointer; border:1px solid var(--border);
+  background:var(--accent); user-select:none; white-space:nowrap;
+}
+.tag-chip.active { background:var(--primary); color:#fff; border-color:var(--primary); }
+.tag-chip.removable::after { content:'\00d7'; margin-left:3px; opacity:0.7; font-weight:700; }
+.tag-add-input {
+  padding:1px 6px; font-size:0.66rem; width:55px;
+  border:1px dashed var(--border); border-radius:10px; outline:none;
+}
+
 .nav {
   display: flex;
   align-items: center;
@@ -500,6 +515,7 @@ mark {
 <header>
   <a href="/" class="site-name">架閣</a>
   <h1 title="{{ doc.title or doc.filename }}">{{ doc.title or doc.filename }}</h1>
+  <div class="doc-tags" id="docTags"></div>
   <div class="nav">
     <button onclick="goPage({{ page_num - 1 }})" {% if page_num <= 1 %}disabled{% endif %}>上一页</button>
     <select id="pageSelect" onchange="goPage(this.value)">
@@ -611,6 +627,53 @@ const origHeight = {{ orig_height | default(0) }};
 const targetLineId = {{ target_line or 'null' }};
 const targetBlockNum = {{ target_block or 'null' }};
 const keyword = {{ keyword | tojson }};
+
+// ── 来源标签 ──
+const _TAG_LABELS = {primary:'原始史料', secondary:'研究文献', reference:'工具书'};
+let _docTags = {{ source_tags | default(['primary']) | tojson }};
+function tagLabel(t) { return _TAG_LABELS[t] || t; }
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function renderDocTags() {
+  const el = document.getElementById('docTags');
+  if (!el) return;
+  let html = _docTags.map((t, i) =>
+    `<span class="tag-chip active removable" onclick="removeDocTag(${i})">${escapeHtml(tagLabel(t))}</span>`
+  ).join('');
+  html += `<input type="text" class="tag-add-input" placeholder="+ 标签" onkeydown="if(event.key==='Enter'){event.preventDefault();addDocTag();}">`;
+  el.innerHTML = html;
+}
+
+async function patchDocTags() {
+  const body = new URLSearchParams();
+  body.append('source_tags', JSON.stringify(_docTags));
+  await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}`, {method:'PATCH', body});
+}
+
+async function addDocTag() {
+  const inputs = document.getElementsByClassName('tag-add-input');
+  const input = inputs[inputs.length - 1];
+  if (!input) return;
+  const val = input.value.trim();
+  if (!val) return;
+  if (!_docTags.includes(val)) _docTags.push(val);
+  input.value = '';
+  await patchDocTags();
+  renderDocTags();
+}
+
+async function removeDocTag(i) {
+  _docTags.splice(i, 1);
+  if (!_docTags.length) _docTags = ['primary'];
+  await patchDocTags();
+  renderDocTags();
+}
+
+renderDocTags();
 
 let _persistLineId = null;
 

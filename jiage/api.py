@@ -215,15 +215,13 @@ async def api_coll_stats(collection: str):
                 """SELECT COUNT(*) FROM documents
                    WHERE doc_type = 'born-digital' OR doc_type IS NULL"""
             ).fetchone()[0]
-            n_primary = conn.execute(
-                "SELECT COUNT(*) FROM documents WHERE is_primary = 1"
-            ).fetchone()[0]
-            n_secondary = conn.execute(
-                "SELECT COUNT(*) FROM documents WHERE is_secondary = 1"
-            ).fetchone()[0]
-            n_reference = conn.execute(
-                "SELECT COUNT(*) FROM documents WHERE is_reference = 1"
-            ).fetchone()[0]
+            source_tag_counts = {}
+            for row in conn.execute(
+                """SELECT je.value AS tag, COUNT(*) AS n
+                   FROM documents, json_each(source_tags) je
+                   GROUP BY je.value"""
+            ):
+                source_tag_counts[row["tag"]] = row["n"]
         finally:
             conn.close()
         return {
@@ -233,11 +231,7 @@ async def api_coll_stats(collection: str):
             "lines": n_lines,
             "ocr_docs": n_ocr,
             "born_digital_docs": n_bd,
-            "source_type": {
-                "primary": n_primary,
-                "secondary": n_secondary,
-                "reference": n_reference,
-            },
+            "source_tags": source_tag_counts,
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -254,9 +248,7 @@ async def api_stats():
         total_blocks = 0
         total_ocr = 0
         total_bd = 0
-        total_primary = 0
-        total_secondary = 0
-        total_reference = 0
+        total_tags = {}
         coll_breakdown = []
 
         for coll in list_collections():
@@ -279,15 +271,14 @@ async def api_stats():
                         """SELECT COUNT(*) FROM documents
                            WHERE doc_type = 'born-digital' OR doc_type IS NULL"""
                     ).fetchone()[0]
-                    n_primary = conn.execute(
-                        "SELECT COUNT(*) FROM documents WHERE is_primary = 1"
-                    ).fetchone()[0]
-                    n_secondary = conn.execute(
-                        "SELECT COUNT(*) FROM documents WHERE is_secondary = 1"
-                    ).fetchone()[0]
-                    n_reference = conn.execute(
-                        "SELECT COUNT(*) FROM documents WHERE is_reference = 1"
-                    ).fetchone()[0]
+                    for row in conn.execute(
+                        """SELECT je.value AS tag, COUNT(*) AS n
+                           FROM documents, json_each(source_tags) je
+                           GROUP BY je.value"""
+                    ):
+                        total_tags[row["tag"]] = (
+                            total_tags.get(row["tag"], 0) + row["n"]
+                        )
                     pages = conn.execute(
                         "SELECT COALESCE(SUM(page_count), 0) FROM documents"
                     ).fetchone()[0]
@@ -298,9 +289,6 @@ async def api_stats():
                 total_blocks += n_blocks
                 total_ocr += n_ocr
                 total_bd += n_bd
-                total_primary += n_primary
-                total_secondary += n_secondary
-                total_reference += n_reference
                 coll_breakdown.append({
                     "name": coll, "count": n_docs, "pages": pages,
                 })
@@ -313,11 +301,7 @@ async def api_stats():
             "lines": total_lines,
             "ocr_docs": total_ocr,
             "born_digital_docs": total_bd,
-            "source_type": {
-                "primary": total_primary,
-                "secondary": total_secondary,
-                "reference": total_reference,
-            },
+            "source_tags": total_tags,
             "collections": coll_breakdown,
         }
     except Exception as e:
@@ -392,24 +376,17 @@ async def api_add(
     title: str = Form(None),
     author: str = Form(None),
     ocr: bool = Form(False),
-    source_type: str = Form('primary'),
+    source_tags: str = Form('["primary"]'),
 ):
     """批量上传：支持 pdf / md / 图片（图片自动 OCR）。
 
     - pdf：born-digital 解析；ocr=True 则走 PaddleOCR-VL
     - md/markdown：按段落解析入库（doc_type='markdown'）
     - 图片（jpg/png/...）：包成单页 PDF 后强制 OCR（doc_type='ocr'）
+    - source_tags: JSON 数组字符串，如 '["primary","档案"]'
     返回 {status, results:[...], errors:[...]}。
     """
     try:
-        st_map = {
-            'primary':   {'is_primary': True,   'is_secondary': False, 'is_reference': False},
-            'secondary': {'is_primary': False,  'is_secondary': True,  'is_reference': False},
-            'reference': {'is_primary': False,  'is_secondary': False, 'is_reference': True},
-            'all':       {'is_primary': True,   'is_secondary': True,  'is_reference': True},
-        }
-        st = st_map.get(source_type, st_map['primary'])
-
         init_db(collection)
         upload_dir = get_collections_dir() / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -464,7 +441,7 @@ async def api_add(
                     cite_key=cite_key or None,
                     title=title or None,
                     author=author or None,
-                    **st,
+                    source_tags=source_tags,
                 )
                 results.append({"filename": fname, "result": r})
             except Exception as e:
@@ -489,6 +466,59 @@ async def api_remove(collection: str, doc_id: int):
     try:
         remove_doc(doc_id, collection)
         return {"status": "ok", "doc_id": doc_id}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.patch("/collections/{collection}/doc/{doc_id}")
+async def api_update_doc(collection: str, doc_id: int,
+                         source_tags: str = Form(None)):
+    """更新文献元数据。当前支持 source_tags（JSON 数组字符串）。"""
+    try:
+        if source_tags is None:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "未提供可更新字段"},
+            )
+        tags = json.loads(source_tags)
+        if not isinstance(tags, list) or not tags:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "source_tags 必须是非空 JSON 数组"},
+            )
+        tags = [str(t).strip() for t in tags if str(t).strip()]
+        if not tags:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "source_tags 不能全为空"},
+            )
+        tags_json = json.dumps(tags)
+        is_p = 1 if "primary" in tags else 0
+        is_s = 1 if "secondary" in tags else 0
+        is_r = 1 if "reference" in tags else 0
+
+        conn = get_conn(collection)
+        try:
+            cur = conn.execute(
+                """UPDATE documents
+                   SET source_tags = ?, is_primary = ?, is_secondary = ?, is_reference = ?
+                   WHERE id = ?""",
+                (tags_json, is_p, is_s, is_r, doc_id),
+            )
+            if cur.rowcount == 0:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"文献 id={doc_id} 不存在"},
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"status": "ok", "doc_id": doc_id, "source_tags": tags}
+    except json.JSONDecodeError:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "source_tags 不是合法 JSON"},
+        )
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -533,7 +563,7 @@ async def api_doc_content(collection: str, doc_id: int,
         conn = get_conn(collection)
         try:
             doc = conn.execute(
-                """SELECT id, title, filename, doc_type, page_count
+                """SELECT id, title, filename, doc_type, page_count, source_tags
                    FROM documents WHERE id = ?""",
                 (doc_id,),
             ).fetchone()
@@ -590,8 +620,16 @@ async def api_doc_content(collection: str, doc_id: int,
             blocks = [pages_map[pn][bn] for bn in sorted(pages_map[pn])]
             pages.append({"page_num": pn, "blocks": blocks})
 
+        doc_data = dict(doc)
+        try:
+            doc_data["source_tags"] = json.loads(
+                doc_data.get("source_tags") or '["primary"]'
+            )
+        except (json.JSONDecodeError, TypeError):
+            doc_data["source_tags"] = ["primary"]
+
         return {
-            "doc": dict(doc),
+            "doc": doc_data,
             "pages": pages,
             "total_lines": total_lines,
         }
@@ -635,7 +673,7 @@ async def proofread_page(
         conn = get_conn(collection)
         try:
             doc = conn.execute(
-                """SELECT id, title, filename, page_count, doc_type
+                """SELECT id, title, filename, page_count, doc_type, source_tags
                    FROM documents WHERE id = ?""",
                 (doc_id,),
             ).fetchone()
@@ -730,6 +768,14 @@ async def proofread_page(
         if render_width and orig_width:
             scale = render_width / orig_width
 
+        # 解析 source_tags 供模板显示
+        try:
+            source_tags = json.loads(doc.get("source_tags") or '["primary"]')
+            if not isinstance(source_tags, list):
+                source_tags = ["primary"]
+        except (json.JSONDecodeError, TypeError):
+            source_tags = ["primary"]
+
         return templates.TemplateResponse(
             request,
             "proofread.html",
@@ -748,6 +794,7 @@ async def proofread_page(
                 "orig_width": orig_width,
                 "orig_height": orig_height,
                 "highlight": _highlight_keyword,
+                "source_tags": source_tags,
             },
         )
     except Exception as e:

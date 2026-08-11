@@ -113,17 +113,71 @@ jiage stats
 
 ---
 
+## Collection 导入导出
+
+独立 CLI 脚本 `scripts/collection_io.py`，在项目根目录运行。用于 collection 的整体备份、迁移、服务器 ↔ 本地同步。
+
+### 导出
+
+```bash
+cd ~/projects/jiage && source .venv/bin/activate
+python scripts/collection_io.py export <collection> [-o output.tar.gz]
+```
+
+自动查 DB `documents` 表，打包该 collection 的 **DB 快照 + 全部源文件 + manifest.json**。DB 用 SQLite backup API 导出，确保 WAL 一致性。缺失文件（DB 有记录但文件不存在）会列出来。
+
+### 导入
+
+```bash
+python scripts/collection_io.py import <collection> <archive.tar.gz> \
+  [--conflict skip|overwrite] [--db-only] [--force]
+```
+
+| 选项 | 说明 |
+|------|------|
+| `--db-only` | 只导入 DB，跳过源文件（OSS 手动迁移场景） |
+| `--conflict overwrite` | 同名源文件覆盖（默认 skip） |
+| `--force` | 覆盖已存在的 collection DB |
+
+### OSS 服务器场景
+
+源文件在 OSS 挂载路径（`JIAGE_COLLECTIONS_DIR`）下。大文件导入 OSS 可能慢，推荐分两步：
+
+```bash
+# 1. 先只导 DB
+python scripts/collection_io.py import 两岸三交 backup.tar.gz --db-only
+
+# 2. 源文件手动 rsync 到 OSS 挂载路径
+rsync -av uploads/ /mnt/oss/sources/jiage/collections/uploads/
+```
+
+### 打包格式
+
+```
+{collection}_YYYYMMDD.tar.gz
+├── jiage.db                # SQLite 快照
+├── manifest.json           # collection 名、导出时间、文献数、filename 列表
+└── uploads/                # 该 collection 的全部源文件
+```
+
+---
+
 ## 数据目录结构
 
 ```
 ~/jiage-data/                      # 由 JIAGE_DATA 指定，默认 ~/jiage-data
-├── jiage.db                        # SQLite + FTS5 索引
-└── collections/                    # 书架目录，按 collection 分文件夹
-    ├── 民族研究/
-    │   └── 云南茶业考.pdf
-    ├── 历史理论/
-    └── 周易/
+├── db/                             # 数据库（本地磁盘，不放 OSS）
+│   ├── 民族研究/jiage.db           #   每个 collection 独立 SQLite + FTS5
+│   └── 历史理论/jiage.db
+└── collections/                    # 书架目录
+    └── uploads/                    #   源文件（全局共享，服务器指 OSS）
+        ├── 云南茶业考.pdf
+        └── 茶马古道.md
 ```
+
+- `JIAGE_DB_DIR`：DB 目录（默认 `JIAGE_DATA/db/`），**必须本地磁盘**——OSS 不支持 SQLite 文件锁。
+- `JIAGE_COLLECTIONS_DIR`：源文件目录（默认 `JIAGE_DATA/collections/`），服务器可指 OSS 挂载路径。
+- DB 内只存 `filename`（不含绝对路径），迁移时无需修改 DB 内容。
 
 代码目录（`~/projects/jiage/`）只放程序与配置，不存文献或数据库。
 

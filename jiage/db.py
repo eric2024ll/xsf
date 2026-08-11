@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from .config import get_db_path
 
@@ -13,6 +14,7 @@ CREATE TABLE IF NOT EXISTS documents (
     is_primary BOOLEAN DEFAULT 1,
     is_secondary BOOLEAN DEFAULT 0,
     is_reference BOOLEAN DEFAULT 0,
+    source_tags TEXT DEFAULT '["primary"]',
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(filename)
 );
@@ -66,6 +68,28 @@ def _migrate(conn):
         conn.execute("ALTER TABLE documents ADD COLUMN is_secondary BOOLEAN DEFAULT 0")
     if "is_reference" not in doc_cols:
         conn.execute("ALTER TABLE documents ADD COLUMN is_reference BOOLEAN DEFAULT 0")
+
+    if "source_tags" not in doc_cols:
+        conn.execute(
+            "ALTER TABLE documents ADD COLUMN source_tags TEXT DEFAULT '[\"primary\"]'"
+        )
+        rows = conn.execute(
+            "SELECT id, is_primary, is_secondary, is_reference FROM documents"
+        ).fetchall()
+        for r in rows:
+            tags = []
+            if r["is_primary"]:
+                tags.append("primary")
+            if r["is_secondary"]:
+                tags.append("secondary")
+            if r["is_reference"]:
+                tags.append("reference")
+            if not tags:
+                tags = ["primary"]
+            conn.execute(
+                "UPDATE documents SET source_tags = ? WHERE id = ?",
+                (json.dumps(tags), r["id"]),
+            )
 
 
 def init_db(collection: str):
