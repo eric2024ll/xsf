@@ -1,3 +1,5 @@
+import re
+
 import pymupdf
 import jieba
 from pathlib import Path
@@ -191,6 +193,137 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
         'title': title,
         'doc_type': 'ocr',
     }
+
+
+def ingest_markdown(md_path: str | Path, collection: str,
+                    cite_key: str = None, title: str = None,
+                    author: str = None,
+                    is_primary: bool = True, is_secondary: bool = False,
+                    is_reference: bool = False) -> dict:
+    """Markdown 文本入库。按空行分段，每段一个 block，段内按行为 line。
+
+    doc_type='markdown'，page_count=1（md 无页概念，统一页 1）。
+    """
+    md_path = Path(md_path)
+    text = md_path.read_text(encoding='utf-8', errors='replace')
+    if not title:
+        title = md_path.stem
+
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            '''INSERT INTO documents
+               (cite_key, title, author, filename, page_count, doc_type,
+                is_primary, is_secondary, is_reference)
+               VALUES (?, ?, ?, ?, 1, 'markdown', ?, ?, ?)''',
+            (cite_key, title, author, md_path.name,
+             is_primary, is_secondary, is_reference)
+        )
+        doc_id = cur.lastrowid
+
+        total_lines = 0
+        total_blocks = 0
+
+        paragraphs = re.split(r'\n\s*\n', text)
+        block_num = 0
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            block_num += 1
+            line_num = 0
+            block_texts = []
+            for ln in para.split('\n'):
+                ln = ln.rstrip()
+                if not ln.strip():
+                    continue
+                line_num += 1
+                conn.execute(
+                    '''INSERT INTO lines
+                       (doc_id, page_num, block_num, line_num, text)
+                       VALUES (?, ?, ?, ?, ?)''',
+                    (doc_id, 1, block_num, line_num, ln)
+                )
+                block_texts.append(ln)
+                total_lines += 1
+
+            if block_texts:
+                conn.execute(
+                    '''INSERT INTO blocks_fts
+                       (doc_id, page_num, block_num, text)
+                       VALUES (?, ?, ?, ?)''',
+                    (doc_id, 1, block_num, _tokenize('\n'.join(block_texts)))
+                )
+                total_blocks += 1
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        'doc_id': doc_id,
+        'pages': 1,
+        'blocks': total_blocks,
+        'lines': total_lines,
+        'title': title,
+        'doc_type': 'markdown',
+    }
+
+
+def ingest_image(img_path: str | Path, collection: str,
+                 cite_key: str = None, title: str = None,
+                 author: str = None,
+                 is_primary: bool = True, is_secondary: bool = False,
+                 is_reference: bool = False) -> dict:
+    """图片 OCR 入库。把图片包成单页 PDF，复用 ingest_scanned_pdf 的 OCR 流程。
+
+    doc_type='ocr'，page_count=1，filename 记原图片名（非临时 PDF 名）。
+    """
+    import os
+    import tempfile
+
+    img_path = Path(img_path)
+
+    # 1. 用 PyMuPDF 把图片包成单页 PDF（保留原始像素尺寸）
+    src = pymupdf.open(str(img_path))
+    rect = src[0].rect
+    pdf = pymupdf.open()
+    page = pdf.new_page(width=rect.width, height=rect.height)
+    page.insert_image(rect, filename=str(img_path))
+    src.close()
+
+    fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
+    os.close(fd)
+    pdf.save(tmp_pdf)
+    pdf.close()
+
+    try:
+        result = ingest_scanned_pdf(
+            tmp_pdf,
+            collection=collection,
+            cite_key=cite_key,
+            title=title or img_path.stem,
+            author=author,
+            is_primary=is_primary,
+            is_secondary=is_secondary,
+            is_reference=is_reference,
+        )
+        # 2. 修正 documents.filename 为原图片名（ingest_scanned_pdf 记的是临时 pdf 名）
+        doc_id = result['doc_id']
+        conn = get_conn(collection)
+        try:
+            conn.execute(
+                "UPDATE documents SET filename = ? WHERE id = ?",
+                (img_path.name, doc_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        result['filename'] = img_path.name
+    finally:
+        os.unlink(tmp_pdf)
+
+    return result
 
 
 def remove_doc(doc_id: int, collection: str):

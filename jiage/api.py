@@ -7,6 +7,7 @@ import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import List
 
 import pymupdf
 from fastapi import FastAPI, UploadFile, File, Form, Request
@@ -18,7 +19,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from .config import get_collections_dir, list_collections, get_auth_token
 from .db import init_db, get_conn
 from .search import search, get_block_lines, get_context
-from .ingest import ingest_pdf, ingest_scanned_pdf, remove_doc, _tokenize
+from .ingest import (
+    ingest_pdf, ingest_scanned_pdf, ingest_markdown, ingest_image,
+    remove_doc, _tokenize,
+)
 
 _VERSION = "0.1.0"
 
@@ -51,7 +55,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="籍 jiAge 文献池", version=_VERSION, lifespan=lifespan)
+app = FastAPI(title="架閣：放書架的地方，也能看書", version=_VERSION, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -369,23 +373,35 @@ async def api_context(collection: str, doc_id: int, page: int,
 
 # ── 上传 ──────────────────────────────────────────────
 
+_SUPPORTED_IMG_EXT = {'jpg', 'jpeg', 'png', 'webp', 'bmp', 'tiff', 'tif', 'gif'}
+_SUPPORTED_EXT = {'pdf', 'md', 'markdown'} | _SUPPORTED_IMG_EXT
+
+
+def _file_ext(filename: str) -> str:
+    """返回小写扩展名（无点）。无扩展名返回 ''。"""
+    if not filename or '.' not in filename:
+        return ''
+    return filename.rsplit('.', 1)[-1].lower()
+
+
 @app.post("/collections/{collection}/add")
 async def api_add(
     collection: str,
-    file: UploadFile = File(...),
+    files: List[UploadFile] = File(...),
     cite_key: str = Form(None),
     title: str = Form(None),
     author: str = Form(None),
     ocr: bool = Form(False),
     source_type: str = Form('primary'),
 ):
-    try:
-        if not file.filename or not file.filename.lower().endswith(".pdf"):
-            return JSONResponse(
-                status_code=400,
-                content={"error": "仅支持 PDF 文件"},
-            )
+    """批量上传：支持 pdf / md / 图片（图片自动 OCR）。
 
+    - pdf：born-digital 解析；ocr=True 则走 PaddleOCR-VL
+    - md/markdown：按段落解析入库（doc_type='markdown'）
+    - 图片（jpg/png/...）：包成单页 PDF 后强制 OCR（doc_type='ocr'）
+    返回 {status, results:[...], errors:[...]}。
+    """
+    try:
         st_map = {
             'primary':   {'is_primary': True,   'is_secondary': False, 'is_reference': False},
             'secondary': {'is_primary': False,  'is_secondary': True,  'is_reference': False},
@@ -395,40 +411,73 @@ async def api_add(
         st = st_map.get(source_type, st_map['primary'])
 
         init_db(collection)
-
-        # 去重检查: 同 filename 已入库则直接返回
-        conn = get_conn(collection)
-        existing = conn.execute(
-            "SELECT id, title FROM documents WHERE filename = ?",
-            (file.filename,),
-        ).fetchone()
-        conn.close()
-        if existing:
-            return JSONResponse(
-                status_code=409,
-                content={
-                    "error": f"'{file.filename}' 已在书架「{collection}」中 (id={existing['id']})",
-                    "doc_id": existing["id"],
-                },
-            )
-
         upload_dir = get_collections_dir() / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
-        pdf_path = upload_dir / file.filename
-        with open(pdf_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
 
-        ingest_func = ingest_scanned_pdf if ocr else ingest_pdf
-        result = ingest_func(
-            pdf_path,
-            collection=collection,
-            cite_key=cite_key or None,
-            title=title or None,
-            author=author or None,
-            **st,
-        )
-        return {"status": "ok", "result": result}
+        results = []
+        errors = []
+        for file in files:
+            fname = file.filename or "unknown"
+            ext = _file_ext(fname)
+
+            if ext not in _SUPPORTED_EXT:
+                errors.append({
+                    "filename": fname,
+                    "error": f"不支持的类型 .{ext or '?'}（支持 pdf/md/图片）",
+                })
+                continue
+
+            # 去重检查: 同 filename 已入库则跳过
+            conn = get_conn(collection)
+            existing = conn.execute(
+                "SELECT id FROM documents WHERE filename = ?",
+                (fname,),
+            ).fetchone()
+            conn.close()
+            if existing:
+                errors.append({
+                    "filename": fname,
+                    "error": f"'{fname}' 已在书架「{collection}」中",
+                    "doc_id": existing["id"],
+                    "duplicate": True,
+                })
+                continue
+
+            # 落盘
+            dst = upload_dir / fname
+            content = await file.read()
+            with open(dst, "wb") as f:
+                f.write(content)
+
+            # 分派
+            try:
+                if ext == 'pdf':
+                    ingest_func = ingest_scanned_pdf if ocr else ingest_pdf
+                elif ext in ('md', 'markdown'):
+                    ingest_func = ingest_markdown
+                else:  # 图片：强制 OCR
+                    ingest_func = ingest_image
+
+                r = ingest_func(
+                    dst,
+                    collection=collection,
+                    cite_key=cite_key or None,
+                    title=title or None,
+                    author=author or None,
+                    **st,
+                )
+                results.append({"filename": fname, "result": r})
+            except Exception as e:
+                errors.append({"filename": fname, "error": str(e)})
+
+        return {
+            "status": "ok",
+            "results": results,
+            "errors": errors,
+            "total": len(files),
+            "succeeded": len(results),
+            "failed": len(errors),
+        }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -825,6 +874,199 @@ async def edit_line(
             conn.close()
 
         return {"ok": True}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── 手工分栏重新 OCR ────────────────────────────────────
+
+@app.post("/collections/{collection}/doc/{doc_id}/page/{page_num}/reocr")
+async def reocr_page(
+    collection: str,
+    doc_id: int,
+    page_num: int,
+    regions: str = Form(...),
+    replace: bool = Form(True),
+):
+    """对页面指定区域（手工分栏）重新 OCR。
+
+    regions: JSON 编码的矩形列表，每个 = [x0,y0,x1,y1]，坐标在「150dpi 页面像素空间」
+    （与 page_image 端点渲染的图片及现有 bbox overlay 坐标系一致）。
+    每个 region 裁切为一张图，按顺序拼成多页 PDF 一次提交 OCR；
+    返回结果按 region 顺序追加为新 block，bbox 偏移回原页面坐标。
+    replace=True 时先清空该页原有 lines/blocks_fts 再写入。
+    """
+    try:
+        try:
+            region_list = json.loads(regions)
+        except (json.JSONDecodeError, ValueError):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "regions 不是合法 JSON"},
+            )
+        if not isinstance(region_list, list) or not region_list:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "regions 为空或格式错误"},
+            )
+
+        conn = get_conn(collection)
+        try:
+            doc = conn.execute(
+                "SELECT filename FROM documents WHERE id = ?",
+                (doc_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if doc is None:
+            return JSONResponse(status_code=404, content={"error": "文献不存在"})
+
+        pdf_path = get_collections_dir() / "uploads" / doc["filename"]
+        if not pdf_path.exists():
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"源文件不存在: {doc['filename']}"},
+            )
+
+        import os
+        import tempfile
+        from .ocr import get_provider
+
+        PT_PER_PX = 72.0 / 150.0  # 150dpi 像素 → PDF 点
+
+        src = pymupdf.open(pdf_path)
+        try:
+            if page_num < 1 or page_num > len(src):
+                return JSONResponse(
+                    status_code=404, content={"error": "页码超出范围"})
+            page_obj = src[page_num - 1]
+
+            # 每个 region 裁切为一张图，按顺序拼成多页 PDF
+            out_pdf = pymupdf.open()
+            crop_meta = []  # (x0, y0, pix_w, pix_h)
+            for reg in region_list:
+                try:
+                    x0, y0, x1, y1 = reg
+                except (TypeError, ValueError):
+                    continue
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                clip = pymupdf.Rect(x0 * PT_PER_PX, y0 * PT_PER_PX,
+                                    x1 * PT_PER_PX, y1 * PT_PER_PX)
+                cpix = page_obj.get_pixmap(dpi=150, clip=clip)
+                cpage = out_pdf.new_page(width=cpix.width, height=cpix.height)
+                cpage.insert_image(cpage.rect, pixmap=cpix)
+                crop_meta.append((float(x0), float(y0), cpix.width, cpix.height))
+
+            if not crop_meta:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "没有有效的裁切区域"},
+                )
+
+            fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
+            os.close(fd)
+            out_pdf.save(tmp_pdf)
+            out_pdf.close()
+        finally:
+            src.close()
+
+        try:
+            provider = get_provider()
+            pages = provider.ocr(tmp_pdf)
+        finally:
+            os.unlink(tmp_pdf)
+
+        # 收集 OCR 结果，按 region 顺序，bbox 偏移回原页面坐标
+        new_blocks = []  # {block_label, lines:[{text, bbox}]}
+        for i, page in enumerate(pages):
+            if i >= len(crop_meta):
+                break
+            ox, oy, _, _ = crop_meta[i]
+            parsing_res_list = page.get('parsing_res_list', [])
+            for block in parsing_res_list:
+                label = block.get('block_label', '')
+                if label == 'header':
+                    continue
+                content = block.get('block_content', '')
+                if isinstance(content, dict):
+                    text = content.get('html') or content.get('markdown') or ''
+                else:
+                    text = str(content) if content else ''
+                text = text.strip()
+                if not text:
+                    continue
+                bbox = block.get('block_bbox')
+                # bbox 偏移：crop 内坐标 + region 左上角偏移
+                shifted = None
+                if bbox and len(bbox) >= 4:
+                    shifted = [bbox[0] + ox, bbox[1] + oy,
+                               bbox[2] + ox, bbox[3] + oy]
+                new_blocks.append({
+                    "block_label": label,
+                    "bbox": shifted,
+                    "text": text,
+                })
+
+        if not new_blocks:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "重新 OCR 未返回任何文本"},
+            )
+
+        # 写回 DB
+        conn = get_conn(collection)
+        try:
+            if replace:
+                conn.execute(
+                    "DELETE FROM lines WHERE doc_id = ? AND page_num = ?",
+                    (doc_id, page_num),
+                )
+                conn.execute(
+                    "DELETE FROM blocks_fts WHERE doc_id = ? AND page_num = ?",
+                    (doc_id, page_num),
+                )
+                block_num = 0
+            else:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(block_num), 0) FROM lines "
+                    "WHERE doc_id = ? AND page_num = ?",
+                    (doc_id, page_num),
+                ).fetchone()
+                block_num = row[0]
+
+            total_lines = 0
+            for b in new_blocks:
+                block_num += 1
+                bbox_json = json.dumps(b["bbox"]) if b["bbox"] else None
+                conn.execute(
+                    """INSERT INTO lines
+                       (doc_id, page_num, block_num, line_num, text,
+                        bbox, block_label)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (doc_id, page_num, block_num, 1, b["text"],
+                     bbox_json, b["block_label"]),
+                )
+                conn.execute(
+                    """INSERT INTO blocks_fts
+                       (doc_id, page_num, block_num, text)
+                       VALUES (?, ?, ?, ?)""",
+                    (doc_id, page_num, block_num,
+                     _tokenize(b["text"])),
+                )
+                total_lines += 1
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {
+            "status": "ok",
+            "doc_id": doc_id,
+            "page_num": page_num,
+            "regions": len(crop_meta),
+            "new_blocks": len(new_blocks),
+            "replaced": replace,
+        }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

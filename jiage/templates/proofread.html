@@ -46,6 +46,17 @@ header h1 {
   text-overflow: ellipsis;
   max-width: 40vw;
 }
+.site-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--primary);
+  text-decoration: none;
+  white-space: nowrap;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.site-name:hover { background: var(--accent); }
 
 .nav {
   display: flex;
@@ -116,6 +127,7 @@ header h1 {
   background: #e9ecef;
   padding: 20px;
   display: flex;
+  flex-direction: column;
   justify-content: flex-start;
   align-items: flex-start;
 }
@@ -123,14 +135,12 @@ header h1 {
 .image-wrap {
   position: relative;
   display: inline-block;
-  max-width: 100%;
   background: white;
   box-shadow: 0 4px 12px rgba(0,0,0,0.15);
   line-height: 0;
 }
 .image-wrap img {
   display: block;
-  max-width: 100%;
   height: auto;
   user-select: none;
 }
@@ -269,10 +279,164 @@ mark {
   margin: 20px;
 }
 
+/* 图片缩放工具栏 */
+.img-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255,255,255,0.94);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  box-shadow: var(--shadow);
+  margin-bottom: 12px;
+  font-size: 0.8rem;
+  width: fit-content;
+  flex-wrap: wrap;
+}
+.img-toolbar button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: white;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1.2;
+}
+.img-toolbar button:hover { background: var(--accent); }
+.img-toolbar .zoom-label {
+  min-width: 52px;
+  text-align: center;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.img-toolbar .reocr-btn { margin-left: 10px; }
+.img-toolbar .reocr-btn.active {
+  background: var(--danger); border-color: var(--danger); color: white;
+}
+.img-toolbar .hint { color: var(--text-muted); font-size: 0.72rem; margin-left: 6px; }
+
+/* 拖拽平移 */
+.image-wrap { cursor: grab; }
+.image-wrap.grabbing { cursor: grabbing; }
+.image-wrap img { -webkit-user-drag: none; }
+
+/* 重OCR 框选 */
+.image-wrap.draw-mode { cursor: crosshair; }
+.image-wrap.draw-mode .bbox-overlay { pointer-events: none; }
+.draw-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 18;
+}
+.draw-rect {
+  position: absolute;
+  border: 2px dashed var(--danger);
+  background: rgba(229,56,59,0.12);
+  pointer-events: none;
+  z-index: 20;
+}
+.region-rect {
+  position: absolute;
+  border: 2px solid var(--danger);
+  background: rgba(229,56,59,0.10);
+  pointer-events: none;
+  z-index: 19;
+}
+.region-rect .region-tag {
+  position: absolute;
+  top: -18px;
+  left: 0;
+  font-size: 0.7rem;
+  color: white;
+  background: var(--danger);
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.reocr-actions {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  gap: 8px;
+  background: #fff5f5;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  align-items: center;
+  font-size: 0.82rem;
+  flex-wrap: wrap;
+}
+.reocr-actions.show { display: flex; }
+.reocr-actions button {
+  padding: 5px 12px;
+  border-radius: 5px;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.reocr-actions .do-reocr { background: var(--danger); color: white; }
+.reocr-actions .do-reocr:disabled { opacity: 0.6; cursor: wait; }
+.reocr-actions .cancel-reocr { background: white; color: var(--text); border: 1px solid var(--border); }
+
+/* 移动版 tab */
+.mobile-tabs { display: none; }
+
 @media (max-width: 900px) {
-  .main { flex-direction: column; height: auto; }
-  .right { width: 100%; border-left: none; border-top: 1px solid var(--border); }
-  .left { justify-content: center; }
+  .main { flex-direction: column; height: calc(100vh - 60px); }
+  .mobile-tabs {
+    display: flex;
+    gap: 0;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--card-bg);
+  }
+  .mobile-tabs button {
+    flex: 1;
+    padding: 12px;
+    border: none;
+    background: var(--card-bg);
+    font-size: 1rem;
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    color: var(--text-muted);
+  }
+  .mobile-tabs button.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+    font-weight: 700;
+  }
+  .left, .right { width: 100%; }
+  .left {
+    border: none;
+    flex: 1;
+    overflow: auto;
+    justify-content: center;
+    display: none;
+    padding: 12px;
+  }
+  .right {
+    border-left: none;
+    border-top: none;
+    flex: 1;
+    display: none;
+    overflow-y: auto;
+  }
+  .main[data-tab="img"] .left { display: flex; }
+  .main[data-tab="txt"] .right { display: block; }
+  header { padding: 8px 10px; gap: 6px; flex-wrap: wrap; height: auto; }
+  header h1 { max-width: 100%; font-size: 0.82rem; }
+  .nav { flex-wrap: wrap; gap: 6px; }
+  .nav select, .nav button, .nav a { font-size: 0.8rem; padding: 6px 8px; }
+  .in-page-search input { font-size: 16px; width: 100px; }
+  .img-toolbar { flex-wrap: wrap; }
+  .img-toolbar .hint { display: none; }
 }
 </style>
 </head>
@@ -283,6 +447,7 @@ mark {
 {% else %}
 
 <header>
+  <a href="/" class="site-name">架閣</a>
   <h1 title="{{ doc.title or doc.filename }}">{{ doc.title or doc.filename }}</h1>
   <div class="nav">
     <button onclick="goPage({{ page_num - 1 }})" {% if page_num <= 1 %}disabled{% endif %}>上一页</button>
@@ -300,10 +465,30 @@ mark {
   </div>
 </header>
 
-<div class="main">
+<div class="main" id="main" data-tab="img">
+  <div class="mobile-tabs">
+    <button id="tabImg" class="active" onclick="switchTab('img')">圖</button>
+    <button id="tabTxt" onclick="switchTab('txt')">文</button>
+  </div>
+
   <div class="left" id="leftPanel">
+      <div class="img-toolbar">
+        <button onclick="zoomDelta(1/1.25)" title="缩小">−</button>
+        <span class="zoom-label" id="zoomLabel">適寬</span>
+        <button onclick="zoomDelta(1.25)" title="放大">＋</button>
+        <button onclick="zoomSetFit()" title="适应宽度">適寬</button>
+        <button onclick="zoomSetPct(1)" title="实际尺寸 (150dpi)">1:1</button>
+        <button class="reocr-btn" id="reocrToggle" onclick="toggleReocrMode()">框选重OCR</button>
+        <span class="hint">滚轮缩放 · 拖拽平移</span>
+      </div>
+      <div class="reocr-actions" id="reocrActions">
+        <span id="reocrCount">已选 0 个区域</span>
+        <button class="do-reocr" id="doReocrBtn" onclick="doReocr()">执行重OCR（替换本页）</button>
+        <button class="cancel-reocr" onclick="clearReocrRegions()">清空</button>
+        <button class="cancel-reocr" onclick="exitReocrMode()">退出</button>
+      </div>
     <div class="image-wrap" id="imageWrap">
-      <img id="pageImage" src="/collections/{{ collection }}/doc/{{ doc.id }}/page/{{ page_num }}/image" alt="第 {{ page_num }} 页" onload="onImageLoad()">
+      <img id="pageImage" draggable="false" src="/collections/{{ collection }}/doc/{{ doc.id }}/page/{{ page_num }}/image" alt="第 {{ page_num }} 页" onload="onImageLoad()">
       {% for b in blocks %}
         {% for ln in b.lines %}
           {% if ln.bbox %}
@@ -321,6 +506,7 @@ mark {
           {% endif %}
         {% endfor %}
       {% endfor %}
+      <div class="draw-layer" id="drawLayer"></div>
     </div>
   </div>
 
@@ -363,6 +549,7 @@ mark {
 <script>
 const collection = {{ collection | tojson }};
 const docId = {{ doc.id | default('null') | tojson }};
+const page = {{ page_num | default(1) }};
 const origWidth = {{ orig_width | default(0) }};
 const origHeight = {{ orig_height | default(0) }};
 const targetLineId = {{ target_line or 'null' }};
@@ -371,8 +558,39 @@ const keyword = {{ keyword | tojson }};
 
 let _persistLineId = null;
 
-function onImageLoad() {
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// ── 缩放 ──
+let zoomLevel = null;   // displayedWidth / origWidth; null = 未初始化
+let _zoomInited = false;
+
+function getFitScale() {
+  const left = document.getElementById('leftPanel');
+  const avail = Math.max(100, left.clientWidth - 48);
+  return Math.min(avail / Math.max(1, origWidth), 1);
+}
+
+function applyZoom() {
+  const img = document.getElementById('pageImage');
+  if (!img || !img.naturalWidth || origWidth <= 0) return;
+  if (!_zoomInited) { zoomLevel = getFitScale(); _zoomInited = true; }
+  img.style.maxWidth = 'none';
+  img.style.width = (origWidth * zoomLevel) + 'px';
+  const label = document.getElementById('zoomLabel');
+  if (label) label.textContent = Math.round(zoomLevel * 100) + '%';
   applyScale();
+}
+
+function zoomDelta(factor) {
+  if (!_zoomInited) applyZoom();
+  zoomLevel = clamp(zoomLevel * factor, 0.2, 6);
+  applyZoom();
+}
+function zoomSetFit() { zoomLevel = getFitScale(); _zoomInited = true; applyZoom(); }
+function zoomSetPct(p) { zoomLevel = p; _zoomInited = true; applyZoom(); }
+
+function onImageLoad() {
+  applyZoom();
 
   if (targetLineId) {
     setTimeout(() => highlightLine(targetLineId), 120);
@@ -406,6 +624,7 @@ function applyScale() {
     el.style.width = ((x1 - x0) * totalScale) + 'px';
     el.style.height = ((y1 - y0) * totalScale) + 'px';
   });
+  renderRegions();
 }
 
 function onLineHover(el) {
@@ -431,6 +650,7 @@ function onOverlayClick(event, el) {
   activate(_persistLineId, true);
   const lineEl = document.getElementById('line-' + el.dataset.lineId);
   if (lineEl) lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (window.matchMedia('(max-width: 900px)').matches) switchTab('txt');
 }
 
 function activate(lineId, persist) {
@@ -551,7 +771,199 @@ function doInPageSearch() {
   window.location.href = url.toString();
 }
 
-window.addEventListener('resize', applyScale);
+// ── 拖拽平移 ──
+(function initPan() {
+  const wrap = document.getElementById('imageWrap');
+  const left = document.getElementById('leftPanel');
+  let dragging = false, start = null;
+  wrap.addEventListener('mousedown', (e) => {
+    if (_reocrMode) return;
+    if (e.button !== 0) return;
+    if (e.target.classList.contains('bbox-overlay')) return;
+    dragging = true;
+    start = { x: e.clientX, y: e.clientY, sl: left.scrollLeft, st: left.scrollTop };
+    wrap.classList.add('grabbing');
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    left.scrollLeft = start.sl - (e.clientX - start.x);
+    left.scrollTop = start.st - (e.clientY - start.y);
+  });
+  window.addEventListener('mouseup', () => {
+    if (dragging) { dragging = false; wrap.classList.remove('grabbing'); }
+  });
+})();
+
+// ── 滚轮缩放（光标锚定） ──
+(function initWheel() {
+  const wrap = document.getElementById('imageWrap');
+  const left = document.getElementById('leftPanel');
+  wrap.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    if (!_zoomInited) applyZoom();
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const oldZoom = zoomLevel;
+    const rect = wrap.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    zoomLevel = clamp(zoomLevel * factor, 0.2, 6);
+    applyZoom();
+    const ratio = zoomLevel / oldZoom;
+    left.scrollLeft = (left.scrollLeft + mx) * ratio - mx;
+    left.scrollTop = (left.scrollTop + my) * ratio - my;
+  }, { passive: false });
+})();
+
+// ── 重OCR 框选 ──
+let _reocrMode = false;
+let _reocrRegions = [];   // [{x0,y0,x1,y1}] 页面像素 (150dpi 空间)
+let _drawStart = null;
+let _curDraw = null;
+
+function toggleReocrMode() {
+  _reocrMode = !_reocrMode;
+  const wrap = document.getElementById('imageWrap');
+  const btn = document.getElementById('reocrToggle');
+  const act = document.getElementById('reocrActions');
+  if (_reocrMode) {
+    wrap.classList.add('draw-mode');
+    btn.classList.add('active');
+    act.classList.add('show');
+    renderRegions();
+    updateReocrCount();
+  } else {
+    exitReocrMode();
+  }
+}
+function exitReocrMode() {
+  _reocrMode = false;
+  clearReocrRegions();
+  document.getElementById('imageWrap').classList.remove('draw-mode');
+  document.getElementById('reocrToggle').classList.remove('active');
+  document.getElementById('reocrActions').classList.remove('show');
+}
+function clearReocrRegions() {
+  _reocrRegions = [];
+  renderRegions();
+  updateReocrCount();
+}
+function updateReocrCount() {
+  const el = document.getElementById('reocrCount');
+  if (el) el.textContent = '已选 ' + _reocrRegions.length + ' 个区域';
+}
+function renderRegions() {
+  const layer = document.getElementById('drawLayer');
+  if (!layer) return;
+  layer.innerHTML = '';
+  const img = document.getElementById('pageImage');
+  if (!img || !img.clientWidth || origWidth <= 0) return;
+  const s = img.clientWidth / origWidth;
+  _reocrRegions.forEach((r, i) => {
+    const d = document.createElement('div');
+    d.className = 'region-rect';
+    d.style.left = (r.x0 * s) + 'px';
+    d.style.top = (r.y0 * s) + 'px';
+    d.style.width = ((r.x1 - r.x0) * s) + 'px';
+    d.style.height = ((r.y1 - r.y0) * s) + 'px';
+    d.innerHTML = '<span class="region-tag">区' + (i + 1) + '</span>';
+    layer.appendChild(d);
+  });
+}
+
+(function initDraw() {
+  const wrap = document.getElementById('imageWrap');
+  const layer = document.getElementById('drawLayer');
+  wrap.addEventListener('mousedown', (e) => {
+    if (!_reocrMode) return;
+    if (e.button !== 0) return;
+    if (e.target.classList.contains('region-rect')) return;
+    e.preventDefault();
+    const rect = wrap.getBoundingClientRect();
+    _drawStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    _curDraw = document.createElement('div');
+    _curDraw.className = 'draw-rect';
+    _curDraw.style.left = _drawStart.x + 'px';
+    _curDraw.style.top = _drawStart.y + 'px';
+    _curDraw.style.width = '0px';
+    _curDraw.style.height = '0px';
+    layer.appendChild(_curDraw);
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!_reocrMode || !_drawStart || !_curDraw) return;
+    const rect = wrap.getBoundingClientRect();
+    const x = clamp(e.clientX - rect.left, 0, rect.width);
+    const y = clamp(e.clientY - rect.top, 0, rect.height);
+    _curDraw.style.left = Math.min(x, _drawStart.x) + 'px';
+    _curDraw.style.top = Math.min(y, _drawStart.y) + 'px';
+    _curDraw.style.width = Math.abs(x - _drawStart.x) + 'px';
+    _curDraw.style.height = Math.abs(y - _drawStart.y) + 'px';
+  });
+  window.addEventListener('mouseup', () => {
+    if (!_reocrMode || !_drawStart || !_curDraw) return;
+    const img = document.getElementById('pageImage');
+    const left = parseFloat(_curDraw.style.left);
+    const top = parseFloat(_curDraw.style.top);
+    const w = parseFloat(_curDraw.style.width);
+    const h = parseFloat(_curDraw.style.height);
+    _curDraw.remove();
+    _curDraw = null;
+    _drawStart = null;
+    if (w < 8 || h < 8) return;
+    const s = origWidth / Math.max(1, img.clientWidth); // 显示→页面像素
+    _reocrRegions.push({ x0: left * s, y0: top * s, x1: (left + w) * s, y1: (top + h) * s });
+    renderRegions();
+    updateReocrCount();
+  });
+})();
+
+async function doReocr() {
+  if (!_reocrRegions.length) { alert('请先框选区域'); return; }
+  const regions = _reocrRegions.map(r => [
+    Math.round(r.x0), Math.round(r.y0), Math.round(r.x1), Math.round(r.y1)
+  ]);
+  const btn = document.getElementById('doReocrBtn');
+  btn.disabled = true;
+  btn.textContent = 'OCR 中…（可能需数十秒）';
+  try {
+    const body = new URLSearchParams();
+    body.append('regions', JSON.stringify(regions));
+    body.append('replace', 'true');
+    const res = await fetch(
+      `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/reocr`,
+      { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() }
+    );
+    const data = await res.json();
+    if (res.ok && data.status === 'ok') {
+      alert('重OCR完成：替换/新增 ' + data.new_blocks + ' 个文本块');
+      const url = new URL(window.location.href);
+      url.searchParams.delete('block');
+      url.searchParams.delete('line');
+      window.location.href = url.toString();
+    } else {
+      alert('重OCR失败: ' + (data.error || JSON.stringify(data)));
+      btn.disabled = false;
+      btn.textContent = '执行重OCR（替换本页）';
+    }
+  } catch (e) {
+    alert('重OCR出错: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '执行重OCR（替换本页）';
+  }
+}
+
+// ── 移动版 tab ──
+function switchTab(t) {
+  document.getElementById('main').dataset.tab = t;
+  document.getElementById('tabImg').classList.toggle('active', t === 'img');
+  document.getElementById('tabTxt').classList.toggle('active', t === 'txt');
+  if (t === 'img') setTimeout(applyScale, 60);
+}
+
+window.addEventListener('resize', () => {
+  if (!_reocrMode && (!_zoomInited || zoomLevel === null)) { applyZoom(); return; }
+  applyZoom();
+});
 </script>
 {% endif %}
 
