@@ -7,6 +7,9 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
+import tarfile
+import tempfile
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -807,23 +810,27 @@ async def api_docs_query(
 
 @app.post("/collections/{collection}/docs/export-bib")
 async def api_export_bib(collection: str, request: Request):
-    """批量导出 BibTeX。"""
+    """批量导出 BibTeX（ids 为空时导出全部）。"""
     try:
         body = await request.json()
         ids = body.get("ids", [])
-        if not ids:
-            return JSONResponse(status_code=400,
-                                content={"error": "未选择文献"})
 
         conn = get_conn(collection)
         try:
-            placeholders = ",".join("?" * len(ids))
-            rows = conn.execute(
-                f"""SELECT id, cite_key, bib_type, bib_data
-                    FROM documents
-                    WHERE id IN ({placeholders})""",
-                ids,
-            ).fetchall()
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                rows = conn.execute(
+                    f"""SELECT id, cite_key, bib_type, bib_data
+                        FROM documents
+                        WHERE id IN ({placeholders})""",
+                    ids,
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT id, cite_key, bib_type, bib_data
+                        FROM documents
+                        ORDER BY id"""
+                ).fetchall()
         finally:
             conn.close()
 
@@ -902,120 +909,205 @@ async def api_export_md(collection: str, request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@app.post("/collections/{collection}/docs/migrate")
-async def api_migrate_docs(collection: str, request: Request):
-    """批量移植文献到另一个 collection（复制，源保留）。"""
+@app.post("/collections/{collection}/docs/export-archive")
+async def api_export_archive(collection: str, request: Request):
+    """导出选中文献为数据包 (tar.gz)：含 export.db + uploads/ + manifest.json。"""
     try:
         body = await request.json()
         ids = body.get("ids", [])
-        target = body.get("target")
         if not ids:
             return JSONResponse(status_code=400,
                                 content={"error": "未选择文献"})
-        if not target:
-            return JSONResponse(status_code=400,
-                                content={"error": "目标书架未指定"})
-        if target == collection:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "源和目标书架不能相同"},
-            )
 
-        init_db(target)
+        db_path = get_db_path(collection)
+        if not db_path.exists():
+            return JSONResponse(status_code=404,
+                                content={"error": "书架不存在"})
 
+        placeholders = ",".join("?" * len(ids))
+
+        # 1. SQLite backup 到临时 DB，然后只保留选中文献
+        fd, tmp_db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
         src_conn = get_conn(collection)
-        dst_conn = get_conn(target)
-        migrated = 0
-        conflicts = []
-
         try:
-            for doc_id in ids:
-                doc = src_conn.execute(
-                    "SELECT * FROM documents WHERE id = ?", (doc_id,)
-                ).fetchone()
-                if not doc:
-                    continue
-                doc = dict(doc)
+            backup_conn = sqlite3.connect(tmp_db)
+            with src_conn:
+                src_conn.backup(backup_conn)
+            backup_conn.close()
 
-                filename = doc["filename"]
-                existing = dst_conn.execute(
-                    "SELECT id FROM documents WHERE filename = ?",
-                    (filename,),
-                ).fetchone()
-                if existing:
-                    base, ext = os.path.splitext(filename)
-                    filename = f"{base}_migrated{ext}"
-                    conflicts.append(
-                        {
-                            "original": doc["filename"],
-                            "renamed": filename,
-                        }
-                    )
-
-                src_path = get_collections_dir() / "uploads" / doc["filename"]
-                dst_path = get_collections_dir() / "uploads" / filename
-                if src_path.exists() and not dst_path.exists():
-                    shutil.copy2(src_path, dst_path)
-
-                doc.pop("id", None)
-                doc["filename"] = filename
-                cols = [
-                    "cite_key", "title", "author", "filename", "page_count",
-                    "doc_type", "is_primary", "is_secondary",
-                    "is_reference", "source_tags", "bib_type", "bib_data",
-                    "linked_pdf", "created_at",
-                ]
-                placeholders = ",".join("?" * len(cols))
-                cur = dst_conn.execute(
-                    f"INSERT INTO documents ({','.join(cols)}) "
-                    f"VALUES ({placeholders})",
-                    [doc.get(c) for c in cols],
-                )
-                new_doc_id = cur.lastrowid
-
-                line_rows = src_conn.execute(
-                    """SELECT page_num, block_num, line_num, text,
-                              bbox, block_label
-                       FROM lines WHERE doc_id = ?""",
-                    (doc_id,),
-                ).fetchall()
-                for r in line_rows:
-                    dst_conn.execute(
-                        """INSERT INTO lines
-                           (doc_id, page_num, block_num, line_num, text,
-                            bbox, block_label)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            new_doc_id, r["page_num"], r["block_num"],
-                            r["line_num"], r["text"], r["bbox"],
-                            r["block_label"],
-                        ),
-                    )
-
-                fts_rows = src_conn.execute(
-                    """SELECT page_num, block_num, text
-                       FROM blocks_fts WHERE doc_id = ?""",
-                    (doc_id,),
-                ).fetchall()
-                for r in fts_rows:
-                    dst_conn.execute(
-                        """INSERT INTO blocks_fts
-                           (doc_id, page_num, block_num, text)
-                           VALUES (?, ?, ?, ?)""",
-                        (
-                            new_doc_id, r["page_num"], r["block_num"],
-                            r["text"],
-                        ),
-                    )
-
-                migrated += 1
-
-            dst_conn.commit()
+            # 删除非选中文献
+            clean = sqlite3.connect(tmp_db)
+            clean.row_factory = sqlite3.Row
+            clean.execute(f"DELETE FROM lines WHERE doc_id NOT IN ({placeholders})", ids)
+            clean.execute(f"DELETE FROM blocks_fts WHERE doc_id NOT IN ({placeholders})", ids)
+            clean.execute(f"DELETE FROM documents WHERE id NOT IN ({placeholders})", ids)
+            clean.commit()
+            filenames = [r[0] for r in clean.execute(
+                "SELECT filename FROM documents"
+            ).fetchall()]
+            doc_count = clean.execute(
+                "SELECT COUNT(*) FROM documents"
+            ).fetchone()[0]
+            clean.close()
         finally:
             src_conn.close()
-            dst_conn.close()
 
-        return {"migrated": migrated, "conflicts": conflicts}
+        # 2. 打包 tar.gz
+        fd, tmp_tar = tempfile.mkstemp(suffix=".tar.gz")
+        os.close(fd)
+        uploads_dir = get_collections_dir() / "uploads"
+        with tarfile.open(tmp_tar, "w:gz") as tar:
+            tar.add(tmp_db, arcname="export.db")
+            manifest = {
+                "collection": collection,
+                "exported_at": __import__("datetime").datetime.now().isoformat(),
+                "doc_count": doc_count,
+                "filenames": filenames,
+            }
+            manifest_data = json.dumps(manifest, ensure_ascii=False, indent=2)
+            manifest_bytes = manifest_data.encode("utf-8")
+            mi = tarfile.TarInfo(name="manifest.json")
+            mi.size = len(manifest_bytes)
+            tar.addfile(mi, io.BytesIO(manifest_bytes))
+            for fn in filenames:
+                fp = uploads_dir / fn
+                if fp.exists():
+                    tar.add(fp, arcname=f"uploads/{fn}")
+
+        os.unlink(tmp_db)
+
+        with open(tmp_tar, "rb") as f:
+            content = f.read()
+        os.unlink(tmp_tar)
+
+        fname = f"{collection}_export_{doc_count}docs.tar.gz"
+        return Response(
+            content=content,
+            media_type="application/gzip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{fname}"'
+            },
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/collections/{collection}/docs/import-archive")
+async def api_import_archive(collection: str, file: UploadFile = File(...)):
+    """导入数据包 (tar.gz)：三表联动导入到当前 collection。"""
+    try:
+        init_db(collection)
+        raw = await file.read()
+        if not raw:
+            return JSONResponse(status_code=400,
+                                content={"error": "空文件"})
+
+        # 1. 解包到临时目录
+        tmp_dir = tempfile.mkdtemp(prefix="jiage_import_")
+        try:
+            tar_io = io.BytesIO(raw)
+            with tarfile.open(fileobj=tar_io, mode="r:gz") as tar:
+                tar.extractall(tmp_dir)
+
+            tmp_db_path = Path(tmp_dir) / "export.db"
+            if not tmp_db_path.exists():
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "数据包缺少 export.db"},
+                )
+
+            src_uploads = Path(tmp_dir) / "uploads"
+            dst_uploads = get_collections_dir() / "uploads"
+            dst_uploads.mkdir(parents=True, exist_ok=True)
+
+            # 2. 三表联动导入
+            src = sqlite3.connect(str(tmp_db_path))
+            src.row_factory = sqlite3.Row
+            dst = get_conn(collection)
+            imported = 0
+            conflicts = []
+
+            try:
+                doc_rows = src.execute(
+                    "SELECT * FROM documents"
+                ).fetchall()
+                for doc in doc_rows:
+                    doc = dict(doc)
+                    filename = doc["filename"]
+                    existing = dst.execute(
+                        "SELECT id FROM documents WHERE filename = ?",
+                        (filename,),
+                    ).fetchone()
+                    if existing:
+                        base, ext = os.path.splitext(filename)
+                        filename = f"{base}_imported{ext}"
+                        conflicts.append(
+                            {"original": doc["filename"],
+                             "renamed": filename}
+                        )
+
+                    # 拷贝源文件
+                    src_fp = src_uploads / doc["filename"]
+                    dst_fp = dst_uploads / filename
+                    if src_fp.exists() and not dst_fp.exists():
+                        shutil.copy2(src_fp, dst_fp)
+
+                    old_id = doc.pop("id", None)
+                    doc["filename"] = filename
+                    cols = [
+                        "cite_key", "title", "author", "filename",
+                        "page_count", "doc_type", "is_primary",
+                        "is_secondary", "is_reference", "source_tags",
+                        "bib_type", "bib_data", "linked_pdf",
+                        "created_at",
+                    ]
+                    placeholders = ",".join("?" * len(cols))
+                    cur = dst.execute(
+                        f"INSERT INTO documents ({','.join(cols)}) "
+                        f"VALUES ({placeholders})",
+                        [doc.get(c) for c in cols],
+                    )
+                    new_id = cur.lastrowid
+
+                    for r in src.execute(
+                        """SELECT page_num, block_num, line_num, text,
+                                  bbox, block_label
+                           FROM lines WHERE doc_id = ?""",
+                        (old_id,),
+                    ).fetchall():
+                        dst.execute(
+                            """INSERT INTO lines
+                               (doc_id, page_num, block_num, line_num,
+                                text, bbox, block_label)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            (new_id, r["page_num"], r["block_num"],
+                             r["line_num"], r["text"], r["bbox"],
+                             r["block_label"]),
+                        )
+
+                    for r in src.execute(
+                        """SELECT page_num, block_num, text
+                           FROM blocks_fts WHERE doc_id = ?""",
+                        (old_id,),
+                    ).fetchall():
+                        dst.execute(
+                            """INSERT INTO blocks_fts
+                               (doc_id, page_num, block_num, text)
+                               VALUES (?, ?, ?, ?)""",
+                            (new_id, r["page_num"], r["block_num"],
+                             r["text"]),
+                        )
+                    imported += 1
+
+                dst.commit()
+            finally:
+                src.close()
+                dst.close()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        return {"imported": imported, "conflicts": conflicts}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

@@ -151,8 +151,11 @@ td .badge.incollection{background:#f0e8e6;color:#8e44ad;}
       <option value="100">100</option>
     </select>
     <button class="btn" onclick="exportBib()">导出 BibTeX</button>
+    <button class="btn" onclick="exportAllBib()">导出全部 BibTeX</button>
     <button class="btn" onclick="exportMd()">导出 Markdown</button>
-    <button class="btn primary" onclick="openMigrateModal()">移植到…</button>
+    <button class="btn" onclick="exportArchive()">导出数据包</button>
+    <button class="btn" onclick="document.getElementById('importArchiveInput').click()">导入数据包</button>
+    <input type="file" id="importArchiveInput" accept=".tar.gz,.tgz" style="display:none;" onchange="importArchive(this)">
   </div>
 
   <table>
@@ -173,18 +176,6 @@ td .badge.incollection{background:#f0e8e6;color:#8e44ad;}
   </table>
 
   <div class="pager" id="pager"></div>
-</div>
-
-<div class="modal" id="migrateModal">
-  <div class="modal-card">
-    <h3>移植选中文献</h3>
-    <p style="font-size:0.8rem;color:var(--muted);margin-bottom:10px;">源书架保留，向目标书架复制一份（含全文与元数据）。</p>
-    <select id="migrateTarget"></select>
-    <div class="actions">
-      <button class="btn" onclick="closeMigrateModal()">取消</button>
-      <button class="btn primary" onclick="doMigrate()">确认移植</button>
-    </div>
-  </div>
 </div>
 
 <div class="msg" id="msg"></div>
@@ -422,9 +413,37 @@ async function exportBib(){
   await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-bib', {ids}, 'jiage_export.bib', 'application/x-bibtex');
 }
 
+async function exportAllBib(){
+  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-bib', {ids:[]}, collection + '_all.bib', 'application/x-bibtex');
+}
+
 async function exportMd(){
   const ids = getSelectedIds(); if(!ids) return;
   await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-md', {ids}, 'jiage_docs.zip', 'application/zip');
+}
+
+async function exportArchive(){
+  const ids = getSelectedIds(); if(!ids) return;
+  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-archive', {ids}, 'jiage_archive.tar.gz', 'application/gzip');
+}
+
+async function importArchive(input){
+  const f = input.files[0];
+  if(!f) return;
+  input.value = '';
+  showMsg('导入中…请稍候', 'ok');
+  try{
+    const fd = new FormData();
+    fd.append('file', f);
+    const r = await fetch('/collections/' + encodeURIComponent(collection) + '/docs/import-archive', {
+      method:'POST', body: fd
+    });
+    const data = await r.json();
+    if(data.error){showMsg('导入失败: ' + data.error,'err'); return;}
+    selectedIds.clear();
+    loadPage(1);
+    showMsg('已导入 ' + data.imported + ' 篇' + (data.conflicts.length ? '（' + data.conflicts.length + ' 个文件名冲突已重命名）' : ''), 'ok');
+  }catch(e){showMsg('导入失败: ' + e.message,'err');}
 }
 
 async function downloadPost(url, body, filename, mime){
@@ -441,40 +460,11 @@ async function downloadPost(url, body, filename, mime){
   }catch(e){showMsg('导出失败: '+e.message,'err');}
 }
 
-function openMigrateModal(){
-  const ids = getSelectedIds(); if(!ids) return;
-  document.getElementById('migrateModal').classList.add('show');
-}
-
-function closeMigrateModal(){
-  document.getElementById('migrateModal').classList.remove('show');
-}
-
-async function doMigrate(){
-  const target = document.getElementById('migrateTarget').value;
-  if(!target){showMsg('请选择目标书架','err'); return;}
-  const ids = Array.from(selectedIds);
-  try{
-    const r = await fetch('/collections/' + encodeURIComponent(collection) + '/docs/migrate', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ids, target})
-    });
-    const data = await r.json();
-    if(data.error){showMsg(data.error,'err'); return;}
-    closeMigrateModal();
-    selectedIds.clear();
-    loadPage(state.page);
-    showMsg('已移植 '+data.migrated+' 篇' + (data.conflicts.length?'（'+data.conflicts.length+' 个文件名冲突已重命名）':''), 'ok');
-  }catch(e){showMsg('移植失败: '+e.message,'err');}
-}
-
 function showMsg(text, type){
   const m = document.getElementById('msg');
   m.textContent = text; m.className = 'msg show ' + (type || 'ok');
   setTimeout(() => m.classList.remove('show'), 3000);
 }
-
-window.onclick = function(e){ if(e.target.id === 'migrateModal') closeMigrateModal(); };
 
 init();
 </script>
