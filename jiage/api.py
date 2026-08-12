@@ -23,11 +23,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .config import get_collections_dir, list_collections, get_auth_token, get_db_path
+from .config import (
+    get_collections_dir, list_collections, get_auth_token, get_db_path,
+    get_ocr_token, save_ocr_config, get_ocr_method,
+)
 from .db import init_db, get_conn
 from .search import search, get_block_lines, get_context, get_highlight_terms
 from .bib_utils import (
     generate_cite_key, sync_doc_fields, parse_bib_data, to_bibtex,
+    parse_bib_entries, match_docs_to_entries,
     BIB_TYPE_FIELDS, BIB_TYPE_LABELS, BIB_FIELD_LABELS,
 )
 from .ingest import (
@@ -66,7 +70,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="架閣：放書架的地方，也能看書", version=_VERSION, lifespan=lifespan)
+app = FastAPI(title="小書房：放書架的地方，也能看書", version=_VERSION, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -260,6 +264,95 @@ async def api_rename_collection(collection: str, new_name: str = ""):
     if old_coll.exists():
         old_coll.rename(new_coll)
     return {"ok": True, "new_name": new_name}
+
+
+# ── OCR 配置 ────────────────────────────────────────────
+
+@app.get("/api/ocr-config")
+async def api_get_ocr_config():
+    """返回当前 OCR 配置状态 (不泄露 token 明文)。"""
+    from .config import _read_ocr_config
+    cfg = _read_ocr_config()
+    has_token = bool(cfg.get('token', '').strip())
+    return {
+        "provider": cfg.get('provider') or 'paddle_api',
+        "has_token": has_token,
+        "updated_at": cfg.get('updated_at'),
+    }
+
+
+@app.post("/api/ocr-config")
+async def api_set_ocr_config(token: str = Form(...)):
+    """保存 OCR token 到配置文件。"""
+    token = (token or '').strip()
+    if not token:
+        return JSONResponse({"error": "token 不能为空"}, status_code=400)
+    try:
+        cfg = save_ocr_config(token)
+    except OSError as e:
+        return JSONResponse({"error": f"写入配置失败: {e}"}, status_code=500)
+    return {"ok": True, "provider": cfg.get('provider', 'paddle_api')}
+
+
+@app.post("/api/ocr-config/test")
+async def api_test_ocr_config(token: str = Form(None)):
+    """测试 OCR token 连通性: 提交一个空白单页 PDF, 拿到 jobId 即成功。
+
+    token 为空时用已保存的配置。
+    """
+    import tempfile
+    test_token = (token or '').strip()
+    if not test_token:
+        try:
+            test_token = get_ocr_token()
+        except RuntimeError:
+            return JSONResponse(
+                {"ok": False, "error": "未设置 token"}, status_code=400
+            )
+    # 生成最小 1 页空白 PDF
+    fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
+    os.close(fd)
+    try:
+        doc = pymupdf.open()
+        doc.new_page(width=72, height=72)
+        doc.save(tmp_pdf)
+        doc.close()
+        # 直接调 paddle submit, 不轮询
+        import requests as _req
+        r = _req.post(
+            "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
+            headers={"Authorization": f"bearer {test_token}"},
+            data={"model": "PaddleOCR-VL-1.6",
+                  "optionalPayload": '{"useDocOrientationClassify":false}'},
+            files={"file": open(tmp_pdf, 'rb')},
+            timeout=30,
+        )
+        if r.status_code == 200:
+            data = r.json().get('data', {})
+            if data.get('jobId'):
+                return {"ok": True, "job_id": data['jobId']}
+            return JSONResponse(
+                {"ok": False, "error": f"响应无 jobId: {r.text[:200]}"},
+                status_code=502,
+            )
+        if r.status_code in (401, 403):
+            return JSONResponse(
+                {"ok": False, "error": "token 无效或已过期"},
+                status_code=r.status_code,
+            )
+        return JSONResponse(
+            {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"},
+            status_code=502,
+        )
+    except _req.RequestException as e:
+        return JSONResponse(
+            {"ok": False, "error": f"网络错误: {e}"}, status_code=504
+        )
+    finally:
+        try:
+            os.unlink(tmp_pdf)
+        except OSError:
+            pass
 
 
 # ── 搜索 ──────────────────────────────────────────────
@@ -1037,6 +1130,87 @@ async def api_export_md(collection: str, request: Request):
                 "Content-Disposition": "attachment; filename=jiage_docs.zip"
             },
         )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/collections/{collection}/docs/match-bib")
+async def api_match_bib(collection: str, request: Request):
+    """批量匹配: 上传 .bib 文本 + 选中 doc_ids → 返回匹配结果."""
+    try:
+        body = await request.json()
+        bib_text = body.get("bib_text", "")
+        doc_ids = body.get("doc_ids", [])
+        if not bib_text or not doc_ids:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "需要 bib_text 和 doc_ids"})
+
+        entries = parse_bib_entries(bib_text)
+        if not entries:
+            return JSONResponse(
+                status_code=400,
+                content={"error": ".bib 文件中未找到有效条目"})
+
+        conn = get_conn(collection)
+        try:
+            placeholders = ",".join("?" * len(doc_ids))
+            rows = conn.execute(
+                f"SELECT id, title, filename FROM documents WHERE id IN ({placeholders})",
+                doc_ids,
+            ).fetchall()
+        finally:
+            conn.close()
+
+        docs = [dict(r) for r in rows]
+        result = match_docs_to_entries(docs, entries)
+        return result
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/collections/{collection}/docs/batch-patch")
+async def api_batch_patch(collection: str, request: Request):
+    """批量应用书目元数据."""
+    try:
+        body = await request.json()
+        updates = body.get("updates", [])
+        if not updates:
+            return {"applied": 0, "errors": []}
+
+        conn = get_conn(collection)
+        errors = []
+        applied = 0
+        try:
+            existing_keys = {
+                r[0] for r in conn.execute(
+                    "SELECT cite_key FROM documents WHERE cite_key IS NOT NULL"
+                ).fetchall()
+            }
+            for u in updates:
+                doc_id = u.get("doc_id")
+                bib_type = u.get("bib_type", "")
+                bib_data = u.get("bib_data", {})
+                if not doc_id or not bib_data:
+                    continue
+                ck = generate_cite_key(
+                    bib_data, existing_keys,
+                    exclude_key=u.get("old_cite_key"))
+                existing_keys.add(ck)
+                synced = sync_doc_fields(bib_data)
+                conn.execute(
+                    """UPDATE documents
+                       SET cite_key=?, bib_type=?, bib_data=?,
+                           title=COALESCE(?, title), author=COALESCE(?, author)
+                       WHERE id=?""",
+                    (ck, bib_type, json.dumps(bib_data, ensure_ascii=False),
+                     synced["title"], synced["author"], doc_id),
+                )
+                applied += 1
+            conn.commit()
+        finally:
+            conn.close()
+        return {"applied": applied, "errors": errors}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

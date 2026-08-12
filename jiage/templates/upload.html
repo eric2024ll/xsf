@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="/favicon.ico">
-<title>资料上传 — 架閣</title>
+<title>资料上传 — 小書房</title>
 <link rel="stylesheet" href="/static/app.css">
 <style>
 .main { max-width: 700px; margin: 0 auto; padding: 20px; }
@@ -68,6 +68,30 @@
 .import-status.ok { background: #d4edda; color: #155724; }
 .import-status.err { background: #f8d7da; color: #721c24; }
 .import-status.loading { background: var(--accent); color: var(--primary); }
+
+/* OCR 设置 */
+.ocr-form { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+.ocr-form .field { margin-bottom: 14px; }
+.ocr-form label { font-size: 0.82rem; color: var(--text-muted); display: block; margin-bottom: 3px; }
+.ocr-form .provider-label { font-size: 0.9rem; font-weight: 600; color: var(--primary); }
+.ocr-form .token-row { display: flex; gap: 6px; align-items: center; }
+.ocr-form .token-row input { flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 5px; font-size: 0.85rem; font-family: monospace; }
+.ocr-form .token-row button { padding: 6px 10px; font-size: 0.78rem; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); cursor: pointer; white-space: nowrap; }
+.ocr-form .actions { display: flex; gap: 8px; margin-top: 10px; }
+.ocr-form .actions button { padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
+.ocr-form .btn-test { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+.ocr-form .btn-save { background: var(--success); color: white; }
+.ocr-form .actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.ocr-form .hint { font-size: 0.8rem; color: var(--text-muted); line-height: 1.7; }
+.ocr-form .hint a { color: var(--primary); }
+.ocr-status { margin-top: 8px; font-size: 0.8rem; padding: 6px 10px; border-radius: 5px; display: none; }
+.ocr-status.show { display: block; }
+.ocr-status.ok { background: #d4edda; color: #155724; }
+.ocr-status.err { background: #f8d7da; color: #721c24; }
+.ocr-status.loading { background: var(--accent); color: var(--primary); }
+.ocr-current { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 12px; }
+.ocr-current .badge-ok { color: var(--success); font-weight: 600; }
+.ocr-current .badge-no { color: var(--danger); font-weight: 600; }
 </style>
 </head>
 <body data-page="upload">
@@ -76,6 +100,7 @@
   <div class="tab-bar">
     <button class="active" onclick="switchTab('upload',this)">上传文件</button>
     <button onclick="switchTab('import',this)">导入数据包</button>
+    <button onclick="switchTab('ocr',this)">OCR 设置</button>
   </div>
 
   <!-- Tab1: 上传文件 -->
@@ -135,6 +160,33 @@
       </div>
       <input type="file" id="importArchiveInput" accept=".tar.gz,.tgz" style="display:none;" onchange="importArchive(this)">
       <div class="import-status" id="importStatus"></div>
+    </div>
+  </div>
+
+  <!-- Tab3: OCR 设置 -->
+  <div class="tab-pane" id="tab-ocr">
+    <div class="ocr-form">
+      <div class="ocr-current" id="ocrCurrent"></div>
+      <div class="field">
+        <label>OCR 引擎</label>
+        <span class="provider-label">PaddleOCR-VL</span>
+      </div>
+      <div class="field">
+        <label>Bearer Token</label>
+        <div class="token-row">
+          <input type="password" id="ocrTokenInput" placeholder="粘贴 aistudio bearer token…">
+          <button type="button" onclick="toggleTokenVisibility()">显示</button>
+        </div>
+      </div>
+      <div class="hint">
+        从 <a href="https://aistudio.baidu.com/" target="_blank">aistudio</a> 获取 token（F12 → Application → Cookies → CLI_SESSION_TOKEN 或 API 页面的 bearer 值）。
+        Token 保存在服务端配置文件，环境变量 <code>PADDLE_OCR_TOKEN</code> 作为回退。
+      </div>
+      <div class="actions">
+        <button class="btn-test" id="ocrTestBtn" onclick="testOcrToken()">测试连通</button>
+        <button class="btn-save" id="ocrSaveBtn" onclick="saveOcrToken()">保存</button>
+      </div>
+      <div class="ocr-status" id="ocrStatus"></div>
     </div>
   </div>
 </div>
@@ -260,6 +312,67 @@ async function importArchive(input){
     st.textContent='已导入 '+data.imported+' 篇'+(data.conflicts.length?'（'+data.conflicts.length+' 个文件名冲突已重命名）':'');
   }catch(e){st.className='import-status show err';st.textContent='导入失败: '+e.message;}
 }
+
+/* ── OCR 设置 ── */
+function ocrStatusEl(msg, cls) {
+  var st = document.getElementById('ocrStatus');
+  st.className = 'ocr-status show ' + cls;
+  st.textContent = msg;
+}
+function toggleTokenVisibility() {
+  var inp = document.getElementById('ocrTokenInput');
+  var btn = inp.nextElementSibling;
+  if (inp.type === 'password') { inp.type = 'text'; btn.textContent = '隐藏'; }
+  else { inp.type = 'password'; btn.textContent = '显示'; }
+}
+async function loadOcrConfig() {
+  try {
+    var r = await fetch('/api/ocr-config');
+    var data = await r.json();
+    var el = document.getElementById('ocrCurrent');
+    if (data.has_token) {
+      el.innerHTML = '当前状态: <span class="badge-ok">✓ 已设置</span>' +
+        (data.updated_at ? ' (更新于 ' + escapeHtml(data.updated_at + '') + ')' : '');
+    } else {
+      el.innerHTML = '当前状态: <span class="badge-no">✗ 未设置</span> （环境变量有回退时仍可用）';
+    }
+  } catch (e) { /* 静默 */ }
+}
+async function testOcrToken() {
+  var token = document.getElementById('ocrTokenInput').value.trim();
+  var btn = document.getElementById('ocrTestBtn');
+  btn.disabled = true;
+  ocrStatusEl('测试中…', 'loading');
+  try {
+    var fd = new FormData();
+    fd.append('token', token);
+    var r = await fetch('/api/ocr-config/test', { method: 'POST', body: fd });
+    var data = await r.json();
+    if (data.ok) { ocrStatusEl('✓ 连通成功' + (data.job_id ? ' (job: ' + data.job_id + ')' : ''), 'ok'); }
+    else { ocrStatusEl('✗ ' + (data.error || '测试失败'), 'err'); }
+  } catch (e) { ocrStatusEl('✗ 网络错误: ' + e.message, 'err'); }
+  btn.disabled = false;
+}
+async function saveOcrToken() {
+  var token = document.getElementById('ocrTokenInput').value.trim();
+  if (!token) { alert('请输入 token'); return; }
+  var btn = document.getElementById('ocrSaveBtn');
+  btn.disabled = true;
+  ocrStatusEl('保存中…', 'loading');
+  try {
+    var fd = new FormData();
+    fd.append('token', token);
+    var r = await fetch('/api/ocr-config', { method: 'POST', body: fd });
+    var data = await r.json();
+    if (data.ok) {
+      ocrStatusEl('✓ 已保存', 'ok');
+      document.getElementById('ocrTokenInput').value = '';
+      loadOcrConfig();
+    } else { ocrStatusEl('✗ ' + (data.error || '保存失败'), 'err'); }
+  } catch (e) { ocrStatusEl('✗ 网络错误: ' + e.message, 'err'); }
+  btn.disabled = false;
+}
+loadOcrConfig();
 </script>
 </body>
 </html>

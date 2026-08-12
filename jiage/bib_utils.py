@@ -4,8 +4,12 @@ cite_key 自动生成 + documents 冗余列同步 + biblatex 字段预设。
 """
 import json
 import re
+from pathlib import Path
 
+from opencc import OpenCC
 from pypinyin import lazy_pinyin, Style
+
+_t2s = OpenCC('t2s')
 
 BIB_TYPE_FIELDS = {
     "@article": ["author", "title", "journal", "year", "volume", "number", "pages"],
@@ -169,3 +173,205 @@ def to_bibtex(cite_key: str, bib_type: str, bib_data: dict) -> str:
         lines[-1] = lines[-1].rstrip(",")
     lines.append("}")
     return "\n".join(lines) + "\n"
+
+
+# ── 批量 .bib 解析 + 匹配 ────────────────────────────────
+
+def parse_bib_entries(text: str) -> list[dict]:
+    """解析 .bib 文本 → 条目列表.
+
+    每条: {type: '@article', cite_key: '...', fields: {title: ..., author: ...}}
+    跳过 @string/@comment/@preamble.
+    """
+    entries = []
+    i, n = 0, len(text)
+    while i < n:
+        at = text.find('@', i)
+        if at == -1:
+            break
+        j = at + 1
+        while j < n and (text[j].isalnum() or text[j] in '_-'):
+            j += 1
+        entry_type = text[at + 1:j].lower()
+        while j < n and text[j] in ' \t\n\r':
+            j += 1
+        if j >= n or text[j] not in '{(':
+            i = at + 1
+            continue
+        opener = text[j]
+        closer = '}' if opener == '{' else ')'
+        depth, k = 1, j + 1
+        while k < n and depth > 0:
+            if text[k] == opener:
+                depth += 1
+            elif text[k] == closer:
+                depth -= 1
+            k += 1
+        if depth != 0:
+            break
+        body = text[j + 1:k - 1]
+        i = k
+        if entry_type in ('string', 'comment', 'preamble'):
+            continue
+        comma = _find_top_comma(body)
+        if comma == -1:
+            cite_key, fields_text = body.strip(), ''
+        else:
+            cite_key, fields_text = body[:comma].strip(), body[comma + 1:]
+        fields = _parse_bib_fields(fields_text)
+        entries.append({
+            'type': '@' + entry_type,
+            'cite_key': cite_key,
+            'fields': fields,
+        })
+    return entries
+
+
+def _find_top_comma(s: str) -> int:
+    """找第一层级的逗号位置 (不被花括号/引号包裹)."""
+    depth, in_quote = 0, False
+    for i, ch in enumerate(s):
+        if ch == '"':
+            in_quote = not in_quote
+        elif not in_quote:
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+            elif ch == ',' and depth == 0:
+                return i
+    return -1
+
+
+def _parse_bib_fields(text: str) -> dict:
+    """解析 field = {value} / "value" / bare 对."""
+    fields = {}
+    i, n = 0, len(text)
+    while i < n:
+        while i < n and text[i] in ' \t\n\r,':
+            i += 1
+        if i >= n:
+            break
+        start = i
+        while i < n and (text[i].isalnum() or text[i] in '_-'):
+            i += 1
+        if i == start:
+            i += 1
+            continue
+        key = text[start:i].lower()
+        while i < n and text[i] in ' \t\n\r':
+            i += 1
+        if i >= n or text[i] != '=':
+            continue
+        i += 1
+        while i < n and text[i] in ' \t\n\r':
+            i += 1
+        if i >= n:
+            break
+        if text[i] == '{':
+            depth, i = 1, i + 1
+            start = i
+            while i < n and depth > 0:
+                if text[i] == '{':
+                    depth += 1
+                elif text[i] == '}':
+                    depth -= 1
+                if depth > 0:
+                    i += 1
+            val = text[start:i]
+            i += 1
+        elif text[i] == '"':
+            i += 1
+            start = i
+            while i < n and text[i] != '"':
+                i += 1
+            val = text[start:i]
+            i += 1
+        else:
+            start = i
+            while i < n and text[i] not in ',\n':
+                i += 1
+            val = text[start:i].strip()
+        val = val.strip()
+        if val:
+            fields[key] = val
+    return fields
+
+
+def normalize_title(s: str) -> str:
+    """标题归一化: 繁→简, 仅保留 CJK+字母+数字, 小写."""
+    if not s:
+        return ''
+    s = _t2s.convert(s)
+    return re.sub(r'[^\u4e00-\u9fff\u3400-\u4dbfa-z0-9]', '', s.lower())
+
+
+def match_docs_to_entries(docs: list[dict], entries: list[dict]) -> dict:
+    """将文献匹配到 .bib 条目.
+
+    docs: [{id, title, filename}, ...]
+    entries: [{type, cite_key, fields}, ...]
+
+    返回 {entries, matched, ambiguous, unmatched_docs}
+    """
+    for e in entries:
+        e['_norm'] = normalize_title(e.get('fields', {}).get('title', ''))
+
+    used = set()
+    matched = []
+    ambiguous = []
+    unmatched_docs = []
+
+    for doc in docs:
+        dt = normalize_title(doc.get('title') or '')
+        fn = doc.get('filename') or ''
+        df = normalize_title(Path(fn).stem if fn else '')
+
+        exact_hits, sub_hits = [], []
+        for idx, e in enumerate(entries):
+            et = e['_norm']
+            if not et:
+                continue
+            if dt and dt == et:
+                exact_hits.append((idx, 'exact', 'title'))
+            elif df and df == et:
+                exact_hits.append((idx, 'exact', 'filename'))
+            elif dt and len(dt) >= 2 and (dt in et or et in dt):
+                sub_hits.append((idx, 'substring', 'title'))
+            elif df and len(df) >= 2 and (df in et or et in df):
+                sub_hits.append((idx, 'substring', 'filename'))
+
+        doc_title = doc.get('title') or doc.get('filename') or '(无标题)'
+        all_hits = exact_hits + sub_hits
+        if len(all_hits) == 0:
+            unmatched_docs.append({
+                'doc_id': doc['id'],
+                'doc_title': doc_title,
+                'filename': doc.get('filename', ''),
+            })
+        elif len(all_hits) == 1:
+            h = all_hits[0]
+            used.add(h[0])
+            matched.append({
+                'doc_id': doc['id'],
+                'doc_title': doc_title,
+                'entry_idx': h[0],
+                'match_type': h[1],
+                'match_source': h[2],
+            })
+        else:
+            ambiguous.append({
+                'doc_id': doc['id'],
+                'doc_title': doc_title,
+                'candidates': all_hits,
+            })
+
+    for e in entries:
+        e.pop('_norm', None)
+
+    return {
+        'entries': entries,
+        'matched': matched,
+        'ambiguous': ambiguous,
+        'unmatched_docs': unmatched_docs,
+    }

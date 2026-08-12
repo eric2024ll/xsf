@@ -25,13 +25,8 @@ RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
 def _get_token():
-    token = os.environ.get("PADDLE_OCR_TOKEN")
-    if not token:
-        raise RuntimeError(
-            "PADDLE_OCR_TOKEN 环境变量未设置。"
-            "请在 aistudio 获取 bearer token 后设置。"
-        )
-    return token
+    from ..config import get_ocr_token
+    return get_ocr_token()
 
 
 def _is_retryable(exc):

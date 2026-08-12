@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="/favicon.ico">
-<title>文献列表 — 架閣</title>
+<title>文献列表 — 小書房</title>
 <link rel="stylesheet" href="/static/app.css">
 <style>
 .container{max-width:1200px;margin:0 auto;padding:20px;}
@@ -38,6 +38,20 @@ td .badge.manuscript{background:#f9f2e6;color:#b38b00;}
 td .badge.online{background:#f4e8f4;color:#8e44ad;}
 td .badge.incollection{background:#f0e8e6;color:#8e44ad;}
 .actions a{font-size:0.8rem;margin-right:8px;}
+.bm-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:200;align-items:center;justify-content:center;}
+.bm-modal{background:var(--card-bg);border-radius:var(--radius);width:90%;max-width:800px;max-height:85vh;display:flex;flex-direction:column;}
+.bm-header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border);}
+.bm-title{font-weight:700;font-size:1rem;}
+.bm-close{background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--text-muted);}
+.bm-body{padding:18px;overflow-y:auto;flex:1;}
+.bm-section{margin-bottom:16px;}
+.bm-section-title{font-weight:600;font-size:0.88rem;margin-bottom:8px;color:var(--primary);}
+.bm-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--bg);font-size:0.82rem;}
+.bm-row .bm-doc{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.bm-row .bm-arrow{color:var(--text-muted);}
+.bm-row .bm-entry{flex:1.5;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.bm-row .bm-type{font-family:monospace;font-size:0.72rem;color:var(--text-muted);}
+.bm-select{max-width:300px;padding:4px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;}
 .empty{padding:40px;text-align:center;color:var(--text-muted);}
 .pager{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:16px;}
 .pager button{min-width:28px;padding:4px 8px;border:1px solid var(--border);border-radius:5px;background:var(--card-bg);cursor:pointer;}
@@ -95,6 +109,7 @@ td .badge.incollection{background:#f0e8e6;color:#8e44ad;}
     <button class="btn" onclick="exportAllBib()">导出全部 BibTeX</button>
     <button class="btn" onclick="exportMd()">导出 Markdown</button>
     <button class="btn" onclick="exportArchive()">导出数据包</button>
+    <button class="btn" onclick="openBibMatch()" id="btnBibMatch">批量导入 BibTeX</button>
   </div>
 
   <table>
@@ -115,6 +130,31 @@ td .badge.incollection{background:#f0e8e6;color:#8e44ad;}
   </table>
 
   <div class="pager" id="pager"></div>
+</div>
+
+<div class="bm-overlay" id="bmOverlay">
+  <div class="bm-modal">
+    <div class="bm-header">
+      <span class="bm-title">批量导入 BibTeX</span>
+      <button class="bm-close" onclick="closeBibMatch()">&times;</button>
+    </div>
+    <div class="bm-body">
+      <div id="bmStep1">
+        <input type="file" id="bmFile" accept=".bib,.bibtex,.txt" onchange="bmLoadFile(this)" style="margin-bottom:10px;">
+        <div style="margin:8px 0;color:var(--text-muted);font-size:0.82rem;">或直接粘贴 .bib 内容:</div>
+        <textarea id="bmPaste" rows="10" placeholder="@article{...}" style="width:100%;font-family:monospace;font-size:0.82rem;padding:8px;border:1px solid var(--border);border-radius:5px;box-sizing:border-box;"></textarea>
+        <div style="margin-top:12px;text-align:right;">
+          <button class="btn" onclick="startBibMatch()">开始匹配</button>
+        </div>
+      </div>
+      <div id="bmStep2" style="display:none;">
+        <div id="bmResults"></div>
+        <div style="margin-top:12px;text-align:right;">
+          <button class="btn" onclick="applyBibMatch()">应用选中项</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="msg" id="msg"></div>
@@ -352,6 +392,105 @@ function showMsg(text, type){
   const m = document.getElementById('msg');
   m.textContent = text; m.className = 'msg show ' + (type || 'ok');
   setTimeout(() => m.classList.remove('show'), 3000);
+}
+
+let bmState = {entries: []};
+
+function openBibMatch(){
+  if(!getSelectedIds()) return;
+  document.getElementById('bmOverlay').style.display = 'flex';
+  document.getElementById('bmStep1').style.display = '';
+  document.getElementById('bmStep2').style.display = 'none';
+  document.getElementById('bmPaste').value = '';
+  document.getElementById('bmFile').value = '';
+}
+function closeBibMatch(){document.getElementById('bmOverlay').style.display = 'none';}
+function bmLoadFile(input){
+  const f = input.files[0]; if(!f) return;
+  const rd = new FileReader();
+  rd.onload = e => {document.getElementById('bmPaste').value = e.target.result;};
+  rd.readAsText(f);
+}
+async function startBibMatch(){
+  const txt = document.getElementById('bmPaste').value.trim();
+  if(!txt){showMsg('请粘贴或上传 .bib 内容','err'); return;}
+  const ids = Array.from(selectedIds);
+  try{
+    const r = await fetch('/collections/' + encodeURIComponent(collection) + '/docs/match-bib', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({bib_text: txt, doc_ids: ids})
+    });
+    const d = await r.json();
+    if(!r.ok){showMsg(d.error||'匹配失败','err'); return;}
+    bmState = d;
+    renderBmResults(d);
+    document.getElementById('bmStep1').style.display = 'none';
+    document.getElementById('bmStep2').style.display = '';
+  }catch(e){showMsg('请求失败: '+e.message,'err');}
+}
+function entryLabel(e){
+  const t = e.fields.title || '(无标题)';
+  const a = e.fields.author ? ' / '+e.fields.author : '';
+  return t + a + ' ['+e.type+']';
+}
+function renderBmResults(data){
+  let h = '';
+  const allOpts = data.entries.map((e,i) => '<option value="'+i+'">'+escapeHtml(entryLabel(e))+'</option>').join('');
+  if(data.matched.length){
+    h += '<div class="bm-section"><div class="bm-section-title">✅ 已匹配 ('+data.matched.length+')</div>';
+    data.matched.forEach(m => {
+      const e = data.entries[m.entry_idx];
+      const tag = m.match_type==='substring'?' ⚠️模糊':'';
+      h += '<div class="bm-row"><input type="checkbox" checked data-doc="'+m.doc_id+'" data-idx="'+m.entry_idx+'" class="bm-check">'+
+        '<span class="bm-doc">'+escapeHtml(m.doc_title)+'</span><span class="bm-arrow">→</span>'+
+        '<span class="bm-entry">'+escapeHtml(e.fields.title||'')+' <span class="bm-type">'+e.type+'</span>'+tag+'</span></div>';
+    });
+    h += '</div>';
+  }
+  if(data.ambiguous.length){
+    h += '<div class="bm-section"><div class="bm-section-title">⚠️ 待确认 ('+data.ambiguous.length+')</div>';
+    data.ambiguous.forEach(a => {
+      h += '<div class="bm-row"><span class="bm-doc">'+escapeHtml(a.doc_title)+'</span><span class="bm-arrow">→</span>'+
+        '<select class="bm-select" data-doc="'+a.doc_id+'"><option value="">-- 跳过 --</option>'+
+        a.candidates.map(c => '<option value="'+c[0]+'">'+escapeHtml(entryLabel(data.entries[c[0]]))+'</option>').join('')+
+        '</select></div>';
+    });
+    h += '</div>';
+  }
+  if(data.unmatched_docs.length){
+    h += '<div class="bm-section"><div class="bm-section-title">❌ 未匹配 ('+data.unmatched_docs.length+')</div>';
+    data.unmatched_docs.forEach(d => {
+      h += '<div class="bm-row"><span class="bm-doc">'+escapeHtml(d.doc_title)+'</span><span class="bm-arrow">→</span>'+
+        '<select class="bm-select" data-doc="'+d.doc_id+'"><option value="">-- 跳过 --</option>'+allOpts+'</select></div>';
+    });
+    h += '</div>';
+  }
+  document.getElementById('bmResults').innerHTML = h || '<div style="padding:20px;text-align:center;color:var(--text-muted);">无结果</div>';
+}
+async function applyBibMatch(){
+  const updates = [];
+  document.querySelectorAll('.bm-check:checked').forEach(cb => {
+    const e = bmState.entries[parseInt(cb.dataset.idx)];
+    updates.push({doc_id: parseInt(cb.dataset.doc), bib_type: e.type, bib_data: e.fields});
+  });
+  document.querySelectorAll('.bm-select').forEach(sel => {
+    if(sel.value){
+      const e = bmState.entries[parseInt(sel.value)];
+      updates.push({doc_id: parseInt(sel.dataset.doc), bib_type: e.type, bib_data: e.fields});
+    }
+  });
+  if(!updates.length){showMsg('没有选中任何匹配','err'); return;}
+  try{
+    const r = await fetch('/collections/' + encodeURIComponent(collection) + '/docs/batch-patch', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({updates})
+    });
+    const d = await r.json();
+    if(!r.ok){showMsg(d.error||'应用失败','err'); return;}
+    closeBibMatch();
+    showMsg('已应用 '+d.applied+' 条元数据','ok');
+    loadPage(state.page);
+  }catch(e){showMsg('请求失败: '+e.message,'err');}
 }
 
 init();

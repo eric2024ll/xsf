@@ -1,4 +1,7 @@
+import json
 import os
+import tempfile
+from datetime import datetime
 from pathlib import Path
 
 
@@ -48,20 +51,68 @@ def get_collections_dir() -> Path:
     return d
 
 
+def get_ocr_config_path() -> Path:
+    """OCR 配置文件路径: <JIAGE_DATA>/ocr-config.json"""
+    return get_data_dir() / 'ocr-config.json'
+
+
+def _read_ocr_config() -> dict:
+    """读取 OCR 配置文件。损坏/不存在返回 {}。"""
+    p = get_ocr_config_path()
+    try:
+        return json.loads(p.read_text('utf-8'))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_ocr_config(data: dict) -> None:
+    """原子写 OCR 配置文件 (tempfile + rename)，权限 600。"""
+    p = get_ocr_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, str(p))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def get_ocr_token() -> str:
-    """PADDLE_OCR_TOKEN 环境变量 (强制)。"""
+    """OCR bearer token: 配置文件优先，环境变量 PADDLE_OCR_TOKEN fallback。"""
+    cfg = _read_ocr_config()
+    token = cfg.get('token', '').strip()
+    if token:
+        return token
     token = os.environ.get('PADDLE_OCR_TOKEN')
     if not token:
         raise RuntimeError(
-            'PADDLE_OCR_TOKEN 环境变量未设置。'
-            '请在 aistudio 获取 bearer token 后设置。'
+            'OCR token 未设置。请在前端「OCR 设置」填入，'
+            '或设置 PADDLE_OCR_TOKEN 环境变量。'
         )
     return token
 
 
+def save_ocr_config(token: str, provider: str = 'paddle_api') -> dict:
+    """保存 OCR 配置。返回写入的完整 dict。"""
+    cfg = _read_ocr_config()
+    cfg['provider'] = provider
+    if token:
+        cfg['token'] = token.strip()
+    cfg['updated_at'] = datetime.now().isoformat(timespec='seconds')
+    _write_ocr_config(cfg)
+    return cfg
+
+
 def get_ocr_method() -> str:
-    """JIAGE_OCR_METHOD 环境变量，默认 paddle_api。"""
-    return os.environ.get('JIAGE_OCR_METHOD', 'paddle_api')
+    """OCR provider 名: 配置文件优先，环境变量 JIAGE_OCR_METHOD fallback。"""
+    cfg = _read_ocr_config()
+    return cfg.get('provider') or os.environ.get('JIAGE_OCR_METHOD', 'paddle_api')
 
 
 def get_auth_token() -> str | None:
