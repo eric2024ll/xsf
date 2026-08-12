@@ -201,7 +201,7 @@ async def api_search(collection: str, q: str, limit: int = 20,
                 "filename": r.get("filename"),
                 "title": r.get("title") or r.get("filename"),
                 "cite_key": r.get("cite_key"),
-                "text": text,
+                "text": _highlight_keyword(text, q),
             })
         return {"query": q, "collection": collection,
                 "count": len(out), "results": out}
@@ -610,6 +610,59 @@ async def api_update_doc(collection: str, doc_id: int,
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.post("/collections/{collection}/doc/{doc_id}/link-pdf")
+async def api_link_pdf(collection: str, doc_id: int,
+                       file: UploadFile = File(...)):
+    """为文本文档（如 md）关联 PDF 文件（纯展示，不 OCR）。"""
+    try:
+        fname = file.filename or "linked.pdf"
+        ext = _file_ext(fname)
+        if ext != 'pdf':
+            return JSONResponse(
+                status_code=400,
+                content={"error": "仅支持 PDF 文件"},
+            )
+
+        upload_dir = get_collections_dir() / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        dst = upload_dir / fname
+        content = await file.read()
+        with open(dst, "wb") as f:
+            f.write(content)
+
+        page_count = 1
+        try:
+            pdf_doc = pymupdf.open(dst)
+            page_count = len(pdf_doc)
+            pdf_doc.close()
+        except Exception:
+            pass
+
+        conn = get_conn(collection)
+        try:
+            cur = conn.execute(
+                "UPDATE documents SET linked_pdf = ? WHERE id = ?",
+                (fname, doc_id),
+            )
+            if cur.rowcount == 0:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"文献 id={doc_id} 不存在"},
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {
+            "status": "ok",
+            "doc_id": doc_id,
+            "linked_pdf": fname,
+            "page_count": page_count,
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 # ── 文献列表 ──────────────────────────────────────────
 
 @app.get("/collections/{collection}/docs")
@@ -640,7 +693,8 @@ async def api_docs(collection: str, limit: int = 50):
 
 @app.get("/collections/{collection}/doc/{doc_id}/content")
 async def api_doc_content(collection: str, doc_id: int,
-                          page: int = None, limit: int = 0):
+                          page: int = None, limit: int = 0,
+                          q: str = None):
     """返回单个文献的内容，按页/块/行组织。
 
     page: 指定页码则只返回该页；省略则返回所有页。
@@ -699,7 +753,7 @@ async def api_doc_content(collection: str, doc_id: int,
                 }
             pages_map[pn][bn]["lines"].append({
                 "line_num": r["line_num"],
-                "text": r["text"],
+                "text": _highlight_keyword(r["text"], q or ""),
             })
             total_lines += 1
 
@@ -729,18 +783,20 @@ async def api_doc_content(collection: str, doc_id: int,
 # ── 关键词高亮 helper ───────────────────────────────────
 
 def _highlight_keyword(text: str, keyword: str) -> str:
-    """把 keyword 中的空格/空白分隔词在 text 里高亮为 <mark>。"""
+    """把 keyword 中的空格/空白分隔词在 text 里高亮为 <mark>（繁简互转）。"""
     if not text or not keyword:
         return html.escape(text or "")
+    from .search import _s2t, _t2s
+
     tokens = [t for t in keyword.split() if t.strip()]
     if not tokens:
         return html.escape(text)
     result = html.escape(text)
     for tok in tokens:
-        pattern = re.compile(
-            f'({re.escape(tok)})',
-            re.IGNORECASE,
-        )
+        variants = {tok, _s2t.convert(tok), _t2s.convert(tok)}
+        variants = {v for v in variants if v}
+        alt = '|'.join(re.escape(v) for v in sorted(variants))
+        pattern = re.compile(f'({alt})', re.IGNORECASE)
         result = pattern.sub(r'<mark>\1</mark>', result)
     return result
 
@@ -763,7 +819,7 @@ async def proofread_page(
         try:
             doc = conn.execute(
                 """SELECT id, title, author, filename, page_count, doc_type,
-                          source_tags, bib_type, bib_data, cite_key
+                          source_tags, bib_type, bib_data, cite_key, linked_pdf
                    FROM documents WHERE id = ?""",
                 (doc_id,),
             ).fetchone()
@@ -779,6 +835,19 @@ async def proofread_page(
                 )
 
             page_count = doc["page_count"] or 1
+
+            # md 文档关联了 PDF 时，翻页范围跟随 PDF
+            linked_pdf = doc["linked_pdf"] if "linked_pdf" in doc.keys() else None
+            if linked_pdf:
+                lp_path = get_collections_dir() / "uploads" / linked_pdf
+                if lp_path.exists():
+                    try:
+                        lp_doc = pymupdf.open(lp_path)
+                        page_count = max(page_count, len(lp_doc))
+                        lp_doc.close()
+                    except Exception:
+                        pass
+
             page_num = max(1, min(page, page_count))
 
             rows = conn.execute(
@@ -894,6 +963,7 @@ async def proofread_page(
                 "bib_type_labels": BIB_TYPE_LABELS,
                 "bib_field_labels": BIB_FIELD_LABELS,
                 "bib_type_fields": BIB_TYPE_FIELDS,
+                "linked_pdf": linked_pdf,
             },
         )
     except Exception as e:
@@ -917,7 +987,7 @@ async def page_image(collection: str, doc_id: int, page_num: int):
         conn = get_conn(collection)
         try:
             doc = conn.execute(
-                "SELECT filename FROM documents WHERE id = ?",
+                "SELECT filename, linked_pdf FROM documents WHERE id = ?",
                 (doc_id,),
             ).fetchone()
             if doc is None:
@@ -925,7 +995,7 @@ async def page_image(collection: str, doc_id: int, page_num: int):
                     status_code=404,
                     content={"error": "文献不存在"},
                 )
-            filename = doc["filename"]
+            filename = doc["linked_pdf"] or doc["filename"]
         finally:
             conn.close()
 

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS documents (
     source_tags TEXT DEFAULT '["primary"]',
     bib_type TEXT DEFAULT NULL,
     bib_data TEXT DEFAULT NULL,
+    linked_pdf TEXT DEFAULT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(filename)
 );
@@ -97,6 +98,8 @@ def _migrate(conn):
         conn.execute("ALTER TABLE documents ADD COLUMN bib_type TEXT DEFAULT NULL")
     if "bib_data" not in doc_cols:
         conn.execute("ALTER TABLE documents ADD COLUMN bib_data TEXT DEFAULT NULL")
+    if "linked_pdf" not in doc_cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN linked_pdf TEXT DEFAULT NULL")
 
 
 def init_db(collection: str):

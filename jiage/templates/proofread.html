@@ -266,6 +266,33 @@ header h1 {
 }
 .block-group.md-flat .line-num { display: none; }
 
+.link-pdf-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px;
+  background: var(--bg);
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  margin: 20px auto;
+  max-width: 500px;
+}
+.link-pdf-btn {
+  display: inline-block;
+  padding: 8px 18px;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.link-pdf-btn:hover { opacity: 0.85; }
+.link-pdf-hint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
 .block-header {
   font-size: 0.78rem;
   font-weight: 600;
@@ -560,6 +587,7 @@ mark {
 <div class="error-box">{{ error }}</div>
 {% else %}
 {% set is_md = doc.doc_type == 'markdown' %}
+{% set has_pdf = is_md and linked_pdf %}
 
 <header>
   <a href="/" class="site-name">架閣</a>
@@ -634,9 +662,26 @@ mark {
       <div class="draw-layer" id="drawLayer"></div>
     </div>
   </div>
+  {% elif has_pdf %}
+  <div class="left" id="leftPanel" style="overflow:auto;">
+    <div class="image-wrap" style="max-width:100%;">
+      <img id="pageImage" draggable="false"
+           src="/collections/{{ collection }}/doc/{{ doc.id }}/page/{{ page_num }}/image"
+           alt="第 {{ page_num }} 页"
+           style="width:100%;height:auto;display:block;">
+    </div>
+  </div>
+  {% else %}
+  <div class="link-pdf-bar">
+    <label class="link-pdf-btn">
+      关联 PDF
+      <input type="file" accept=".pdf" onchange="uploadLinkedPdf(this)" hidden>
+    </label>
+    <span class="link-pdf-hint">上传 PDF 关联此文档（纯展示，不 OCR）</span>
+  </div>
   {% endif %}
 
-  <div class="right{% if is_md %} md-mode{% endif %}" id="textPanel">
+  <div class="right{% if is_md and not has_pdf %} md-mode{% endif %}" id="textPanel">
     {% for b in blocks %}
     <div class="block-group{% if is_md %} md-flat{% endif %}" id="block-{{ b.block_num }}" data-block-num="{{ b.block_num }}">
       {% if not is_md %}
@@ -1369,6 +1414,26 @@ window.addEventListener('resize', () => {
   if (!_reocrMode && (!_zoomInited || zoomLevel === null)) { applyZoom(); return; }
   applyZoom();
 });
+
+// ── md 关联 PDF 上传 ──
+async function uploadLinkedPdf(input) {
+  if (!input.files || !input.files[0]) return;
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  try {
+    const r = await fetch(`/collections/${collection}/doc/${docId}/link-pdf`, {
+      method: 'POST', body: fd,
+    });
+    const data = await r.json();
+    if (data.status === 'ok') {
+      location.reload();
+    } else {
+      alert('上传失败: ' + (data.error || JSON.stringify(data)));
+    }
+  } catch (e) {
+    alert('上传出错: ' + e.message);
+  }
+}
 </script>
 {% endif %}
 

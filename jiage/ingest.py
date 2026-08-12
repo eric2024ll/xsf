@@ -220,7 +220,7 @@ def ingest_markdown(md_path: str | Path, collection: str,
                     cite_key: str = None, title: str = None,
                     author: str = None,
                     source_tags: str = '["primary"]') -> dict:
-    """Markdown 文本入库。按空行分段，每段一个 block，段内按行为 line。
+    """Markdown 文本入库。整篇当 1 个 block，内部按行存储。
 
     doc_type='markdown'，page_count=1（md 无页概念，统一页 1）。
     """
@@ -243,39 +243,29 @@ def ingest_markdown(md_path: str | Path, collection: str,
         doc_id = cur.lastrowid
 
         total_lines = 0
-        total_blocks = 0
-
-        paragraphs = re.split(r'\n\s*\n', text)
-        block_num = 0
-        for para in paragraphs:
-            para = para.strip()
-            if not para:
+        block_num = 1
+        block_texts = []
+        for ln in text.split('\n'):
+            ln = ln.rstrip()
+            if not ln.strip():
                 continue
-            block_num += 1
-            line_num = 0
-            block_texts = []
-            for ln in para.split('\n'):
-                ln = ln.rstrip()
-                if not ln.strip():
-                    continue
-                line_num += 1
-                conn.execute(
-                    '''INSERT INTO lines
-                       (doc_id, page_num, block_num, line_num, text)
-                       VALUES (?, ?, ?, ?, ?)''',
-                    (doc_id, 1, block_num, line_num, ln)
-                )
-                block_texts.append(ln)
-                total_lines += 1
+            line_num = total_lines + 1
+            conn.execute(
+                '''INSERT INTO lines
+                   (doc_id, page_num, block_num, line_num, text)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (doc_id, 1, block_num, line_num, ln)
+            )
+            block_texts.append(ln)
+            total_lines += 1
 
-            if block_texts:
-                conn.execute(
-                    '''INSERT INTO blocks_fts
-                       (doc_id, page_num, block_num, text)
-                       VALUES (?, ?, ?, ?)''',
-                    (doc_id, 1, block_num, _tokenize('\n'.join(block_texts)))
-                )
-                total_blocks += 1
+        if block_texts:
+            conn.execute(
+                '''INSERT INTO blocks_fts
+                   (doc_id, page_num, block_num, text)
+                   VALUES (?, ?, ?, ?)''',
+                (doc_id, 1, block_num, _tokenize('\n'.join(block_texts)))
+            )
 
         conn.commit()
     finally:
@@ -284,7 +274,7 @@ def ingest_markdown(md_path: str | Path, collection: str,
     return {
         'doc_id': doc_id,
         'pages': 1,
-        'blocks': total_blocks,
+        'blocks': 1 if total_lines else 0,
         'lines': total_lines,
         'title': title,
         'doc_type': 'markdown',

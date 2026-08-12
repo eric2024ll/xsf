@@ -942,7 +942,7 @@ function renderResults(data) {
         ${r.cite_key ? `<span>[${escapeHtml(r.cite_key)}]</span>` : ''}
       </div>
       <div class="result-title">${escapeHtml(r.title)}</div>
-      <div class="result-text">${highlight(preview, currentQuery)}</div>
+      <div class="result-text">${preview}</div>
       <div class="context-box"></div>
     `;
 
@@ -997,7 +997,7 @@ async function toggleContext(el, r) {
         : '';
       html += `<div class="context-line ${isHit ? 'hit' : ''}">
         <span class="ln-meta">[${ln.block_num}:${ln.line_num}]</span>
-        <span class="ln-text">${labelTag}${highlight(ln.text, currentQuery)}</span>
+        <span class="ln-text">${labelTag}${ln.text}</span>
       </div>`;
       if (isHit && ln.bbox) {
         bboxInfo = `<div class="bbox-info">bbox: ${escapeHtml(ln.bbox)}</div>`;
@@ -1579,7 +1579,9 @@ async function openDocViewer(docId, coll) {
   document.getElementById('bibPanel').classList.remove('show');
 
   try {
-    const url = `/collections/${encodeURIComponent(coll)}/doc/${docId}/content?limit=${_VIEWER_LIMIT}`;
+    const qp = new URLSearchParams({ limit: _VIEWER_LIMIT });
+    if (currentQuery) qp.set('q', currentQuery);
+    const url = `/collections/${encodeURIComponent(coll)}/doc/${docId}/content?${qp}`;
     const res = await fetch(url);
     const data = await res.json();
     if (!res.ok) {
