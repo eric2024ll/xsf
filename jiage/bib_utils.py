@@ -144,3 +144,19 @@ def parse_bib_data(raw: str) -> dict | None:
     except (json.JSONDecodeError, TypeError):
         pass
     return None
+
+
+def to_bibtex(cite_key: str, bib_type: str, bib_data: dict) -> str:
+    """将单条文献转为 BibTeX 格式字符串。"""
+    ck = cite_key or "untitled"
+    if not bib_type or not bib_data:
+        title = (bib_data or {}).get("title", "") if bib_data else ""
+        return f"@misc{{{ck},\n  title = {{{title}}},\n}}\n"
+    lines = [f"{bib_type}{{{ck},"]
+    for key, val in bib_data.items():
+        if val:
+            lines.append(f"  {key} = {{{val}}},")
+    if len(lines) > 1:
+        lines[-1] = lines[-1].rstrip(",")
+    lines.append("}")
+    return "\n".join(lines) + "\n"

@@ -96,6 +96,31 @@ header .version {
   margin-left: auto;
 }
 
+/* 顶部 tab 导航 */
+.tabs {
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  display: flex;
+  gap: 0;
+}
+.tabs a {
+  display: inline-block;
+  padding: 10px 18px;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+  text-decoration: none;
+}
+.tabs a.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.tabs a:hover:not(.active) {
+  background: rgba(61,90,128,0.05);
+}
+
 /* 搜索区 */
 .search-bar {
   background: var(--card-bg);
@@ -629,11 +654,16 @@ mark {
   ">退出</a>
 </header>
 
+<div class="tabs">
+  <a href="/" class="active">書架</a>
+  <a id="docsListTab" href="#">文献列表</a>
+</div>
+
 <!-- Collection 选择器 -->
 <div class="coll-bar">
   <label>书架:</label>
   <select id="collSelect"></select>
-  <button class="new-coll-btn" onclick="createCollection()">+ 新建</button>
+  <button class="new-coll-btn" onclick="openCollMenu()" title="书架菜单">☰</button>
   <span class="current-coll-info" id="collInfo"></span>
 </div>
 
@@ -804,6 +834,7 @@ async function loadCollections() {
     }
     currentCollection = sel.value;
     updateCollectionUI();
+    updateDocsListLink();
   } catch (e) {
     console.error('load collections error:', e);
   }
@@ -820,7 +851,7 @@ function updateCollectionUI() {
   searchBtn.disabled = !currentCollection;
 }
 
-async function createCollection() {
+async function openCollMenu() {
   const name = prompt('输入新书架名:');
   if (!name || !name.trim()) return;
   const coll = name.trim();
@@ -847,9 +878,17 @@ async function createCollection() {
   loadDocs();
 }
 
+function updateDocsListLink() {
+  const a = document.getElementById('docsListTab');
+  if (a && currentCollection) {
+    a.href = '/collections/' + encodeURIComponent(currentCollection) + '/docs/list';
+  }
+}
+
 document.getElementById('collSelect').addEventListener('change', (e) => {
   currentCollection = e.target.value;
   updateCollectionUI();
+  updateDocsListLink();
   loadStats();
   loadDocs();
   // 清空搜索结果
@@ -1144,6 +1183,7 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
     await loadCollections();
     currentCollection = document.getElementById('collSelect').value;
     updateCollectionUI();
+    updateDocsListLink();
     loadStats();
     loadDocs();
   }

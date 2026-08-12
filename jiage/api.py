@@ -3,8 +3,11 @@
 import html
 import io
 import json
+import os
 import re
 import secrets
+import shutil
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List
@@ -20,7 +23,7 @@ from .config import get_collections_dir, list_collections, get_auth_token
 from .db import init_db, get_conn
 from .search import search, get_block_lines, get_context
 from .bib_utils import (
-    generate_cite_key, sync_doc_fields, parse_bib_data,
+    generate_cite_key, sync_doc_fields, parse_bib_data, to_bibtex,
     BIB_TYPE_FIELDS, BIB_TYPE_LABELS, BIB_FIELD_LABELS,
 )
 from .ingest import (
@@ -685,6 +688,334 @@ async def api_docs(collection: str, limit: int = 50):
             "count": len(rows),
             "docs": [dict(r) for r in rows],
         }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/collections/{collection}/docs/list")
+async def docs_list_page(request: Request, collection: str):
+    """文献列表独立页面。"""
+    collections = list_collections()
+    if collection not in collections:
+        return RedirectResponse(url="/")
+    tags = set()
+    conn = get_conn(collection)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT value FROM documents, "
+            "json_each(documents.source_tags)"
+        ).fetchall()
+        for r in rows:
+            tags.add(r[0])
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return templates.TemplateResponse(
+        request,
+        "docs_list.html",
+        {
+            "collection": collection,
+            "collections": collections,
+            "source_tags": sorted(tags),
+            "bib_type_labels": BIB_TYPE_LABELS,
+        },
+    )
+
+
+@app.get("/collections/{collection}/docs/query")
+async def api_docs_query(
+    collection: str,
+    request: Request,
+    page: int = 1,
+    limit: int = 20,
+    sort: str = "created_at",
+    order: str = "desc",
+    tag: str = None,
+    author: str = None,
+    bib_type: str = None,
+    title: str = None,
+    year: str = None,
+):
+    """分页、排序、筛选文献列表（JSON）。"""
+    try:
+        conn = get_conn(collection)
+        try:
+            conditions = ["1=1"]
+            params = []
+
+            if tag:
+                conditions.append(
+                    "EXISTS(SELECT 1 FROM json_each(d.source_tags) "
+                    "WHERE value = ?)"
+                )
+                params.append(tag)
+            if author:
+                conditions.append("d.author LIKE ?")
+                params.append(f"%{author}%")
+            if bib_type:
+                conditions.append("d.bib_type = ?")
+                params.append(bib_type)
+            if title:
+                conditions.append("d.title LIKE ?")
+                params.append(f"%{title}%")
+            if year:
+                conditions.append(
+                    "substr(json_extract(d.bib_data, '$.date'), 1, 4) = ?"
+                )
+                params.append(year)
+
+            where = " AND ".join(conditions)
+
+            valid_sorts = {"created_at", "title", "author", "cite_key",
+                           "page_count"}
+            sort_col = sort if sort in valid_sorts else "created_at"
+            order_dir = "DESC" if order.upper() == "DESC" else "ASC"
+
+            offset = (page - 1) * limit
+            if offset < 0:
+                offset = 0
+            if limit < 1:
+                limit = 20
+
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM documents d WHERE {where}", params
+            ).fetchone()[0]
+
+            sql = f"""SELECT d.id, d.cite_key, d.title, d.author,
+                             d.filename, d.page_count, d.doc_type,
+                             d.source_tags, d.bib_type, d.bib_data,
+                             d.created_at
+                      FROM documents d
+                      WHERE {where}
+                      ORDER BY d.{sort_col} {order_dir}
+                      LIMIT ? OFFSET ?"""
+            rows = conn.execute(sql, params + [limit, offset]).fetchall()
+        finally:
+            conn.close()
+
+        return {
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": (total + limit - 1) // limit if limit > 0 else 0,
+            "docs": [dict(r) for r in rows],
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/collections/{collection}/docs/export-bib")
+async def api_export_bib(collection: str, request: Request):
+    """批量导出 BibTeX。"""
+    try:
+        body = await request.json()
+        ids = body.get("ids", [])
+        if not ids:
+            return JSONResponse(status_code=400,
+                                content={"error": "未选择文献"})
+
+        conn = get_conn(collection)
+        try:
+            placeholders = ",".join("?" * len(ids))
+            rows = conn.execute(
+                f"""SELECT id, cite_key, bib_type, bib_data
+                    FROM documents
+                    WHERE id IN ({placeholders})""",
+                ids,
+            ).fetchall()
+        finally:
+            conn.close()
+
+        parts = []
+        for r in rows:
+            bib_data = parse_bib_data(r["bib_data"]) or {}
+            parts.append(to_bibtex(r["cite_key"], r["bib_type"], bib_data))
+
+        content = "\n".join(parts)
+        return Response(
+            content=content.encode("utf-8"),
+            media_type="application/x-bibtex",
+            headers={
+                "Content-Disposition": "attachment; filename=jiage_export.bib"
+            },
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/collections/{collection}/docs/export-md")
+async def api_export_md(collection: str, request: Request):
+    """批量导出 Markdown（每篇一个文件，打包 zip）。"""
+    try:
+        body = await request.json()
+        ids = body.get("ids", [])
+        if not ids:
+            return JSONResponse(status_code=400,
+                                content={"error": "未选择文献"})
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            conn = get_conn(collection)
+            try:
+                placeholders = ",".join("?" * len(ids))
+                docs = conn.execute(
+                    f"""SELECT id, cite_key, title, author
+                        FROM documents
+                        WHERE id IN ({placeholders})""",
+                    ids,
+                ).fetchall()
+
+                for doc in docs:
+                    doc_id = doc["id"]
+                    lines = conn.execute(
+                        """SELECT text FROM lines
+                           WHERE doc_id = ?
+                           ORDER BY page_num, block_num, line_num""",
+                        (doc_id,),
+                    ).fetchall()
+                    content = "\n\n".join(
+                        r["text"] for r in lines if r["text"]
+                    )
+                    header = (doc["title"] or doc["cite_key"]
+                              or f"doc_{doc_id}")
+                    md = f"# {header}\n\n"
+                    if doc["author"]:
+                        md += f"**作者**: {doc['author']}\n\n"
+                    md += content + "\n"
+                    filename = (
+                        f"{doc['cite_key'] or f'doc_{doc_id}'}.md"
+                    )
+                    zf.writestr(filename, md.encode("utf-8"))
+            finally:
+                conn.close()
+
+        buf.seek(0)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": "attachment; filename=jiage_docs.zip"
+            },
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/collections/{collection}/docs/migrate")
+async def api_migrate_docs(collection: str, request: Request):
+    """批量移植文献到另一个 collection（复制，源保留）。"""
+    try:
+        body = await request.json()
+        ids = body.get("ids", [])
+        target = body.get("target")
+        if not ids:
+            return JSONResponse(status_code=400,
+                                content={"error": "未选择文献"})
+        if not target:
+            return JSONResponse(status_code=400,
+                                content={"error": "目标书架未指定"})
+        if target == collection:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "源和目标书架不能相同"},
+            )
+
+        init_db(target)
+
+        src_conn = get_conn(collection)
+        dst_conn = get_conn(target)
+        migrated = 0
+        conflicts = []
+
+        try:
+            for doc_id in ids:
+                doc = src_conn.execute(
+                    "SELECT * FROM documents WHERE id = ?", (doc_id,)
+                ).fetchone()
+                if not doc:
+                    continue
+                doc = dict(doc)
+
+                filename = doc["filename"]
+                existing = dst_conn.execute(
+                    "SELECT id FROM documents WHERE filename = ?",
+                    (filename,),
+                ).fetchone()
+                if existing:
+                    base, ext = os.path.splitext(filename)
+                    filename = f"{base}_migrated{ext}"
+                    conflicts.append(
+                        {
+                            "original": doc["filename"],
+                            "renamed": filename,
+                        }
+                    )
+
+                src_path = get_collections_dir() / "uploads" / doc["filename"]
+                dst_path = get_collections_dir() / "uploads" / filename
+                if src_path.exists() and not dst_path.exists():
+                    shutil.copy2(src_path, dst_path)
+
+                doc.pop("id", None)
+                doc["filename"] = filename
+                cols = [
+                    "cite_key", "title", "author", "filename", "page_count",
+                    "doc_type", "is_primary", "is_secondary",
+                    "is_reference", "source_tags", "bib_type", "bib_data",
+                    "linked_pdf", "created_at",
+                ]
+                placeholders = ",".join("?" * len(cols))
+                cur = dst_conn.execute(
+                    f"INSERT INTO documents ({','.join(cols)}) "
+                    f"VALUES ({placeholders})",
+                    [doc.get(c) for c in cols],
+                )
+                new_doc_id = cur.lastrowid
+
+                line_rows = src_conn.execute(
+                    """SELECT page_num, block_num, line_num, text,
+                              bbox, block_label
+                       FROM lines WHERE doc_id = ?""",
+                    (doc_id,),
+                ).fetchall()
+                for r in line_rows:
+                    dst_conn.execute(
+                        """INSERT INTO lines
+                           (doc_id, page_num, block_num, line_num, text,
+                            bbox, block_label)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            new_doc_id, r["page_num"], r["block_num"],
+                            r["line_num"], r["text"], r["bbox"],
+                            r["block_label"],
+                        ),
+                    )
+
+                fts_rows = src_conn.execute(
+                    """SELECT page_num, block_num, text
+                       FROM blocks_fts WHERE doc_id = ?""",
+                    (doc_id,),
+                ).fetchall()
+                for r in fts_rows:
+                    dst_conn.execute(
+                        """INSERT INTO blocks_fts
+                           (doc_id, page_num, block_num, text)
+                           VALUES (?, ?, ?, ?)""",
+                        (
+                            new_doc_id, r["page_num"], r["block_num"],
+                            r["text"],
+                        ),
+                    )
+
+                migrated += 1
+
+            dst_conn.commit()
+        finally:
+            src_conn.close()
+            dst_conn.close()
+
+        return {"migrated": migrated, "conflicts": conflicts}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

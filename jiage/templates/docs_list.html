@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.ico">
+<title>文献列表 — 架閣</title>
+<style>
+:root{
+  --bg:#f6f5f2;
+  --card:#ffffff;
+  --text:#2c2c2c;
+  --muted:#6e6e6e;
+  --border:#d9d6d1;
+  --accent:#3d5a80;
+  --accent-light:#e8eef4;
+  --danger:#c0392b;
+  --danger-light:#f9e8e6;
+  --success:#27ae60;
+  --shadow:0 2px 8px rgba(0,0,0,0.06);
+  --radius:8px;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);line-height:1.5;}
+a{color:var(--accent);text-decoration:none;}
+a:hover{text-decoration:underline;}
+header{background:var(--card);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;box-shadow:var(--shadow);}
+.brand{display:flex;align-items:baseline;gap:10px;}
+.brand h1{font-size:1.35rem;font-weight:600;letter-spacing:0.05em;}
+.brand .brand-sub{font-size:0.72rem;color:var(--muted);}
+header nav a{font-size:0.85rem;color:var(--muted);margin-left:14px;}
+.tabs{display:flex;gap:0;background:var(--card);border-bottom:1px solid var(--border);padding:0 20px;}
+.tabs a{padding:10px 18px;font-size:0.9rem;color:var(--muted);border-bottom:2px solid transparent;}
+.tabs a.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600;}
+.container{max-width:1200px;margin:0 auto;padding:20px;}
+.top-bar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px;}
+.coll-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.coll-row label{font-size:0.85rem;color:var(--muted);}
+.coll-row select,.filter-row select,.filter-row input,.page-size select,.sort-row select{
+  padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;background:#fff;
+}
+.menu-btn{padding:5px 10px;border:1px solid var(--border);border-radius:5px;background:#fff;cursor:pointer;font-size:0.85rem;}
+.menu-btn:hover{background:var(--accent-light);}
+.filter-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card);padding:14px;border-radius:var(--radius);border:1px solid var(--border);margin-bottom:12px;}
+.filter-row input[type="text"]{min-width:120px;}
+.tag-chip{display:inline-block;padding:3px 10px;border-radius:12px;font-size:0.75rem;background:var(--accent-light);color:var(--accent);margin-right:4px;cursor:pointer;border:1px solid transparent;}
+.tag-chip.active{background:var(--accent);color:#fff;}
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card);padding:12px 14px;border-radius:var(--radius);border:1px solid var(--border);margin-bottom:12px;}
+.toolbar label{font-size:0.85rem;display:flex;align-items:center;gap:4px;cursor:pointer;}
+.toolbar .spacer{flex:1;}
+.btn{padding:5px 12px;border-radius:5px;border:1px solid var(--border);background:#fff;font-size:0.82rem;cursor:pointer;}
+.btn:hover{background:var(--accent-light);}
+.btn.primary{background:var(--accent);color:#fff;border-color:var(--accent);}
+.btn.primary:hover{filter:brightness(1.1);}
+.btn.danger{color:var(--danger);border-color:var(--danger);}
+.btn.danger:hover{background:var(--danger-light);}
+.btn:disabled{opacity:0.5;cursor:not-allowed;}
+table{width:100%;border-collapse:collapse;background:var(--card);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border);font-size:0.85rem;}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top;}
+th{background:var(--accent-light);color:var(--accent);font-weight:600;}
+tr:hover{background:#fafafa;}
+tr.selected td{background:#e8f4e8;}
+td.cite{font-family:"SFMono-Regular",Consolas,monospace;font-size:0.78rem;color:var(--muted);}
+td.title{font-weight:600;}
+td .meta{color:var(--muted);font-size:0.75rem;}
+td .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:0.72rem;background:#eee;margin-right:4px;}
+td .badge.book{background:#e8eef4;color:#3d5a80;}
+td .badge.article{background:#e8f4e8;color:#27ae60;}
+td .badge.manuscript{background:#f9f2e6;color:#b38b00;}
+td .badge.online{background:#f4e8f4;color:#8e44ad;}
+td .badge.incollection{background:#f0e8e6;color:#8e44ad;}
+.actions a{font-size:0.8rem;margin-right:8px;}
+.empty{padding:40px;text-align:center;color:var(--muted);}
+.pager{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:16px;}
+.pager button{min-width:28px;padding:4px 8px;border:1px solid var(--border);border-radius:5px;background:#fff;cursor:pointer;}
+.pager button.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+.pager button:disabled{opacity:0.5;cursor:not-allowed;}
+.pager .info{font-size:0.8rem;color:var(--muted);}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,0.35);display:none;align-items:center;justify-content:center;z-index:1000;}
+.modal.show{display:flex;}
+.modal-card{background:var(--card);border-radius:var(--radius);box-shadow:0 10px 30px rgba(0,0,0,0.15);width:90%;max-width:420px;padding:20px;}
+.modal-card h3{margin-bottom:12px;}
+.modal-card select,.modal-card input{width:100%;padding:8px;margin-bottom:12px;border:1px solid var(--border);border-radius:5px;}
+.modal-card .actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px;}
+.msg{position:fixed;top:14px;right:14px;background:var(--card);border:1px solid var(--border);padding:10px 14px;border-radius:var(--radius);box-shadow:var(--shadow);display:none;z-index:2000;font-size:0.85rem;}
+.msg.show{display:block;}
+.msg.ok{border-left:4px solid var(--success);}
+.msg.err{border-left:4px solid var(--danger);}
+@media(max-width:768px){
+  .filter-row,.toolbar{flex-direction:column;align-items:stretch;}
+  .toolbar .spacer{display:none;}
+  table{font-size:0.75rem;}
+  th,td{padding:8px;}
+  .actions a{display:inline-block;margin-bottom:4px;}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1><a href="/" style="color:inherit;text-decoration:none;">架閣</a></h1>
+    <span class="brand-sub">放書架的地方，也能看書</span>
+  </div>
+  <nav>
+    <a href="/logout">退出</a>
+  </nav>
+</header>
+<div class="tabs">
+  <a href="/">書架</a>
+  <a href="/collections/{{ collection }}/docs/list" class="active">文献列表</a>
+</div>
+<div class="container">
+  <div class="top-bar">
+    <div class="coll-row">
+      <label>书架:</label>
+      <select id="collSelect" onchange="changeCollection(this.value)"></select>
+      <button class="menu-btn" id="collMenuBtn" onclick="toggleCollMenu()">☰</button>
+    </div>
+    <div class="top-bar-right" id="statsSummary"></div>
+  </div>
+
+  <div class="filter-row">
+    <span style="font-size:0.85rem;color:var(--muted);">来源类型:</span>
+    <span id="tagFilter"></span>
+    <input type="text" id="authorFilter" placeholder="作者" style="width:100px;">
+    <select id="bibTypeFilter"><option value="">文献类型</option></select>
+    <input type="text" id="titleFilter" placeholder="标题" style="width:140px;">
+    <input type="text" id="yearFilter" placeholder="年份" style="width:70px;">
+    <button class="btn" onclick="resetFilters()">重置</button>
+  </div>
+
+  <div class="toolbar">
+    <label><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"> 全选</label>
+    <div class="spacer"></div>
+    <span style="font-size:0.8rem;color:var(--muted);">排序</span>
+    <select id="sortSelect" onchange="loadPage(1)">
+      <option value="created_at">创建时间</option>
+      <option value="title">标题</option>
+      <option value="author">作者</option>
+      <option value="cite_key">cite_key</option>
+      <option value="page_count">页数</option>
+    </select>
+    <select id="orderSelect" onchange="loadPage(1)">
+      <option value="desc">降序</option>
+      <option value="asc">升序</option>
+    </select>
+    <span style="font-size:0.8rem;color:var(--muted);">每页</span>
+    <select id="pageSize" onchange="loadPage(1)">
+      <option value="20">20</option>
+      <option value="50">50</option>
+      <option value="100">100</option>
+    </select>
+    <button class="btn" onclick="exportBib()">导出 BibTeX</button>
+    <button class="btn" onclick="exportMd()">导出 Markdown</button>
+    <button class="btn primary" onclick="openMigrateModal()">移植到…</button>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:30px;"></th>
+        <th>cite_key</th>
+        <th>标题 / 作者</th>
+        <th>类型</th>
+        <th>页数</th>
+        <th>创建时间</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody id="docTableBody">
+      <tr><td colspan="7" class="empty">加载中…</td></tr>
+    </tbody>
+  </table>
+
+  <div class="pager" id="pager"></div>
+</div>
+
+<div class="modal" id="migrateModal">
+  <div class="modal-card">
+    <h3>移植选中文献</h3>
+    <p style="font-size:0.8rem;color:var(--muted);margin-bottom:10px;">源书架保留，向目标书架复制一份（含全文与元数据）。</p>
+    <select id="migrateTarget"></select>
+    <div class="actions">
+      <button class="btn" onclick="closeMigrateModal()">取消</button>
+      <button class="btn primary" onclick="doMigrate()">确认移植</button>
+    </div>
+  </div>
+</div>
+
+<div class="msg" id="msg"></div>
+
+<script>
+const collection = {{ collection | tojson }};
+const collections = {{ collections | tojson }};
+const sourceTags = {{ source_tags | tojson }};
+const bibTypeLabels = {{ bib_type_labels | tojson }};
+const BIB_TYPES = [
+  {key:'@book', label:'图书'},
+  {key:'@article', label:'期刊/报纸'},
+  {key:'@manuscript', label:'手稿/档案'},
+  {key:'@online', label:'电子出版物'},
+  {key:'@incollection', label:'析出文献'}
+];
+let state = {page:1, total:0, pages:0, docs:[]};
+let selectedIds = new Set();
+
+function init(){
+  fillCollSelect();
+  fillTagFilter();
+  fillBibTypeFilter();
+  fillMigrateTarget();
+  loadPage(1);
+}
+
+function fillCollSelect(){
+  const sel = document.getElementById('collSelect');
+  sel.innerHTML = '';
+  collections.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c; opt.textContent = c;
+    if(c === collection) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+function fillTagFilter(){
+  const box = document.getElementById('tagFilter');
+  box.innerHTML = '';
+  sourceTags.forEach(tag => {
+    const s = document.createElement('span');
+    s.className = 'tag-chip';
+    s.textContent = tag;
+    s.dataset.tag = tag;
+    s.onclick = () => {s.classList.toggle('active'); loadPage(1);};
+    box.appendChild(s);
+  });
+}
+
+function fillBibTypeFilter(){
+  const sel = document.getElementById('bibTypeFilter');
+  BIB_TYPES.forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t.key; opt.textContent = t.label;
+    sel.appendChild(opt);
+  });
+}
+
+function fillMigrateTarget(){
+  const sel = document.getElementById('migrateTarget');
+  sel.innerHTML = '<option value="">选择目标书架</option>';
+  collections.filter(c => c !== collection).forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c; opt.textContent = c;
+    sel.appendChild(opt);
+  });
+}
+
+function changeCollection(c){
+  location.href = '/collections/' + encodeURIComponent(c) + '/docs/list';
+}
+
+function toggleCollMenu(){
+  const name = prompt('新建书架名称:');
+  if(!name) return;
+  const v = name.trim();
+  if(!v) return;
+  if(collections.includes(v)){
+    alert('书架已存在'); return;
+  }
+  location.href = '/collections/' + encodeURIComponent(v) + '/docs/list';
+}
+
+function getActiveTag(){
+  const active = document.querySelector('#tagFilter .tag-chip.active');
+  return active ? active.dataset.tag : '';
+}
+
+function buildParams(){
+  const ps = new URLSearchParams();
+  ps.set('page', state.page);
+  ps.set('limit', document.getElementById('pageSize').value);
+  ps.set('sort', document.getElementById('sortSelect').value);
+  ps.set('order', document.getElementById('orderSelect').value);
+  const tag = getActiveTag();
+  if(tag) ps.set('tag', tag);
+  const author = document.getElementById('authorFilter').value.trim();
+  if(author) ps.set('author', author);
+  const bibType = document.getElementById('bibTypeFilter').value;
+  if(bibType) ps.set('bib_type', bibType);
+  const title = document.getElementById('titleFilter').value.trim();
+  if(title) ps.set('title', title);
+  const year = document.getElementById('yearFilter').value.trim();
+  if(year) ps.set('year', year);
+  return ps.toString();
+}
+
+async function loadPage(page){
+  state.page = page;
+  const url = '/collections/' + encodeURIComponent(collection) + '/docs/query?' + buildParams();
+  const tbody = document.getElementById('docTableBody');
+  tbody.innerHTML = '<tr><td colspan="7" class="empty">加载中…</td></tr>';
+  try{
+    const r = await fetch(url);
+    const data = await r.json();
+    if(data.error){showMsg(data.error,'err'); return;}
+    state.total = data.total;
+    state.pages = data.pages;
+    state.docs = data.docs;
+    renderTable(data.docs);
+    renderPager();
+    updateSelectAllState();
+    document.getElementById('statsSummary').textContent = '共 ' + data.total + ' 篇';
+  }catch(e){
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">加载失败</td></tr>';
+    showMsg('加载失败: '+e.message,'err');
+  }
+}
+
+function fmtDate(s){
+  if(!s) return '-';
+  const d = new Date(s);
+  if(isNaN(d)) return s;
+  return d.toLocaleDateString('zh-CN');
+}
+
+function typeBadge(bibType){
+  const label = bibTypeLabels[bibType] || '文献';
+  const cls = (bibType||'').replace('@','') || 'misc';
+  return '<span class="badge ' + cls + '">' + label + '</span>';
+}
+
+function escapeHtml(s){
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderTable(docs){
+  const tbody = document.getElementById('docTableBody');
+  if(!docs || docs.length === 0){
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">没有文献</td></tr>';
+    return;
+  }
+  let html = '';
+  docs.forEach(d => {
+    const checked = selectedIds.has(d.id) ? 'checked' : '';
+    const tags = (JSON.parse(d.source_tags || '[]') || []).map(t => '<span class="badge">'+escapeHtml(t)+'</span>').join('');
+    html += '<tr id="row-'+d.id+'" class="'+ (selectedIds.has(d.id)?'selected':'') + '">' +
+      '<td><input type="checkbox" '+checked+' onchange="toggleRow('+d.id+',this)"></td>' +
+      '<td class="cite">' + escapeHtml(d.cite_key || '-') + '</td>' +
+      '<td class="title">' + escapeHtml(d.title || '(无标题)') +
+        '<div class="meta">' + escapeHtml(d.author || '') + '</div>' +
+        '<div>' + tags + '</div></td>' +
+      '<td>' + typeBadge(d.bib_type) + '</td>' +
+      '<td>' + (d.page_count || '-') + '</td>' +
+      '<td>' + fmtDate(d.created_at) + '</td>' +
+      '<td class="actions">' +
+        '<a href="/collections/' + encodeURIComponent(collection) + '/doc/' + d.id + '/proofread">校对</a>' +
+      '</td></tr>';
+  });
+  tbody.innerHTML = html;
+}
+
+function renderPager(){
+  const box = document.getElementById('pager');
+  if(state.pages <= 1){box.innerHTML = ''; return;}
+  let html = '<button ' + (state.page<=1?'disabled':'') + ' onclick="loadPage('+(state.page-1)+')">←</button>';
+  const maxButtons = 7;
+  let start = Math.max(1, state.page - Math.floor(maxButtons/2));
+  let end = Math.min(state.pages, start + maxButtons - 1);
+  if(end - start + 1 < maxButtons) start = Math.max(1, end - maxButtons + 1);
+  if(start > 1) html += '<button onclick="loadPage(1)">1</button><span>…</span>';
+  for(let i=start;i<=end;i++){
+    html += '<button class="'+(i===state.page?'active':'')+'" onclick="loadPage('+i+')">'+i+'</button>';
+  }
+  if(end < state.pages) html += '<span>…</span><button onclick="loadPage('+state.pages+')">'+state.pages+'</button>';
+  html += '<button ' + (state.page>=state.pages?'disabled':'') + ' onclick="loadPage('+(state.page+1)+')">→</button>';
+  html += '<span class="info">第 '+state.page+'/'+state.pages+' 页</span>';
+  box.innerHTML = html;
+}
+
+function toggleRow(id, cb){
+  const row = document.getElementById('row-'+id);
+  if(cb.checked){selectedIds.add(id); row.classList.add('selected');}
+  else{selectedIds.delete(id); row.classList.remove('selected');}
+  updateSelectAllState();
+}
+
+function toggleSelectAll(){
+  const cb = document.getElementById('selectAll');
+  const cbs = document.querySelectorAll('#docTableBody input[type=checkbox]');
+  cbs.forEach(c => {
+    const id = parseInt(c.getAttribute('onchange').match(/\d+/)[0]);
+    c.checked = cb.checked;
+    const row = document.getElementById('row-'+id);
+    if(cb.checked){selectedIds.add(id); row.classList.add('selected');}
+    else{selectedIds.delete(id); row.classList.remove('selected');}
+  });
+}
+
+function updateSelectAllState(){
+  const cbs = document.querySelectorAll('#docTableBody input[type=checkbox]');
+  if(cbs.length === 0){document.getElementById('selectAll').checked = false; return;}
+  const all = Array.from(cbs).every(c => c.checked);
+  document.getElementById('selectAll').checked = all;
+}
+
+function resetFilters(){
+  document.getElementById('authorFilter').value = '';
+  document.getElementById('bibTypeFilter').value = '';
+  document.getElementById('titleFilter').value = '';
+  document.getElementById('yearFilter').value = '';
+  document.querySelectorAll('#tagFilter .tag-chip').forEach(s => s.classList.remove('active'));
+  loadPage(1);
+}
+
+function getSelectedIds(){
+  if(selectedIds.size === 0){showMsg('请先选择文献','err'); return null;}
+  return Array.from(selectedIds);
+}
+
+async function exportBib(){
+  const ids = getSelectedIds(); if(!ids) return;
+  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-bib', {ids}, 'jiage_export.bib', 'application/x-bibtex');
+}
+
+async function exportMd(){
+  const ids = getSelectedIds(); if(!ids) return;
+  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-md', {ids}, 'jiage_docs.zip', 'application/zip');
+}
+
+async function downloadPost(url, body, filename, mime){
+  try{
+    const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if(!r.ok){const e = await r.json(); showMsg(e.error || '导出失败','err'); return;}
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showMsg('导出成功','ok');
+  }catch(e){showMsg('导出失败: '+e.message,'err');}
+}
+
+function openMigrateModal(){
+  const ids = getSelectedIds(); if(!ids) return;
+  document.getElementById('migrateModal').classList.add('show');
+}
+
+function closeMigrateModal(){
+  document.getElementById('migrateModal').classList.remove('show');
+}
+
+async function doMigrate(){
+  const target = document.getElementById('migrateTarget').value;
+  if(!target){showMsg('请选择目标书架','err'); return;}
+  const ids = Array.from(selectedIds);
+  try{
+    const r = await fetch('/collections/' + encodeURIComponent(collection) + '/docs/migrate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ids, target})
+    });
+    const data = await r.json();
+    if(data.error){showMsg(data.error,'err'); return;}
+    closeMigrateModal();
+    selectedIds.clear();
+    loadPage(state.page);
+    showMsg('已移植 '+data.migrated+' 篇' + (data.conflicts.length?'（'+data.conflicts.length+' 个文件名冲突已重命名）':''), 'ok');
+  }catch(e){showMsg('移植失败: '+e.message,'err');}
+}
+
+function showMsg(text, type){
+  const m = document.getElementById('msg');
+  m.textContent = text; m.className = 'msg show ' + (type || 'ok');
+  setTimeout(() => m.classList.remove('show'), 3000);
+}
+
+window.onclick = function(e){ if(e.target.id === 'migrateModal') closeMigrateModal(); };
+
+init();
+</script>
+</body>
+</html>
