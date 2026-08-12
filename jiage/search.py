@@ -1,3 +1,5 @@
+from itertools import product
+
 import jieba
 from opencc import OpenCC
 
@@ -7,11 +9,21 @@ _s2t = OpenCC('s2t')
 _t2s = OpenCC('t2s')
 
 
+def _char_variants(ch: str) -> list[str]:
+    """单字的所有繁简变体。"""
+    return list({ch, _s2t.convert(ch), _t2s.convert(ch)})
+
+
+def _all_variants(token: str) -> set[str]:
+    """字符级笛卡尔积：生成所有可能的繁简混合形式。"""
+    char_options = [_char_variants(ch) for ch in token]
+    return {''.join(combo) for combo in product(*char_options) if ''.join(combo)}
+
+
 def _expand_token(token: str) -> str:
-    """繁简互转扩展：返回覆盖繁/简的 FTS5 OR 表达式。"""
-    variants = {token, _s2t.convert(token), _t2s.convert(token)}
-    variants = {v for v in variants if v}
-    if len(variants) == 1:
+    """繁简互转扩展：返回覆盖所有繁简混合形式的 FTS5 OR 表达式。"""
+    variants = _all_variants(token)
+    if len(variants) <= 1:
         return f'"{token}"'
     return '(' + ' OR '.join(f'"{v}"' for v in sorted(variants)) + ')'
 
@@ -22,6 +34,17 @@ def _fts_query(query: str) -> str:
     if not tokens:
         return ''
     return ' AND '.join(_expand_token(t) for t in tokens)
+
+
+def get_highlight_terms(query: str) -> list[str]:
+    """生成用于前端高亮的所有繁简变体（按长度降序）。"""
+    tokens = [t for t in jieba.cut_for_search(query) if t.strip()]
+    if not tokens:
+        return []
+    all_terms: set[str] = set()
+    for token in tokens:
+        all_terms |= _all_variants(token)
+    return sorted(all_terms, key=len, reverse=True)
 
 
 def search(query: str, collection: str,

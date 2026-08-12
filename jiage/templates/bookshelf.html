@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.ico">
+<title>架閣 — 书架</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+.main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+.section-title { font-size: 1rem; font-weight: 700; margin-bottom: 12px; color: var(--text); }
+.stats-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px;
+}
+.stat-card {
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; text-align: center;
+}
+.stat-card .num { font-size: 1.5rem; font-weight: 700; color: var(--primary); }
+.stat-card .label { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+.coll-table {
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden; margin-bottom: 24px;
+}
+.coll-table table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.coll-table th { background: var(--accent); color: var(--primary); padding: 10px 14px; text-align: left; font-weight: 600; }
+.coll-table td { padding: 10px 14px; border-top: 1px solid var(--border); }
+.coll-table tr:hover td { background: #fafafa; }
+.coll-table td .coll-link { font-weight: 600; }
+.coll-act { padding: 2px 8px; font-size: 0.78rem; }
+.coll-del { color: #c0392b; }
+.doc-list { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.doc-list table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.doc-list th { background: var(--accent); color: var(--primary); padding: 8px 14px; text-align: left; font-weight: 600; }
+.doc-list td { padding: 8px 14px; border-top: 1px solid var(--border); }
+.doc-list tr:hover td { background: #fafafa; }
+.doc-title-cell { font-weight: 600; }
+.doc-coll-badge {
+  display: inline-block; padding: 1px 8px; border-radius: 4px;
+  font-size: 0.72rem; background: var(--accent); color: var(--primary);
+}
+.empty-hint { padding: 30px; text-align: center; color: var(--text-muted); font-size: 0.88rem; }
+@media(max-width:768px){ .stats-grid{grid-template-columns:repeat(2,1fr);} }
+</style>
+</head>
+<body data-page="bookshelf">
+{% include '_nav.html' %}
+<div class="main">
+  <div class="section-title">全库统计</div>
+  <div class="stats-grid">
+    <div class="stat-card"><div class="num" id="statDocs">-</div><div class="label">文献</div></div>
+    <div class="stat-card"><div class="num" id="statLines">-</div><div class="label">行</div></div>
+    <div class="stat-card"><div class="num" id="statBlocks">-</div><div class="label">文本块</div></div>
+    <div class="stat-card"><div class="num" id="statOcr">-</div><div class="label">OCR</div></div>
+  </div>
+
+  <div class="section-title">书架列表</div>
+  <div class="coll-table" id="collTable">
+    <div class="empty-hint">加载中…</div>
+  </div>
+
+  <div class="section-title">最近文献</div>
+  <div class="doc-list" id="recentDocs">
+    <div class="empty-hint">加载中…</div>
+  </div>
+</div>
+
+{% include '_preview_modal.html' %}
+
+<script src="/static/nav.js"></script>
+<script src="/static/preview-modal.js"></script>
+<script>
+function escapeHtml(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+function attrEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');}
+
+async function loadStats(){
+  try{
+    var r=await fetch('/api/stats');var d=await r.json();
+    document.getElementById('statDocs').textContent=d.documents??0;
+    document.getElementById('statLines').textContent=d.lines??0;
+    document.getElementById('statBlocks').textContent=d.blocks??0;
+    document.getElementById('statOcr').textContent=d.ocr_docs??0;
+    renderColls(d.collections||[]);
+  }catch(e){document.getElementById('collTable').innerHTML='<div class="empty-hint">加载失败</div>';}
+}
+
+function renderColls(colls){
+  var box=document.getElementById('collTable');
+  if(!colls.length){
+    box.innerHTML='<div class="empty-hint">暂无书架，点击下方「新建书架」</div>'+
+      '<div style="padding:12px 14px;"><button class="btn" onclick="newColl()">+ 新建书架</button></div>';
+    return;
+  }
+  var h='<table><thead><tr><th>书架</th><th>文献数</th><th>页数</th><th>操作</th></tr></thead><tbody>';
+  colls.forEach(function(c){
+    h+='<tr><td><span class="coll-link">'+escapeHtml(c.name)+'</span></td>'+
+       '<td>'+c.count+'</td><td>'+c.pages+'</td>'+
+       '<td><a href="/collections/'+encodeURIComponent(c.name)+'/docs/list">进入</a> · '+
+       '<button class="btn coll-act" onclick="renameColl('+attrEsc(JSON.stringify(c.name))+')">改名</button> · '+
+       '<button class="btn coll-act coll-del" onclick="deleteColl('+attrEsc(JSON.stringify(c.name))+')">删除</button></td></tr>';
+  });
+  h+='</tbody><tfoot><tr><td colspan="4"><button class="btn" onclick="newColl()">+ 新建书架</button></td></tr></tfoot>';
+  h+='</table>';
+  box.innerHTML=h;
+}
+
+async function renameColl(name){
+  var newName=prompt('将「'+name+'」重命名为:',name);
+  if(!newName||!newName.trim()||newName.trim()===name)return;
+  try{
+    var r=await fetch('/api/collections/'+encodeURIComponent(name),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({new_name:newName.trim()})});
+    var d=await r.json();
+    if(!r.ok){alert(d.error||'重命名失败');return;}
+    loadStats();
+  }catch(e){alert('请求失败');}
+}
+
+async function deleteColl(name){
+  if(!confirm('确定删除书架「'+name+'」？此操作不可撤销，所有文献和源文件将被删除。'))return;
+  try{
+    var r=await fetch('/api/collections/'+encodeURIComponent(name),{method:'DELETE'});
+    var d=await r.json();
+    if(!r.ok){alert(d.error||'删除失败');return;}
+    loadStats();loadRecent();
+  }catch(e){alert('请求失败');}
+}
+
+async function newColl(){
+  var name=prompt('输入新书架名:');
+  if(!name||!name.trim())return;
+  name=name.trim();
+  try{
+    var r=await fetch('/api/collections/'+encodeURIComponent(name),{method:'POST'});
+    var d=await r.json();
+    if(!r.ok){alert(d.error||'创建失败');return;}
+    location.href='/collections/'+encodeURIComponent(name)+'/docs/list';
+  }catch(e){alert('请求失败');}
+}
+
+async function loadRecent(){
+  try{
+    var colls=window.NAV_COLLECTIONS||[];
+    var box=document.getElementById('recentDocs');
+    if(!colls.length){box.innerHTML='<div class="empty-hint">暂无文献</div>';return;}
+    // 从每个 collection 取最近几条, 合并后按时间排序取前 20
+    var all=[];
+    for(var i=0;i<colls.length;i++){
+      try{
+        var r=await fetch('/collections/'+encodeURIComponent(colls[i])+'/docs?limit=5');
+        var d=await r.json();
+        (d.docs||[]).forEach(function(doc){
+          doc._coll=colls[i];all.push(doc);
+        });
+      }catch(e){}
+    }
+    all.sort(function(a,b){return (b.created_at||'').localeCompare(a.created_at||'');});
+    all=all.slice(0,20);
+    if(!all.length){box.innerHTML='<div class="empty-hint">暂无文献</div>';return;}
+    var h='<table><thead><tr><th>书架</th><th>标题</th><th>页数</th><th>操作</th></tr></thead><tbody>';
+    all.forEach(function(d){
+      var t=d.title||d.filename||'(无标题)';
+      h+='<tr><td><span class="doc-coll-badge">'+escapeHtml(d._coll)+'</span></td>'+
+         '<td class="doc-title-cell">'+escapeHtml(t)+'</td>'+
+         '<td>'+(d.page_count||'-')+'</td>'+
+         '<td><button class="btn" style="padding:2px 10px;font-size:0.8rem;" onclick="pmOpen('+attrEsc(JSON.stringify(d._coll))+','+d.id+',{title:'+attrEsc(JSON.stringify(t))+'})">预览</button> · '+
+         '<a href="/collections/'+encodeURIComponent(d._coll)+'/doc/'+d.id+'/proofread">校对</a></td></tr>';
+    });
+    h+='</tbody></table>';
+    box.innerHTML=h;
+  }catch(e){document.getElementById('recentDocs').innerHTML='<div class="empty-hint">加载失败</div>';}
+}
+
+loadStats();loadRecent();
+</script>
+</body>
+</html>

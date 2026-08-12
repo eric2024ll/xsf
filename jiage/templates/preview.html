@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.ico">
+<title>{{ doc.title or doc.filename or '预览' }} — 架閣</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+.doc-header {
+  background: var(--card-bg); border-bottom: 1px solid var(--border);
+  padding: 12px 24px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+}
+.doc-header .doc-title { font-size: 1.1rem; font-weight: 700; }
+.doc-header .doc-meta { font-size: 0.8rem; color: var(--text-muted); }
+.doc-header .doc-ck { font-size: 0.78rem; color: var(--primary); font-family: monospace;
+  background: var(--accent); padding: 2px 8px; border-radius: 4px; }
+.doc-tags { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.tag-chip {
+  display: inline-block; font-size: 0.72rem; padding: 2px 8px; border-radius: 3px;
+  background: var(--accent); color: var(--primary); cursor: default;
+}
+.tag-chip.removable { cursor: pointer; }
+.tag-chip.removable::after { content: ' ×'; opacity: 0.6; }
+.tag-add-input {
+  font-size: 0.72rem; padding: 2px 6px; width: 70px; border: 1px dashed var(--border);
+  border-radius: 3px; outline: none; background: transparent;
+}
+.doc-actions { margin-left: auto; display: flex; gap: 8px; }
+.doc-actions a {
+  font-size: 0.78rem; padding: 3px 12px; border: 1px solid var(--border);
+  border-radius: 4px; text-decoration: none; white-space: nowrap;
+}
+.doc-actions a:hover { background: var(--accent); }
+.doc-body { max-width: 900px; margin: 0 auto; padding: 20px 24px; }
+.viewer-loading, .viewer-empty { text-align: center; padding: 40px; color: var(--text-muted); }
+.show-more-btn {
+  display: block; margin: 20px auto; padding: 8px 24px; background: var(--card-bg);
+  border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer;
+  font-size: 0.85rem; color: var(--primary);
+}
+.show-more-btn:hover { background: var(--accent); }
+</style>
+</head>
+<body data-page="preview">
+{% include '_nav.html' %}
+
+{% if error %}
+<div class="doc-body"><div class="viewer-empty">{{ error }}</div></div>
+{% else %}
+<div class="doc-header">
+  <span class="doc-title">{{ doc.title or doc.filename or ('#%s' % doc_id) }}</span>
+  {% if doc.cite_key %}<span class="doc-ck">{{ doc.cite_key }}</span>{% endif %}
+  <span class="doc-meta">{{ doc.page_count or '?' }}页 · {{ doc.doc_type or '' }}</span>
+  <span class="doc-tags" id="docTags"></span>
+  <span class="doc-actions">
+    <a href="/collections/{{ collection | urlencode }}/doc/{{ doc_id }}/proofread">校对</a>
+  </span>
+</div>
+<div class="doc-body" id="docBody">
+  <div class="viewer-loading">加载中...</div>
+</div>
+{% endif %}
+
+<script src="/static/nav.js"></script>
+<script>
+var DOC_ID = {{ doc_id | tojson if doc_id else 'null' }};
+var COLLECTION = {{ collection | tojson }};
+var _TAG_LABELS = { primary: '原始史料', research: '研究文献', reference: '工具书' };
+var _tags = [];
+var VIEWER_LIMIT = 500;
+
+function escapeHtml(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+
+function tagLabel(t){return _TAG_LABELS[t]||t;}
+
+function renderTags(){
+  var el=document.getElementById('docTags');
+  if(!el)return;
+  var html=_tags.map(function(t,i){
+    return '<span class="tag-chip removable" onclick="removeTag('+i+')">'+escapeHtml(tagLabel(t))+'</span>';
+  }).join('');
+  html+='<input type="text" class="tag-add-input" placeholder="+ 标签" onkeydown="if(event.key===\'Enter\'){event.preventDefault();addTag();}">';
+  el.innerHTML=html;
+}
+
+async function patchTags(){
+  var body=new URLSearchParams();
+  body.append('source_tags',JSON.stringify(_tags));
+  await fetch('/collections/'+encodeURIComponent(COLLECTION)+'/doc/'+DOC_ID,{method:'PATCH',body:body});
+}
+
+async function addTag(){
+  var inputs=document.getElementsByClassName('tag-add-input');
+  var input=inputs[inputs.length-1];
+  if(!input)return;
+  var val=input.value.trim();
+  if(!val)return;
+  if(_tags.indexOf(val)<0)_tags.push(val);
+  input.value='';
+  await patchTags();
+  renderTags();
+}
+
+async function removeTag(i){
+  _tags.splice(i,1);
+  if(!_tags.length)_tags=['primary'];
+  await patchTags();
+  renderTags();
+}
+
+async function loadContent(){
+  var body=document.getElementById('docBody');
+  try{
+    var params=new URLSearchParams({limit:VIEWER_LIMIT});
+    var res=await fetch('/collections/'+encodeURIComponent(COLLECTION)+'/doc/'+DOC_ID+'/content?'+params);
+    var data=await res.json();
+    if(!res.ok){
+      body.innerHTML='<div class="viewer-empty">'+escapeHtml(data.error||'加载失败')+'</div>';
+      return;
+    }
+    renderContent(data);
+  }catch(e){
+    body.innerHTML='<div class="viewer-empty">加载出错: '+escapeHtml(e.message)+'</div>';
+  }
+}
+
+function renderContent(data){
+  var body=document.getElementById('docBody');
+  if(!data.pages||data.pages.length===0||data.total_lines===0){
+    body.innerHTML='<div class="viewer-empty">该文献暂无文本内容</div>';
+    return;
+  }
+  var html='';
+  for(var pi=0;pi<data.pages.length;pi++){
+    var page=data.pages[pi];
+    html+='<div class="page-section"><div class="page-header">第 '+page.page_num+' 页</div>';
+    for(var bi=0;bi<page.blocks.length;bi++){
+      var block=page.blocks[bi];
+      var label=block.block_label;
+      var labelClass=label?'bl-'+label.replace(/[^a-z0-9_]/gi,''):'bl-default';
+      var labelTag=label?'<span class="block-label '+labelClass+'">'+escapeHtml(label)+'</span>':'';
+      var text=block.lines.map(function(l){return l.text;}).join('\n');
+      html+='<div class="block-box '+(label?'has-label':'')+'">'+labelTag+
+        '<div class="block-text">'+escapeHtml(text)+'</div></div>';
+    }
+    html+='</div>';
+  }
+  var truncated=data.total_lines>=VIEWER_LIMIT;
+  if(truncated){
+    html+='<button class="show-more-btn" id="showAllBtn">已显示前 '+VIEWER_LIMIT+' 行，点击加载全部</button>';
+  }
+  body.innerHTML=html;
+  if(truncated){
+    document.getElementById('showAllBtn').addEventListener('click',loadFull);
+  }
+}
+
+async function loadFull(){
+  var body=document.getElementById('docBody');
+  body.innerHTML='<div class="viewer-loading">加载全部内容...</div>';
+  try{
+    var res=await fetch('/collections/'+encodeURIComponent(COLLECTION)+'/doc/'+DOC_ID+'/content');
+    var data=await res.json();
+    if(!res.ok){
+      body.innerHTML='<div class="viewer-empty">'+escapeHtml(data.error||'加载失败')+'</div>';
+      return;
+    }
+    if(!data.pages||data.pages.length===0||data.total_lines===0){
+      body.innerHTML='<div class="viewer-empty">该文献暂无文本内容</div>';
+      return;
+    }
+    var html='';
+    for(var pi=0;pi<data.pages.length;pi++){
+      var page=data.pages[pi];
+      html+='<div class="page-section"><div class="page-header">第 '+page.page_num+' 页</div>';
+      for(var bi=0;bi<page.blocks.length;bi++){
+        var block=page.blocks[bi];
+        var label=block.block_label;
+        var labelClass=label?'bl-'+label.replace(/[^a-z0-9_]/gi,''):'bl-default';
+        var labelTag=label?'<span class="block-label '+labelClass+'">'+escapeHtml(label)+'</span>':'';
+        var text=block.lines.map(function(l){return l.text;}).join('\n');
+        html+='<div class="block-box '+(label?'has-label':'')+'">'+labelTag+
+          '<div class="block-text">'+escapeHtml(text)+'</div></div>';
+      }
+      html+='</div>';
+    }
+    body.innerHTML=html;
+  }catch(e){
+    body.innerHTML='<div class="viewer-empty">加载出错: '+escapeHtml(e.message)+'</div>';
+  }
+}
+
+{% if doc %}
+_tags = {{ doc.source_tags | tojson }} || ['primary'];
+if(!_tags.length)_tags=['primary'];
+renderTags();
+loadContent();
+{% endif %}
+</script>
+</body>
+</html>

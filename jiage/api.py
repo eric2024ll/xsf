@@ -19,12 +19,13 @@ import pymupdf
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .config import get_collections_dir, list_collections, get_auth_token
+from .config import get_collections_dir, list_collections, get_auth_token, get_db_path
 from .db import init_db, get_conn
-from .search import search, get_block_lines, get_context
+from .search import search, get_block_lines, get_context, get_highlight_terms
 from .bib_utils import (
     generate_cite_key, sync_doc_fields, parse_bib_data, to_bibtex,
     BIB_TYPE_FIELDS, BIB_TYPE_LABELS, BIB_FIELD_LABELS,
@@ -73,6 +74,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="static")
 
 _FAVICON_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
@@ -166,12 +169,34 @@ async def logout():
 
 # ── 页面 ──────────────────────────────────────────────
 
+def _nav_ctx(active: str = "", collection: str = "", **kw):
+    """构建导航栏通用 context."""
+    ctx = {
+        "active_nav": active,
+        "collection": collection,
+        "collections": list_collections(),
+    }
+    ctx.update(kw)
+    return ctx
+
+
 @app.get("/")
-async def index(request: Request):
+async def bookshelf(request: Request):
     return templates.TemplateResponse(
         request,
-        "index.html",
-        {"version": _VERSION},
+        "bookshelf.html",
+        _nav_ctx("bookshelf", "", version=_VERSION),
+    )
+
+
+@app.get("/search")
+async def search_page(request: Request, c: str = "", q: str = ""):
+    coll = c if c and c in list_collections() else ""
+    hl = get_highlight_terms(q) if q else []
+    return templates.TemplateResponse(
+        request,
+        "search.html",
+        _nav_ctx("search", coll, q=q, highlight_terms=hl),
     )
 
 
@@ -180,6 +205,61 @@ async def index(request: Request):
 @app.get("/api/collections")
 async def api_collections():
     return {"collections": list_collections()}
+
+
+@app.post("/api/collections/{collection}")
+async def api_create_collection(collection: str):
+    """创建新书架: 初始化 DB."""
+    name = (collection or "").strip()
+    if not name:
+        return JSONResponse({"error": "名称不能为空"}, status_code=400)
+    if "/" in name or "\\" in name or name in (".", ".."):
+        return JSONResponse({"error": "名称包含非法字符"}, status_code=400)
+    if name in list_collections():
+        return JSONResponse({"error": "书架已存在"}, status_code=409)
+    init_db(name)
+    return {"ok": True, "name": name}
+
+
+@app.delete("/api/collections/{collection}")
+async def api_delete_collection(collection: str):
+    """删除书架: DB 目录 + 源文件目录."""
+    if collection not in list_collections():
+        return JSONResponse({"error": "书架不存在"}, status_code=404)
+    # DB 目录
+    db_dir = get_db_path(collection).parent
+    if db_dir.exists():
+        shutil.rmtree(db_dir)
+    # 源文件目录
+    coll_dir = get_collections_dir() / collection
+    if coll_dir.exists():
+        shutil.rmtree(coll_dir)
+    return {"ok": True}
+
+
+@app.patch("/api/collections/{collection}")
+async def api_rename_collection(collection: str, new_name: str = ""):
+    """重命名书架: 移动 DB 目录 + 源文件目录."""
+    new_name = (new_name or "").strip()
+    if not new_name:
+        return JSONResponse({"error": "新名称不能为空"}, status_code=400)
+    if "/" in new_name or "\\" in new_name or new_name in (".", ".."):
+        return JSONResponse({"error": "名称包含非法字符"}, status_code=400)
+    if collection not in list_collections():
+        return JSONResponse({"error": "书架不存在"}, status_code=404)
+    if new_name in list_collections():
+        return JSONResponse({"error": "名称已被占用"}, status_code=409)
+    # DB 目录
+    old_db = get_db_path(collection).parent
+    new_db = get_db_path(new_name).parent
+    if old_db.exists():
+        old_db.rename(new_db)
+    # 源文件目录
+    old_coll = get_collections_dir() / collection
+    new_coll = get_collections_dir() / new_name
+    if old_coll.exists():
+        old_coll.rename(new_coll)
+    return {"ok": True, "new_name": new_name}
 
 
 # ── 搜索 ──────────────────────────────────────────────
@@ -717,13 +797,65 @@ async def docs_list_page(request: Request, collection: str):
     return templates.TemplateResponse(
         request,
         "docs_list.html",
-        {
-            "collection": collection,
-            "collections": collections,
-            "source_tags": sorted(tags),
-            "bib_type_labels": BIB_TYPE_LABELS,
-        },
+        _nav_ctx("docs", collection,
+                 source_tags=sorted(tags),
+                 bib_type_labels=BIB_TYPE_LABELS),
     )
+
+
+@app.get("/collections/{collection}/upload")
+async def upload_page(request: Request, collection: str):
+    """资料上传页 (Tab: 上传文件 / 导入数据包)."""
+    if collection not in list_collections():
+        return RedirectResponse(url="/")
+    return templates.TemplateResponse(
+        request,
+        "upload.html",
+        _nav_ctx("upload", collection),
+    )
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/preview")
+async def preview_page(request: Request, collection: str, doc_id: int):
+    """纯文本预览页 (page→block→line + source-tag, 无 bib)."""
+    try:
+        conn = get_conn(collection)
+        try:
+            doc = conn.execute(
+                """SELECT id, title, author, filename, page_count, doc_type,
+                          source_tags, cite_key
+                   FROM documents WHERE id = ?""",
+                (doc_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if doc is None:
+            return templates.TemplateResponse(
+                request,
+                "preview.html",
+                _nav_ctx("", collection, error="文献不存在"),
+                status_code=404,
+            )
+        doc_d = dict(doc)
+        try:
+            tags = json.loads(doc_d.get("source_tags") or '["primary"]')
+            if not isinstance(tags, list) or not tags:
+                tags = ["primary"]
+        except (json.JSONDecodeError, TypeError):
+            tags = ["primary"]
+        doc_d["source_tags"] = tags
+        return templates.TemplateResponse(
+            request,
+            "preview.html",
+            _nav_ctx("", collection, doc=doc_d, doc_id=doc_id),
+        )
+    except Exception as e:
+        return templates.TemplateResponse(
+            request,
+            "preview.html",
+            _nav_ctx("", collection, error=str(e)),
+            status_code=500,
+        )
 
 
 @app.get("/collections/{collection}/docs/query")
@@ -1209,15 +1341,14 @@ def _highlight_keyword(text: str, keyword: str) -> str:
     """把 keyword 中的空格/空白分隔词在 text 里高亮为 <mark>（繁简互转）。"""
     if not text or not keyword:
         return html.escape(text or "")
-    from .search import _s2t, _t2s
+    from .search import _all_variants
 
     tokens = [t for t in keyword.split() if t.strip()]
     if not tokens:
         return html.escape(text)
     result = html.escape(text)
     for tok in tokens:
-        variants = {tok, _s2t.convert(tok), _t2s.convert(tok)}
-        variants = {v for v in variants if v}
+        variants = _all_variants(tok)
         alt = '|'.join(re.escape(v) for v in sorted(variants))
         pattern = re.compile(f'({alt})', re.IGNORECASE)
         result = pattern.sub(r'<mark>\1</mark>', result)
@@ -1250,10 +1381,7 @@ async def proofread_page(
                 return templates.TemplateResponse(
                     request,
                     "proofread.html",
-                    {
-                        "error": f"文献 id={doc_id} 不存在",
-                        "collection": collection,
-                    },
+                    _nav_ctx("", collection, error=f"文献 id={doc_id} 不存在"),
                     status_code=404,
                 )
 
@@ -1365,38 +1493,34 @@ async def proofread_page(
         return templates.TemplateResponse(
             request,
             "proofread.html",
-            {
-                "collection": collection,
-                "doc": dict(doc),
-                "page_num": page_num,
-                "page_count": page_count,
-                "blocks": blocks,
-                "keyword": keyword or "",
-                "target_block": block,
-                "target_line": line,
-                "scale": scale,
-                "render_width": render_width,
-                "render_height": render_height,
-                "orig_width": orig_width,
-                "orig_height": orig_height,
-                "highlight": _highlight_keyword,
-                "source_tags": source_tags,
-                "bib_type": bib_type,
-                "bib_data": bib_data,
-                "bib_type_labels": BIB_TYPE_LABELS,
-                "bib_field_labels": BIB_FIELD_LABELS,
-                "bib_type_fields": BIB_TYPE_FIELDS,
-                "linked_pdf": linked_pdf,
-            },
+            _nav_ctx("", collection,
+                doc=dict(doc),
+                page_num=page_num,
+                page_count=page_count,
+                blocks=blocks,
+                keyword=keyword or "",
+                target_block=block,
+                target_line=line,
+                scale=scale,
+                render_width=render_width,
+                render_height=render_height,
+                orig_width=orig_width,
+                orig_height=orig_height,
+                highlight=_highlight_keyword,
+                source_tags=source_tags,
+                bib_type=bib_type,
+                bib_data=bib_data,
+                bib_type_labels=BIB_TYPE_LABELS,
+                bib_field_labels=BIB_FIELD_LABELS,
+                bib_type_fields=BIB_TYPE_FIELDS,
+                linked_pdf=linked_pdf,
+            ),
         )
     except Exception as e:
         return templates.TemplateResponse(
             request,
             "proofread.html",
-            {
-                "error": str(e),
-                "collection": collection,
-            },
+            _nav_ctx("", collection, error=str(e)),
             status_code=500,
         )
 

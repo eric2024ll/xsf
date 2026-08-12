@@ -8,11 +8,11 @@ import re
 from pypinyin import lazy_pinyin, Style
 
 BIB_TYPE_FIELDS = {
-    "@book": ["author", "title", "date", "publisher", "location", "edition"],
-    "@article": ["author", "title", "date", "journaltitle", "volume", "number", "pages"],
-    "@manuscript": ["author", "title", "date", "repository"],
-    "@online": ["author", "title", "date", "url", "urldate"],
-    "@incollection": ["author", "title", "booktitle", "bookauthor", "date", "publisher", "pages"],
+    "@article": ["author", "title", "journal", "year", "volume", "number", "pages"],
+    "@book": ["author", "title", "publisher", "year", "address", "edition"],
+    "@incollection": ["author", "title", "booktitle", "editor", "publisher", "year", "address", "pages"],
+    "@manuscript": ["author", "title", "year", "institution"],
+    "@online": ["author", "title", "year", "url"],
 }
 
 BIB_TYPE_LABELS = {
@@ -26,19 +26,25 @@ BIB_TYPE_LABELS = {
 BIB_FIELD_LABELS = {
     "author": "作者",
     "title": "标题",
-    "date": "日期",
+    "year": "年份",
     "publisher": "出版者",
-    "location": "出版地",
+    "address": "出版地",
     "edition": "版次",
-    "journaltitle": "期刊名",
+    "journal": "期刊名",
     "volume": "卷",
     "number": "期",
     "pages": "页码",
-    "repository": "馆藏机构",
-    "url": "URL",
-    "urldate": "访问日期",
+    "editor": "编者",
+    "institution": "机构",
     "booktitle": "所在文献标题",
-    "bookauthor": "所在文献作者",
+    "url": "URL",
+    "doi": "DOI",
+    "note": "备注",
+    "month": "月份",
+    "series": "丛书",
+    "school": "学校",
+    "organization": "组织",
+    "howpublished": "出版方式",
 }
 
 
@@ -97,11 +103,14 @@ def generate_cite_key(bib_data: dict, existing_keys: set[str],
     exclude_key: 更新时排除自身的 cite_key（避免自己和自己冲突）。
     """
     author = bib_data.get("author", "")
-    date = str(bib_data.get("date", "")).strip()
     year = ""
-    m = re.search(r"(\d{4})", date)
-    if m:
-        year = m.group(1)
+    if bib_data.get("year"):
+        year = str(bib_data["year"]).strip()
+    else:
+        date = str(bib_data.get("date", "")).strip()
+        m = re.search(r"(\d{4})", date)
+        if m:
+            year = m.group(1)
 
     surname = _first_author_surname(author)
     title = bib_data.get("title", "")

@@ -1,0 +1,15 @@
+{# 预览模态框 — 各页面 {% include '_preview_modal.html' %} 使用
+   配合 /static/preview-modal.js: pmOpen(collection, docId, opts) / pmClose()
+#}
+<div class="pm-overlay" id="pmOverlay" onclick="if(event.target===this)pmClose()">
+  <div class="pm-modal">
+    <div class="pm-header">
+      <h3 id="pmTitle">预览</h3>
+      <button type="button" class="pm-close" onclick="pmClose()">&times;</button>
+    </div>
+    <div class="pm-meta" id="pmMeta"></div>
+    <div class="pm-body" id="pmBody">
+      <div class="preview-loading">加载中…</div>
+    </div>
+  </div>
+</div>

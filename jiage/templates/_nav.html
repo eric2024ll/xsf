@@ -1,0 +1,28 @@
+{# 统一导航栏 — 在各页面 {% include '_nav.html' %} 使用
+   需传入 context: active_nav, collection (可空), collections (列表)
+#}
+<nav class="top-nav">
+  <a class="brand" href="/">架閣</a>
+  <div class="nav-tabs">
+    <a href="/" class="{% if active_nav == 'bookshelf' %}active{% endif %}">书架</a>
+    {% if collection %}
+    <a href="/search?c={{ collection | urlencode }}" class="{% if active_nav == 'search' %}active{% endif %}">搜索</a>
+    {% else %}
+    <a href="/search" class="{% if active_nav == 'search' %}active{% endif %}">搜索</a>
+    {% endif %}
+    {% if collection %}
+    <a href="/collections/{{ collection | urlencode }}/docs/list" class="{% if active_nav == 'docs' %}active{% endif %}">文献列表</a>
+    <a href="/collections/{{ collection | urlencode }}/upload" class="{% if active_nav == 'upload' %}active{% endif %}">资料上传</a>
+    {% else %}
+    <a class="disabled" title="请先选择书架">文献列表</a>
+    <a class="disabled" title="请先选择书架">资料上传</a>
+    {% endif %}
+  </div>
+  <div class="nav-right">
+    <a href="/logout" class="nav-logout">退出</a>
+  </div>
+</nav>
+<script>
+window.NAV_COLLECTION = {{ collection | tojson }};
+window.NAV_COLLECTIONS = {{ collections | tojson }};
+</script>

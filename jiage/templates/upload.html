@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.ico">
+<title>资料上传 — 架閣</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+.main { max-width: 700px; margin: 0 auto; padding: 20px; }
+.tab-bar { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+.tab-bar button {
+  padding: 10px 20px; font-size: 0.9rem; border: none; background: none;
+  cursor: pointer; color: var(--text-muted);
+  border-bottom: 2px solid transparent; font-weight: 500;
+}
+.tab-bar button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.tab-pane { display: none; }
+.tab-pane.active { display: block; }
+
+/* 上传表单 */
+.upload-form { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+.upload-form .field { margin-bottom: 10px; }
+.upload-form label { font-size: 0.82rem; color: var(--text-muted); display: block; margin-bottom: 3px; }
+.upload-form input[type="text"], .upload-form input[type="file"] {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 5px; font-size: 0.85rem;
+}
+.upload-form .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; }
+.upload-form .checkbox-row label { margin: 0; }
+.upload-form button[type="submit"] {
+  width: 100%; padding: 9px; background: var(--success); color: white; border: none;
+  border-radius: 5px; cursor: pointer; font-size: 0.88rem; font-weight: 600; margin-top: 4px;
+}
+.upload-form button[type="submit"]:disabled { opacity: 0.5; cursor: not-allowed; }
+.upload-status { margin-top: 8px; font-size: 0.8rem; padding: 6px 10px; border-radius: 5px; display: none; }
+.upload-status.show { display: block; }
+.upload-status.ok { background: #d4edda; color: #155724; }
+.upload-status.err { background: #f8d7da; color: #721c24; }
+.upload-status.loading { background: var(--accent); color: var(--primary); }
+.file-list { margin-top: 6px; }
+.file-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.78rem; padding: 3px 6px; background: var(--bg); border-radius: 4px; margin-bottom: 3px; }
+.file-item .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.file-item .fstate { font-size: 0.72rem; white-space: nowrap; flex-shrink: 0; }
+.file-item .fstate.wait { color: var(--text-muted); }
+.file-item .fstate.run { color: var(--primary); }
+.file-item .fstate.ok { color: var(--success); }
+.file-item .fstate.err { color: var(--danger); }
+.tag-selector { display: flex; flex-direction: column; gap: 6px; }
+.tag-presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.tag-custom { display: flex; gap: 6px; align-items: center; }
+.tag-custom input { flex: 1; width: auto; padding: 5px 12px; font-size: 0.82rem; border: 1px solid var(--border); border-radius: 6px; outline: none; min-width: 0; }
+.tag-custom input:focus { border-color: var(--primary); }
+.tag-custom button { width: auto; padding: 3px 8px; font-size: 0.7rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+.tag-selected { display: flex; gap: 4px; flex-wrap: wrap; min-height: 18px; }
+
+/* 导入数据包 */
+.import-area { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+.import-area .hint { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px; line-height: 1.7; }
+.import-drop {
+  border: 2px dashed var(--border); border-radius: var(--radius); padding: 30px;
+  text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s;
+}
+.import-drop:hover { border-color: var(--primary); background: var(--accent); }
+.import-drop .icon { font-size: 2rem; margin-bottom: 8px; }
+.import-drop .text { font-size: 0.88rem; color: var(--text-muted); }
+.import-status { margin-top: 12px; font-size: 0.82rem; padding: 8px 12px; border-radius: 5px; display: none; }
+.import-status.show { display: block; }
+.import-status.ok { background: #d4edda; color: #155724; }
+.import-status.err { background: #f8d7da; color: #721c24; }
+.import-status.loading { background: var(--accent); color: var(--primary); }
+</style>
+</head>
+<body data-page="upload">
+{% include '_nav.html' %}
+<div class="main">
+  <div class="tab-bar">
+    <button class="active" onclick="switchTab('upload',this)">上传文件</button>
+    <button onclick="switchTab('import',this)">导入数据包</button>
+  </div>
+
+  <!-- Tab1: 上传文件 -->
+  <div class="tab-pane active" id="tab-upload">
+    <form class="upload-form" id="uploadForm">
+      <div class="field">
+        <label>文件（可多选：PDF / MD / 图片）</label>
+        <input type="file" id="fileInput" accept=".pdf,.md,.markdown,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.gif" multiple required>
+        <div class="file-list" id="fileList"></div>
+      </div>
+      <div class="field">
+        <label>cite_key (可选，批量时共用)</label>
+        <input type="text" id="upCiteKey" placeholder="如: tang2005">
+      </div>
+      <div class="field">
+        <label>标题 (可选，批量时共用)</label>
+        <input type="text" id="upTitle">
+      </div>
+      <div class="field">
+        <label>作者 (可选，批量时共用)</label>
+        <input type="text" id="upAuthor">
+      </div>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="upOcr">
+        <label for="upOcr">PDF 走 OCR 扫描件模式（图片始终 OCR）</label>
+      </div>
+      <div class="field">
+        <label>来源标签（批量时共用）</label>
+        <div class="tag-selector">
+          <div class="tag-presets">
+            <span class="tag-chip preset" data-tag="primary" onclick="togglePresetTag(this)">原始史料</span>
+            <span class="tag-chip preset" data-tag="secondary" onclick="togglePresetTag(this)">研究文献</span>
+            <span class="tag-chip preset" data-tag="reference" onclick="togglePresetTag(this)">工具书</span>
+          </div>
+          <div class="tag-custom">
+            <input type="text" id="tagCustomInput" placeholder="自定义标签…" onkeydown="if(event.key==='Enter'){event.preventDefault();addCustomTag();}">
+            <button type="button" onclick="addCustomTag()">添加</button>
+          </div>
+          <div class="tag-selected" id="tagSelected"></div>
+        </div>
+      </div>
+      <button type="submit" id="uploadBtn">上传入库</button>
+    </form>
+    <div class="upload-status" id="uploadStatus"></div>
+  </div>
+
+  <!-- Tab2: 导入数据包 -->
+  <div class="tab-pane" id="tab-import">
+    <div class="import-area">
+      <div class="hint">
+        导入此前导出的 <code>.tar.gz</code> 数据包（含 SQLite 数据库 + 原始文件 + 清单）。<br>
+        文件名冲突时会自动追加 <code>_imported</code> 后缀。
+      </div>
+      <div class="import-drop" onclick="document.getElementById('importArchiveInput').click()">
+        <div class="icon">📦</div>
+        <div class="text">点击选择 .tar.gz 数据包</div>
+      </div>
+      <input type="file" id="importArchiveInput" accept=".tar.gz,.tgz" style="display:none;" onchange="importArchive(this)">
+      <div class="import-status" id="importStatus"></div>
+    </div>
+  </div>
+</div>
+
+<div class="msg" id="msg"></div>
+
+<script src="/static/nav.js"></script>
+<script>
+var currentCollection = {{ collection | tojson }};
+var _TAG_LABELS = {primary:'原始史料', secondary:'研究文献', reference:'工具书'};
+var _uploadTags = ['primary'];
+var _ACCEPT_EXT = new Set(['pdf','md','markdown','jpg','jpeg','png','webp','bmp','tif','tiff','gif']);
+
+function escapeHtml(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+function tagLabel(t){return _TAG_LABELS[t]||t;}
+
+function switchTab(name,btn){
+  document.querySelectorAll('.tab-pane').forEach(function(p){p.classList.remove('active');});
+  document.getElementById('tab-'+name).classList.add('active');
+  document.querySelectorAll('.tab-bar button').forEach(function(b){b.classList.remove('active');});
+  btn.classList.add('active');
+}
+
+/* ── 来源标签 ── */
+function renderUploadTags(){
+  var sel=document.getElementById('tagSelected');
+  sel.innerHTML=_uploadTags.map(function(t,i){
+    return '<span class="tag-chip active removable" onclick="removeUploadTag('+i+')">'+escapeHtml(tagLabel(t))+'</span>';
+  }).join('');
+  document.querySelectorAll('.tag-chip.preset').forEach(function(el){
+    el.classList.toggle('active',_uploadTags.indexOf(el.dataset.tag)>=0);
+  });
+}
+function togglePresetTag(el){
+  var tag=el.dataset.tag;var idx=_uploadTags.indexOf(tag);
+  if(idx>=0)_uploadTags.splice(idx,1);else _uploadTags.push(tag);
+  if(!_uploadTags.length)_uploadTags=['primary'];
+  renderUploadTags();
+}
+function addCustomTag(){
+  var input=document.getElementById('tagCustomInput');var val=input.value.trim();
+  if(!val)return;
+  if(_uploadTags.indexOf(val)<0)_uploadTags.push(val);
+  input.value='';renderUploadTags();
+}
+function removeUploadTag(i){
+  _uploadTags.splice(i,1);
+  if(!_uploadTags.length)_uploadTags=['primary'];
+  renderUploadTags();
+}
+renderUploadTags();
+
+/* ── 文件上传 ── */
+function fileExt(name){if(!name||name.indexOf('.')<0)return'';return name.toLowerCase().split('.').pop();}
+function renderFileList(files){
+  var list=document.getElementById('fileList');list.innerHTML='';
+  if(!files||!files.length)return;
+  for(var i=0;i<files.length;i++){
+    var f=files[i];var ext=fileExt(f.name);var valid=_ACCEPT_EXT.has(ext);
+    var needOcr=['jpg','jpeg','png','webp','bmp','tif','tiff','gif'].indexOf(ext)>=0;
+    var tag=needOcr?' (OCR)':'';
+    var div=document.createElement('div');div.className='file-item';div.dataset.name=f.name;
+    div.innerHTML='<span class="fname">'+escapeHtml(f.name)+tag+'</span>'+
+      '<span class="fstate '+(valid?'wait':'err')+'">'+(valid?'待传':'不支持')+'</span>';
+    list.appendChild(div);
+  }
+}
+document.getElementById('fileInput').addEventListener('change',function(e){renderFileList(e.target.files);});
+
+document.getElementById('uploadForm').addEventListener('submit', async function(e){
+  e.preventDefault();
+  if(!currentCollection){alert('请先选择书架');return;}
+  var statusEl=document.getElementById('uploadStatus');
+  var btn=document.getElementById('uploadBtn');
+  var fileInput=document.getElementById('fileInput');
+  var files=Array.from(fileInput.files).filter(function(f){return _ACCEPT_EXT.has(fileExt(f.name));});
+  if(!files.length){alert('请选择有效文件');return;}
+  var citeKey=document.getElementById('upCiteKey').value;
+  var title=document.getElementById('upTitle').value;
+  var author=document.getElementById('upAuthor').value;
+  var ocr=document.getElementById('upOcr').checked;
+  var sourceTags=JSON.stringify(_uploadTags);
+  btn.disabled=true;statusEl.className='upload-status show loading';
+  var itemEls={};
+  Array.from(document.getElementById('fileList').children).forEach(function(el){
+    itemEls[el.dataset.name]=el.querySelector('.fstate');
+  });
+  var okCount=0,failCount=0;
+  for(var i=0;i<files.length;i++){
+    var f=files[i];var stEl=itemEls[f.name];
+    if(stEl){stEl.className='fstate run';stEl.textContent=(i+1)+'/'+files.length;}
+    statusEl.textContent='正在处理 ('+(i+1)+'/'+files.length+'): '+f.name;
+    try{
+      var fd=new FormData();
+      fd.append('files',f);fd.append('cite_key',citeKey);fd.append('title',title);
+      fd.append('author',author);fd.append('ocr',ocr);fd.append('source_tags',sourceTags);
+      var res=await fetch('/collections/'+encodeURIComponent(currentCollection)+'/add',{method:'POST',body:fd});
+      var data=await res.json();
+      var okR=(data.results||[]).filter(function(r){return r.filename===f.name;});
+      var errs=(data.errors||[]).filter(function(r){return r.filename===f.name;});
+      if(okR.length){if(stEl){stEl.className='fstate ok';stEl.textContent='✓'+(okR[0].result.blocks||0)+'块';}okCount++;}
+      else{if(stEl){stEl.className='fstate err';stEl.textContent='失败';}failCount++;}
+    }catch(err){if(stEl){stEl.className='fstate err';stEl.textContent='失败';}failCount++;}
+  }
+  if(failCount===0){statusEl.className='upload-status show ok';statusEl.textContent='全部成功：'+okCount+' 个文件';}
+  else if(okCount===0){statusEl.className='upload-status show err';statusEl.textContent='全部失败：'+failCount+' 个';}
+  else{statusEl.className='upload-status show ok';statusEl.textContent='成功 '+okCount+' / 失败 '+failCount;}
+  btn.disabled=false;
+  if(okCount>0){document.getElementById('uploadForm').reset();document.getElementById('fileList').innerHTML='';renderUploadTags();}
+});
+
+/* ── 导入数据包 ── */
+async function importArchive(input){
+  var f=input.files[0];if(!f)return;input.value='';
+  var st=document.getElementById('importStatus');
+  st.className='import-status show loading';st.textContent='导入中…请稍候';
+  try{
+    var fd=new FormData();fd.append('file',f);
+    var r=await fetch('/collections/'+encodeURIComponent(currentCollection)+'/docs/import-archive',{method:'POST',body:fd});
+    var data=await r.json();
+    if(data.error){st.className='import-status show err';st.textContent='导入失败: '+data.error;return;}
+    st.className='import-status show ok';
+    st.textContent='已导入 '+data.imported+' 篇'+(data.conflicts.length?'（'+data.conflicts.length+' 个文件名冲突已重命名）':'');
+  }catch(e){st.className='import-status show err';st.textContent='导入失败: '+e.message;}
+}
+</script>
+</body>
+</html>
