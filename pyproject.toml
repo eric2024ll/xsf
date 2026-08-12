@@ -1,7 +1,7 @@
 [project]
 name = "jiage"
 version = "0.1.0"
-description = "架阁 — 文献池检索系统"
+description = "小書房 — 文献池检索系统"
 requires-python = ">=3.11"
 dependencies = [
     "PyMuPDF",

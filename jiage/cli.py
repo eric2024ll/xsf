@@ -119,7 +119,7 @@ def cmd_stats(args):
     total_lines = 0
     total_blocks = 0
 
-    print('架阁统计')
+    print('小書房统计')
     for coll in colls:
         conn = get_conn(coll)
         try:
@@ -146,7 +146,7 @@ def cmd_stats(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='jiage', description='架阁 — 文献池检索系统')
+        prog='jiage', description='小書房 — 文献池检索系统')
     sub = parser.add_subparsers(dest='command')
 
     sub.add_parser('init', help='初始化数据库')

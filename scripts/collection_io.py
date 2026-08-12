@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""架閣 — Collection 导入导出 CLI
+"""小書房 — Collection 导入导出 CLI
 
 用法:
   python scripts/collection_io.py export <collection> [-o output.tar.gz]
@@ -192,7 +192,7 @@ def cmd_import(collection: str, archive: str, conflict: str,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="架閣 Collection 导入导出工具",
+        description="小書房 Collection 导入导出工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
