@@ -109,7 +109,7 @@ header h1 {
 }
 .bib-import-btn:hover { background:var(--bg-secondary); }
 .bib-paste-input { flex:1; min-width:0; padding:4px 8px; font-size:0.75rem;
-  border:1px dashed var(--border); border-radius:5px; outline:none; resize:none; }
+  border:1px dashed var(--border); border-radius:5px; outline:none; resize:vertical; font-family:monospace; }
 .bib-paste-input:focus { border-color:var(--primary); border-style:solid; }
 .bib-import-msg { font-size:0.72rem; color:var(--text-muted); }
 .bib-save-row { margin-top:6px; display:flex; gap:8px; align-items:center; }
@@ -824,7 +824,7 @@ function renderBibPanel() {
   html += `<div class="bib-import-row">`;
   html += `<input type="file" id="proofBibFile" accept=".bib,.bibtex,.txt" style="display:none" onchange="importBibFile(event)">`;
   html += `<button type="button" class="bib-import-btn" onclick="document.getElementById('proofBibFile').click()">导入 .bib 文件</button>`;
-  html += `<textarea class="bib-paste-input" placeholder="粘贴 BibTeX 后点识别" rows="1" onpaste="var el=this;setTimeout(function(){onBibPaste(el)},0)"></textarea>`;
+  html += `<textarea class="bib-paste-input" placeholder="粘贴 BibTeX 后点识别" rows="3" onpaste="var el=this;setTimeout(function(){onBibPaste(el)},0)"></textarea>`;
   html += `<button type="button" class="bib-import-btn" onclick="onBibPaste(this.parentElement.querySelector('.bib-paste-input'))">识别</button>`;
   html += `<span class="bib-import-msg" id="proofBibImportMsg"></span></div>`;
   for (const f of allFields) {
