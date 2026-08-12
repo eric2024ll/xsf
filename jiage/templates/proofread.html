@@ -824,7 +824,8 @@ function renderBibPanel() {
   html += `<div class="bib-import-row">`;
   html += `<input type="file" id="proofBibFile" accept=".bib,.bibtex,.txt" style="display:none" onchange="importBibFile(event)">`;
   html += `<button type="button" class="bib-import-btn" onclick="document.getElementById('proofBibFile').click()">导入 .bib 文件</button>`;
-  html += `<textarea class="bib-paste-input" placeholder="或粘贴 BibTeX 自动识别…" rows="1" oninput="onBibPaste(this)"></textarea>`;
+  html += `<textarea class="bib-paste-input" placeholder="粘贴 BibTeX 后点识别" rows="1" onpaste="var el=this;setTimeout(function(){onBibPaste(el)},0)"></textarea>`;
+  html += `<button type="button" class="bib-import-btn" onclick="onBibPaste(this.parentElement.querySelector('.bib-paste-input'))">识别</button>`;
   html += `<span class="bib-import-msg" id="proofBibImportMsg"></span></div>`;
   for (const f of allFields) {
     html += `<div class="bib-row"><label>${escapeHtml(bibLabel(f))}</label><input type="text" data-bk="${escapeHtml(f)}" value="${escapeHtml(_bibData[f]||'')}" placeholder="${escapeHtml(bibLabel(f))}">`;

@@ -1423,7 +1423,8 @@ function renderBibPanel(doc, docId, coll) {
   html += `<div class="bib-import-row">`;
   html += `<input type="file" id="bibFileInput" accept=".bib,.bibtex,.txt" style="display:none" onchange="importBibFile(event)">`;
   html += `<button type="button" class="bib-import-btn" onclick="document.getElementById('bibFileInput').click()">导入 .bib 文件</button>`;
-  html += `<textarea class="bib-paste-input" placeholder="或粘贴 BibTeX 自动识别…" rows="1" oninput="onBibPaste(this)"></textarea>`;
+  html += `<textarea class="bib-paste-input" placeholder="粘贴 BibTeX 后点识别" rows="1" onpaste="var el=this;setTimeout(function(){onBibPaste(el)},0)"></textarea>`;
+  html += `<button type="button" class="bib-import-btn" onclick="onBibPaste(this.parentElement.querySelector('.bib-paste-input'))">识别</button>`;
   html += `<span class="bib-import-msg" id="bibImportMsg"></span></div>`;
 
   // 预设字段 + 自定义字段
