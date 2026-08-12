@@ -199,7 +199,6 @@ function init(){
   fillCollSelect();
   fillTagFilter();
   fillBibTypeFilter();
-  fillMigrateTarget();
   loadPage(1);
 }
 
@@ -232,16 +231,6 @@ function fillBibTypeFilter(){
   BIB_TYPES.forEach(t => {
     const opt = document.createElement('option');
     opt.value = t.key; opt.textContent = t.label;
-    sel.appendChild(opt);
-  });
-}
-
-function fillMigrateTarget(){
-  const sel = document.getElementById('migrateTarget');
-  sel.innerHTML = '<option value="">选择目标书架</option>';
-  collections.filter(c => c !== collection).forEach(c => {
-    const opt = document.createElement('option');
-    opt.value = c; opt.textContent = c;
     sel.appendChild(opt);
   });
 }
