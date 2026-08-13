@@ -5,11 +5,10 @@
 
 ## 项目定位
 
-jiage 是史学研究工具链的**感知层上游**——把 PDF 变成可检索的文本池.
+jiage 是史学研究工具链的**感知层上游**——把 PDF 变成可检索的文本池，以 Web『小書房』(FastAPI) 为主入口、CLI 为辅.
 
-- **设计来源**: histflow-plan (`/mnt/d/workspace/mem/histflow-plan/`)
-- **原则**: 设计决策在 histflow-plan; 代码与数据实验在 jiage; 实现中的 Bug/约束反馈回 histflow 修订设计
-- **主入口**: CLI (`jiage` 命令), 未来 P3 加 Web (FastAPI)
+- **设计来源**: histflow-plan (`/mnt/d/workspace/mem/histflow-plan/`). 两库分工与关系方向的权威定义见其 `schema.md` §与外部系统/仓库的关系；本文件只聚焦 jiage 的开发与部署.
+- **原则**: 设计决策在 histflow-plan; 代码与数据实验在 jiage; Bug/约束反馈回 histflow 修订设计
 - **数据分离**: 代码在本仓库, 数据在 `~/jiage-data/` (`JIAGE_DATA` 环境变量可覆盖)
 
 ## 两地架构
@@ -36,7 +35,7 @@ git commit -m "<type>: <描述>"    # type = feat / fix / docs / refactor
 git push origin main
 ```
 
-> commit message 用英文, 参考历史: `feat: P1 OCR integration with PaddleOCR-VL`
+> commit message 描述中英皆可 (参考历史), type 用英文: feat / fix / docs / refactor
 
 ### 本地测试
 
@@ -63,7 +62,38 @@ uvicorn jiage.api:app --host 0.0.0.0 --port 8090
 # → 浏览器访问 http://47.93.199.96:8090
 ```
 
-端点: `/`(首页) `/login`(登录) `/logout`(退出) `/api/collections`(书架列表) `/api/stats`(统计) `/collections/{c}/search`(搜索) `/collections/{c}/add`(上传) `/collections/{c}/docs`(文献列表) `/collections/{c}/context`(上下文) `/collections/{c}/stats`(单书架统计) `/collections/{c}/doc/{id}`(删除) `/collections/{c}/doc/{id}/proofread`(OCR 校对页) `/collections/{c}/doc/{id}/page/{p}/image`(PDF 页面 PNG) `/collections/{c}/doc/{id}/line/{lid}/edit`(保存行编辑) `/collections/{c}/doc/{id}/hits`(文档内命中列表)
+端点 (按功能分组，`{c}` = collection):
+
+**页面 (HTML)**
+- `/` 书架页 (全库统计 + 书架列表 + 最近文献; 记 `last_collection` cookie 供下次回归)
+- `/login` `/logout` 登录 / 退出
+- `/search` 跨书架搜索页
+- `/collections/{c}/docs/list` 文献列表页
+- `/collections/{c}/upload` 资料上传页
+- `/collections/{c}/doc/{id}/preview` 纯文本预览
+- `/collections/{c}/doc/{id}/proofread` 图文对照 OCR 校对页
+
+**书架 / 配置 API**
+- `GET /api/collections` 书架列表
+- `POST` / `DELETE` / `PATCH /api/collections/{c}` 创建 / 删除 / 重命名书架
+- `GET` / `POST /api/ocr-config`、`POST /api/ocr-config/test` OCR 配置与连通测试
+- `GET /api/stats` 全库统计　`GET /collections/{c}/stats` 单书架统计
+
+**文献操作 API**
+- `GET /collections/{c}/docs` 文献列表(简)　`/docs/query` 分页筛选
+- `POST /collections/{c}/add` 上传 (pdf/md/图片, 可 OCR)
+- `DELETE` / `PATCH /collections/{c}/doc/{id}` 删除 / 改元数据
+- `POST /collections/{c}/doc/{id}/link-pdf` 关联 PDF
+- `GET /collections/{c}/doc/{id}/content` 文献内容(页/块/行)
+- `GET /collections/{c}/doc/{id}/page/{p}/image` PDF 页 PNG
+- `POST /collections/{c}/doc/{id}/line/{lid}/edit` 保存行编辑
+- `POST /collections/{c}/doc/{id}/page/{p}/reocr` 手工分栏重 OCR
+- `GET /collections/{c}/doc/{id}/hits` 文档内命中
+- `GET /collections/{c}/search` 书架内搜索　`GET /collections/{c}/context/{doc_id}/{page}/{block}` 命中上下文
+
+**批量导入 / 导出**
+- `POST .../docs/export-bib` `/export-md` `/export-archive` 导出　`.../docs/import-archive` 导入
+- `POST .../docs/match-bib` 自动书目匹配　`.../docs/batch-patch` 批量改元数据
 
 ## 服务器部署与实测流程 (标准)
 
@@ -153,7 +183,7 @@ EOF
 
 ```bash
 cat > /root/jiage/.env << 'EOF'
-PADDLE_OCR_TOKEN=bd359751f7cce339715ad8b7311bfde6009a68cb
+PADDLE_OCR_TOKEN=<从 aistudio 获取的 token>
 JIAGE_AUTH_TOKEN=<用户自设密码>
 JIAGE_COLLECTIONS_DIR=/mnt/oss/sources/jiage/collections
 EOF
