@@ -170,6 +170,7 @@
 
 .bbox-overlay {
   position: absolute;
+  display: none;
   border: 1.5px solid color-mix(in srgb, var(--tc, #4361ee) 55%, transparent);
   background: color-mix(in srgb, var(--tc, #4361ee) 8%, transparent);
   cursor: pointer;
@@ -177,6 +178,8 @@
   border-radius: 2px;
   transition: border-width .12s ease, background .12s ease;
 }
+.bbox-overlay.active { display: block; }
+.image-wrap.show-all .bbox-overlay { display: block; }
 .bbox-overlay:hover,
 .bbox-overlay.active {
   border-color: var(--tc, #4361ee);
@@ -503,6 +506,12 @@ mark {
   background: var(--danger); border-color: var(--danger); color: white;
 }
 .img-toolbar .hint { color: var(--text-muted); font-size: 0.72rem; margin-left: 6px; }
+.img-toolbar button.on {
+  background: var(--accent);
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 600;
+}
 
 /* 拖拽平移 */
 .image-wrap { cursor: grab; }
@@ -710,6 +719,7 @@ mark {
         <button onclick="zoomSetFit()" title="适应宽度">適寬</button>
         <button onclick="zoomSetPct(1)" title="实际尺寸 (150dpi)">1:1</button>
         <button class="reocr-btn" id="reocrToggle" onclick="toggleReocrMode()">框选重OCR</button>
+        <button id="showAllBoxes" onclick="toggleShowAllBoxes()">显示全部框</button>
         <span class="hint">滚轮缩放 · 拖拽平移</span>
       </div>
       <div class="type-legend" id="typeLegend"></div>
@@ -996,12 +1006,8 @@ function applyScale() {
   renderRegions();
 }
 
-function onLineHover(el) {
-  activate(el.dataset.lineId, false);
-}
-function onLineLeave(el) {
-  if (!_persistLineId) deactivate();
-}
+function onLineHover(el) { /* 悬停仅靠 CSS :hover 高亮文本行，不显示框 */ }
+function onLineLeave(el) { }
 function onLineClick(el) {
   _persistLineId = el.dataset.lineId;
   activate(_persistLineId, true);
@@ -1550,6 +1556,16 @@ async function exportDocMd() {
   } catch (e) {
     showToast('导出出错: ' + e.message);
   }
+}
+
+// ── 显示全部框（总览开关） ──
+let _showAllBoxes = false;
+function toggleShowAllBoxes() {
+  _showAllBoxes = !_showAllBoxes;
+  document.getElementById('imageWrap').classList.toggle('show-all', _showAllBoxes);
+  const b = document.getElementById('showAllBoxes');
+  b.classList.toggle('on', _showAllBoxes);
+  b.textContent = _showAllBoxes ? '隐藏全部框' : '显示全部框';
 }
 
 // 初始化（模板已渲染 bbox / block-group，可直接着色）

@@ -56,3 +56,17 @@ Paddle task 页是登录后 JS 应用，无法直接抓取；按对 PaddleOCR �
 
 - PaddleOCR-VL 的实际 block_label 与文档示例不同（doc_title/vertical_text/plain_text 等），
   初版色板按标准 PP-Structure 名写，渲染后才发现需补——以后接新 provider 先 dump 实际 label 值再配色板。
+
+## 追加：框默认隐藏 + 点击显框 + 总览开关（同日）
+
+用户反馈：图上框应默认不出现，只有点击相应文本才出现。
+
+改动（仅 `proofread.html`，CSS+少量 JS）：
+- CSS：`.bbox-overlay` 默认 `display:none`；`.active` 与 `.image-wrap.show-all` 时 `display:block`。
+  点击文本 → `activate()` 加 `.active` → 框显；`deactivate()` → 框隐。JS 逻辑零改。
+- 取消 hover 显框：`onLineHover`/`onLineLeave` 置空（文本行悬停高亮仍由 CSS `:hover` 负责）。
+- 总览开关：图片工具栏加「显示全部框」按钮 → 切 `#imageWrap.show-all` 类 → CSS 全显；
+  F1 筛选用 inline display 覆盖，优先级最高，与 show-all/.active 三者互不冲突。
+- 框选重OCR 模式本就 display:none，一致。
+
+验证：TestClient 渲染 200（display:none/show-all/button/fn/onLineHover 全在场）；node --check OK。
