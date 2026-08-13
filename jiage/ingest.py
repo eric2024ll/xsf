@@ -157,6 +157,8 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
         for page in pages:
             page_num = page.get('page_index', 0) + 1
             parsing_res_list = page.get('parsing_res_list', [])
+            page_w = page.get('width')
+            page_h = page.get('height')
 
             block_num = 0
             for block in parsing_res_list:
@@ -188,9 +190,9 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
                 for ln_num, ln_text in enumerate(lines, 1):
                     conn.execute(
                         '''INSERT INTO lines
-                           (doc_id, page_num, block_num, line_num, text, bbox, block_label)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                        (doc_id, page_num, block_num, ln_num, ln_text, bbox_json, label)
+                           (doc_id, page_num, block_num, line_num, text, bbox, block_label, page_w, page_h)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (doc_id, page_num, block_num, ln_num, ln_text, bbox_json, label, page_w, page_h)
                     )
                     total_lines += 1
 

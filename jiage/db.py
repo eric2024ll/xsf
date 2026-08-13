@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS lines (
     line_num INTEGER NOT NULL,
     text TEXT NOT NULL,
     bbox TEXT,
-    block_label TEXT
+    block_label TEXT,
+    page_w INTEGER,
+    page_h INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_lines_doc_page
@@ -63,6 +65,10 @@ def _migrate(conn):
         conn.execute("ALTER TABLE lines ADD COLUMN bbox TEXT")
     if "block_label" not in cols:
         conn.execute("ALTER TABLE lines ADD COLUMN block_label TEXT")
+    if "page_w" not in cols:
+        conn.execute("ALTER TABLE lines ADD COLUMN page_w INTEGER")
+    if "page_h" not in cols:
+        conn.execute("ALTER TABLE lines ADD COLUMN page_h INTEGER")
 
     doc_cols = {row[1] for row in conn.execute("PRAGMA table_info(documents)")}
     if "is_primary" not in doc_cols:

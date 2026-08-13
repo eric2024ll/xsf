@@ -1411,18 +1411,18 @@ async def api_import_archive(collection: str, file: UploadFile = File(...)):
 
                     for r in src.execute(
                         """SELECT page_num, block_num, line_num, text,
-                                  bbox, block_label
+                                  bbox, block_label, page_w, page_h
                            FROM lines WHERE doc_id = ?""",
                         (old_id,),
                     ).fetchall():
                         dst.execute(
                             """INSERT INTO lines
                                (doc_id, page_num, block_num, line_num,
-                                text, bbox, block_label)
-                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                                text, bbox, block_label, page_w, page_h)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             (new_id, r["page_num"], r["block_num"],
                              r["line_num"], r["text"], r["bbox"],
-                             r["block_label"]),
+                             r["block_label"], r["page_w"], r["page_h"]),
                         )
 
                     for r in src.execute(
@@ -1610,7 +1610,7 @@ async def proofread_page(
 
             rows = conn.execute(
                 """SELECT id, page_num, block_num, line_num, text,
-                          bbox, block_label
+                          bbox, block_label, page_w, page_h
                    FROM lines
                    WHERE doc_id = ? AND page_num = ?
                    ORDER BY block_num, line_num""",
@@ -1650,19 +1650,26 @@ async def proofread_page(
             })
         blocks = [blocks_map[bn] for bn in sorted(blocks_map)]
 
-        # 从 bbox 推断 OCR 原始页面尺寸
+        # OCR 原始页面尺寸: 优先用 DB 存储的 OCR 返回宽高
         orig_width = 0
         orig_height = 0
-        for b in blocks:
-            for ln in b["lines"]:
-                bb = ln.get("bbox")
+        for r in rows:
+            if r["page_w"] and r["page_w"] > orig_width:
+                orig_width = r["page_w"]
+            if r["page_h"] and r["page_h"] > orig_height:
+                orig_height = r["page_h"]
+        # fallback: 旧数据无 page_w/page_h，用 max bbox 近似
+        if not orig_width or not orig_height:
+            for b in blocks:
+                for ln in b["lines"]:
+                    bb = ln.get("bbox")
+                    if bb and len(bb) >= 4:
+                        orig_width = max(orig_width, bb[2])
+                        orig_height = max(orig_height, bb[3])
+                bb = b.get("bbox")
                 if bb and len(bb) >= 4:
                     orig_width = max(orig_width, bb[2])
                     orig_height = max(orig_height, bb[3])
-            bb = b.get("bbox")
-            if bb and len(bb) >= 4:
-                orig_width = max(orig_width, bb[2])
-                orig_height = max(orig_height, bb[3])
 
         # 按 150 DPI 渲染时图片自然尺寸
         render_width = None
@@ -1912,6 +1919,10 @@ async def reocr_page(
                     status_code=404, content={"error": "页码超出范围"})
             page_obj = src[page_num - 1]
 
+            # 150 DPI 页面尺寸（REOCR bbox 坐标系，与 page_image 一致）
+            reocr_page_w = int(round(page_obj.rect.width * 150 / 72.0))
+            reocr_page_h = int(round(page_obj.rect.height * 150 / 72.0))
+
             # 每个 region 裁切为一张图，按顺序拼成多页 PDF
             out_pdf = pymupdf.open()
             crop_meta = []  # (x0, y0, pix_w, pix_h)
@@ -2025,10 +2036,10 @@ async def reocr_page(
                     conn.execute(
                         """INSERT INTO lines
                            (doc_id, page_num, block_num, line_num, text,
-                            bbox, block_label)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            bbox, block_label, page_w, page_h)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (doc_id, page_num, block_num, ln_num, ln_text,
-                         bbox_json, b["block_label"]),
+                         bbox_json, b["block_label"], reocr_page_w, reocr_page_h),
                     )
                     total_lines += 1
                 conn.execute(
