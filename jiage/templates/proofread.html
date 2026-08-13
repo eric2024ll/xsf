@@ -802,7 +802,7 @@ mark {
              id="text-{{ ln.id }}"
              data-line-id="{{ ln.id }}"
              oninput="onLineEdit({{ ln.id }})"
-             onclick="event.stopPropagation()">{{ highlight(ln.text, keyword) | safe }}</div>
+             onclick="event.stopPropagation(); onLineClick(this.closest('.line-item'))">{{ highlight(ln.text, keyword) | safe }}</div>
         <button class="save-btn"
                 id="save-{{ ln.id }}"
                 onclick="event.stopPropagation(); saveLine({{ ln.id }})">保存</button>
