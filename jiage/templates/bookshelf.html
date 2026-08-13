@@ -40,12 +40,33 @@
   font-size: 0.72rem; background: var(--accent); color: var(--primary);
 }
 .empty-hint { padding: 30px; text-align: center; color: var(--text-muted); font-size: 0.88rem; }
+.resume-banner {
+  display: flex; align-items: center; gap: 12px;
+  background: linear-gradient(90deg, var(--accent), #fff);
+  border: 1px solid var(--border); border-left: 4px solid var(--primary);
+  border-radius: var(--radius); padding: 14px 18px; margin-bottom: 24px;
+}
+.resume-banner .resume-icon { font-size: 1.4rem; }
+.resume-banner .resume-text { font-size: 0.95rem; color: var(--text); flex: 1; }
+.resume-banner .resume-text strong { color: var(--primary); font-size: 1.05rem; }
+.resume-banner .resume-btn { padding: 6px 16px; font-weight: 600; white-space: nowrap; }
+.coll-last-badge {
+  display: inline-block; padding: 1px 7px; border-radius: 4px; margin-left: 6px;
+  font-size: 0.7rem; background: var(--primary); color: #fff;
+}
 @media(max-width:768px){ .stats-grid{grid-template-columns:repeat(2,1fr);} }
 </style>
 </head>
 <body data-page="bookshelf">
 {% include '_nav.html' %}
 <div class="main">
+  {% if last_collection %}
+  <div class="resume-banner">
+    <span class="resume-icon">📖</span>
+    <span class="resume-text">上次书架：<strong>{{ last_collection }}</strong></span>
+    <a class="btn resume-btn" href="/collections/{{ last_collection | urlencode }}/docs/list">继续进入 →</a>
+  </div>
+  {% endif %}
   <div class="section-title">全库统计</div>
   <div class="stats-grid">
     <div class="stat-card"><div class="num" id="statDocs">-</div><div class="label">文献</div></div>
@@ -70,6 +91,7 @@
 <script src="/static/nav.js"></script>
 <script src="/static/preview-modal.js"></script>
 <script>
+window.LAST_COLLECTION = {{ last_collection | tojson }};
 function escapeHtml(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 function attrEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');}
 
@@ -92,8 +114,12 @@ function renderColls(colls){
     return;
   }
   var h='<table><thead><tr><th>书架</th><th>文献数</th><th>页数</th><th>操作</th></tr></thead><tbody>';
-  colls.forEach(function(c){
-    h+='<tr><td><span class="coll-link">'+escapeHtml(c.name)+'</span></td>'+
+  var last=window.LAST_COLLECTION||'';
+  colls.slice().sort(function(a,b){
+    if(a.name===last)return -1; if(b.name===last)return 1; return 0;
+  }).forEach(function(c){
+    var badge=(c.name===last)?'<span class="coll-last-badge">上次使用</span>':'';
+    h+='<tr><td><span class="coll-link">'+escapeHtml(c.name)+'</span>'+badge+'</td>'+
        '<td>'+c.count+'</td><td>'+c.pages+'</td>'+
        '<td><a href="/collections/'+encodeURIComponent(c.name)+'/docs/list">进入</a> · '+
        '<button class="btn coll-act" onclick="renameColl('+attrEsc(JSON.stringify(c.name))+')">改名</button> · '+

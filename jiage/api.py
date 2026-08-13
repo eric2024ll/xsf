@@ -134,6 +134,35 @@ class AuthMiddleware(BaseHTTPMiddleware):
 app.add_middleware(AuthMiddleware)
 
 
+# ── Last Collection 持久化 ────────────────────────────────
+
+import re as _re
+from urllib.parse import quote as _urlquote, unquote as _urlunquote
+_COLL_PATH_RE = _re.compile(r'^/collections/([^/]+)')
+
+
+class LastCollectionMiddleware(BaseHTTPMiddleware):
+    """凡访问 /collections/{c}/... 就把 c 记为最近书架 (cookie, 7 天)。
+
+    cookie 值做 URL 编码 (书架名可能含中文/特殊字符，避免 header 编码问题)。
+    只记录不校验存在性 (省目录扫描)，校验放到读取时 (GET /)。
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        resp = await call_next(request)
+        m = _COLL_PATH_RE.match(request.url.path)
+        if m and resp.status_code < 400:
+            resp.set_cookie(
+                'last_collection', _urlquote(m.group(1), safe=''),
+                httponly=True, samesite='lax',
+                max_age=7 * 24 * 3600,
+            )
+        return resp
+
+
+app.add_middleware(LastCollectionMiddleware)
+
+
 # ── Auth: login / logout ──────────────────────────────
 
 @app.get("/login")
@@ -186,10 +215,14 @@ def _nav_ctx(active: str = "", collection: str = "", **kw):
 
 @app.get("/")
 async def bookshelf(request: Request):
+    last = _urlunquote(request.cookies.get('last_collection', ''))
+    if last and last not in list_collections():
+        last = ''
     return templates.TemplateResponse(
         request,
         "bookshelf.html",
-        _nav_ctx("bookshelf", "", version=_VERSION),
+        _nav_ctx("bookshelf", "", version=_VERSION,
+                 last_collection=last),
     )
 
 
