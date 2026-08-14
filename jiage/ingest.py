@@ -118,8 +118,9 @@ def ingest_pdf(pdf_path: str | Path, collection: str,
 def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
                        cite_key: str = None, title: str = None,
                        author: str = None,
-                       source_tags: str = '["primary"]') -> dict:
-    """扫描件 OCR 入库（PaddleOCR-VL）。bbox+block_label 入库，doc_type='ocr'。"""
+                       source_tags: str = '["primary"]',
+                       provider_id: str = None) -> dict:
+    """扫描件 OCR 入库（generic_http provider）。bbox+block_label 入库，doc_type='ocr'。"""
     from .ocr import get_provider
 
     pdf_path = Path(pdf_path)
@@ -134,8 +135,8 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
         author = meta.get('author') or None
     doc.close()
 
-    # 调 OCR provider
-    provider = get_provider()
+    # 调 OCR provider (默认走全局 default, provider_id 可显式指定)
+    provider = get_provider(provider_id)
     pages = provider.ocr(str(pdf_path))
 
     is_primary, is_secondary, is_reference = _source_flags(source_tags)

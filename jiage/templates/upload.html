@@ -73,25 +73,43 @@
 .ocr-form { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
 .ocr-form .field { margin-bottom: 14px; }
 .ocr-form label { font-size: 0.82rem; color: var(--text-muted); display: block; margin-bottom: 3px; }
-.ocr-form .provider-label { font-size: 0.9rem; font-weight: 600; color: var(--primary); }
-.ocr-form .token-row { display: flex; gap: 6px; align-items: center; }
-.ocr-form .token-row input { flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 5px; font-size: 0.85rem; font-family: monospace; }
-.ocr-form .token-row button { padding: 6px 10px; font-size: 0.78rem; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); cursor: pointer; white-space: nowrap; }
+.ocr-form input[type="text"], .ocr-form input[type="password"] {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 5px; font-size: 0.85rem; box-sizing: border-box;
+}
+.ocr-form .hint { font-size: 0.8rem; color: var(--text-muted); line-height: 1.7; }
+.ocr-form .hint code { background: var(--bg); padding: 1px 5px; border-radius: 3px; font-size: 0.78rem; }
+.provider-list { margin-bottom: 18px; }
+.provider-item {
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 8px;
+  background: var(--bg); display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+}
+.provider-item.is-default { border-color: var(--primary); background: var(--accent); }
+.provider-item .radio { margin-top: 3px; }
+.provider-item .meta { flex: 1; min-width: 200px; }
+.provider-item .pname { font-size: 0.9rem; font-weight: 600; }
+.provider-item .purl { font-size: 0.75rem; color: var(--text-muted); font-family: monospace; word-break: break-all; margin-top: 2px; }
+.provider-item .pinfo { font-size: 0.72rem; color: var(--text-muted); margin-top: 3px; }
+.provider-item .pinfo .badge-ok { color: var(--success); font-weight: 600; }
+.provider-item .pinfo .badge-def { color: var(--primary); font-weight: 600; }
+.provider-item .pops { display: flex; gap: 6px; flex-shrink: 0; }
+.provider-item .pops button {
+  padding: 4px 10px; font-size: 0.75rem; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--card-bg); cursor: pointer;
+}
+.provider-item .pops button.btn-del { color: var(--danger); }
+.provider-item .pops button:disabled { opacity: 0.5; cursor: not-allowed; }
 .ocr-form .actions { display: flex; gap: 8px; margin-top: 10px; }
 .ocr-form .actions button { padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
-.ocr-form .btn-test { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
 .ocr-form .btn-save { background: var(--success); color: white; }
+.ocr-form .btn-cancel { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
 .ocr-form .actions button:disabled { opacity: 0.5; cursor: not-allowed; }
-.ocr-form .hint { font-size: 0.8rem; color: var(--text-muted); line-height: 1.7; }
-.ocr-form .hint a { color: var(--primary); }
 .ocr-status { margin-top: 8px; font-size: 0.8rem; padding: 6px 10px; border-radius: 5px; display: none; }
 .ocr-status.show { display: block; }
 .ocr-status.ok { background: #d4edda; color: #155724; }
 .ocr-status.err { background: #f8d7da; color: #721c24; }
 .ocr-status.loading { background: var(--accent); color: var(--primary); }
-.ocr-current { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 12px; }
-.ocr-current .badge-ok { color: var(--success); font-weight: 600; }
-.ocr-current .badge-no { color: var(--danger); font-weight: 600; }
+.ocr-empty { font-size: 0.82rem; color: var(--text-muted); padding: 10px; text-align: center; }
+.ocr-form .section-title { font-size: 0.88rem; font-weight: 600; margin: 4px 0 10px; }
 </style>
 </head>
 <body data-page="upload">
@@ -163,28 +181,38 @@
     </div>
   </div>
 
-  <!-- Tab3: OCR 设置 -->
+  <!-- Tab3: OCR 设置 (generic_http provider 管理) -->
   <div class="tab-pane" id="tab-ocr">
     <div class="ocr-form">
-      <div class="ocr-current" id="ocrCurrent"></div>
+      <div class="section-title">已添加的 OCR 服务</div>
+      <div class="provider-list" id="providerList"></div>
+
+      <div class="section-title" id="providerFormTitle">添加 OCR 服务</div>
+      <input type="hidden" id="pfId" value="">
       <div class="field">
-        <label>OCR 引擎</label>
-        <span class="provider-label">PaddleOCR-VL</span>
+        <label>名称</label>
+        <input type="text" id="pfName" placeholder="如: 本机 GPU / 远程 OCR 服务">
       </div>
       <div class="field">
-        <label>Bearer Token</label>
-        <div class="token-row">
-          <input type="password" id="ocrTokenInput" placeholder="粘贴 aistudio bearer token…">
-          <button type="button" onclick="toggleTokenVisibility()">显示</button>
-        </div>
+        <label>URL</label>
+        <input type="text" id="pfUrl" placeholder="http://127.0.0.1:8091/ocr">
+      </div>
+      <div class="field">
+        <label>API Key（可选，发送 Bearer 头）</label>
+        <input type="password" id="pfKey" placeholder="留空 = 不鉴权（编辑时留空保留原值）">
+      </div>
+      <div class="field">
+        <label>Model（可选，作为表单字段发送）</label>
+        <input type="text" id="pfModel" placeholder="如: PaddleOCR-VL-1.6">
       </div>
       <div class="hint">
-        从 <a href="https://aistudio.baidu.com/" target="_blank">aistudio</a> 获取 token（F12 → Application → Cookies → CLI_SESSION_TOKEN 或 API 页面的 bearer 值）。
-        Token 保存在服务端配置文件，环境变量 <code>PADDLE_OCR_TOKEN</code> 作为回退。
+        统一 <b>generic_http</b> 同步协议：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code>。
+        本地模型先包装成 HTTP 服务（如 <code>~/paddleocr-vl/server.py</code>）再添加。
+        上传 OCR 始终使用默认服务（点选列表项切换）。
       </div>
       <div class="actions">
-        <button class="btn-test" id="ocrTestBtn" onclick="testOcrToken()">测试连通</button>
-        <button class="btn-save" id="ocrSaveBtn" onclick="saveOcrToken()">保存</button>
+        <button class="btn-save" id="pfSaveBtn" onclick="saveProvider()">保存</button>
+        <button class="btn-cancel" id="pfCancelBtn" onclick="resetProviderForm()" style="display:none;">取消编辑</button>
       </div>
       <div class="ocr-status" id="ocrStatus"></div>
     </div>
@@ -313,66 +341,121 @@ async function importArchive(input){
   }catch(e){st.className='import-status show err';st.textContent='导入失败: '+e.message;}
 }
 
-/* ── OCR 设置 ── */
+/* ── OCR 设置 (generic_http provider 管理) ── */
 function ocrStatusEl(msg, cls) {
   var st = document.getElementById('ocrStatus');
   st.className = 'ocr-status show ' + cls;
   st.textContent = msg;
 }
-function toggleTokenVisibility() {
-  var inp = document.getElementById('ocrTokenInput');
-  var btn = inp.nextElementSibling;
-  if (inp.type === 'password') { inp.type = 'text'; btn.textContent = '隐藏'; }
-  else { inp.type = 'password'; btn.textContent = '显示'; }
+function resetProviderForm() {
+  document.getElementById('pfId').value = '';
+  document.getElementById('pfName').value = '';
+  document.getElementById('pfUrl').value = '';
+  document.getElementById('pfKey').value = '';
+  document.getElementById('pfModel').value = '';
+  document.getElementById('providerFormTitle').textContent = '添加 OCR 服务';
+  document.getElementById('pfCancelBtn').style.display = 'none';
 }
-async function loadOcrConfig() {
+var _providers = [], _defaultPid = null;
+async function loadProviders() {
   try {
     var r = await fetch('/api/ocr-config');
     var data = await r.json();
-    var el = document.getElementById('ocrCurrent');
-    if (data.has_token) {
-      el.innerHTML = '当前状态: <span class="badge-ok">✓ 已设置</span>' +
-        (data.updated_at ? ' (更新于 ' + escapeHtml(data.updated_at + '') + ')' : '');
-    } else {
-      el.innerHTML = '当前状态: <span class="badge-no">✗ 未设置</span> （环境变量有回退时仍可用）';
-    }
+    _providers = data.providers || [];
+    _defaultPid = data.default;
+    renderProviders();
   } catch (e) { /* 静默 */ }
 }
-async function testOcrToken() {
-  var token = document.getElementById('ocrTokenInput').value.trim();
-  var btn = document.getElementById('ocrTestBtn');
-  btn.disabled = true;
-  ocrStatusEl('测试中…', 'loading');
+function renderProviders() {
+  var el = document.getElementById('providerList');
+  if (!_providers.length) {
+    el.innerHTML = '<div class="ocr-empty">尚未添加 OCR 服务。在下方表单添加第一个（本地服务或远程 API）。</div>';
+    return;
+  }
+  el.innerHTML = _providers.map(function(p) {
+    var isDef = p.id === _defaultPid;
+    return '<div class="provider-item' + (isDef ? ' is-default' : '') + '">' +
+      '<input type="radio" name="defProvider" class="radio" ' + (isDef ? 'checked' : '') +
+      ' title="设为默认" onchange="setDefault(\'' + p.id + '\')">' +
+      '<div class="meta">' +
+      '<div class="pname">' + escapeHtml(p.name) + (isDef ? ' <span class="badge-def">默认</span>' : '') + '</div>' +
+      '<div class="purl">' + escapeHtml(p.url) + '</div>' +
+      '<div class="pinfo">' +
+      (p.has_key ? '<span class="badge-ok">🔑 已设密钥</span> · ' : '') +
+      (p.model ? 'model: ' + escapeHtml(p.model) + ' · ' : '') +
+      (p.updated_at ? escapeHtml(p.updated_at) : '') +
+      '</div></div>' +
+      '<div class="pops">' +
+      '<button onclick="testProvider(\'' + p.id + '\',this)">测试</button>' +
+      '<button onclick="editProvider(\'' + p.id + '\')">编辑</button>' +
+      '<button class="btn-del" onclick="deleteProvider(\'' + p.id + '\')">删除</button>' +
+      '</div></div>';
+  }).join('');
+}
+async function setDefault(pid) {
   try {
-    var fd = new FormData();
-    fd.append('token', token);
+    var fd = new FormData(); fd.append('id', pid);
+    var r = await fetch('/api/ocr-config/default', { method: 'POST', body: fd });
+    var data = await r.json();
+    if (data.ok) { _defaultPid = pid; renderProviders(); ocrStatusEl('✓ 默认已切换: ' + pid, 'ok'); }
+    else { ocrStatusEl('✗ ' + (data.error || '设置失败'), 'err'); loadProviders(); }
+  } catch (e) { ocrStatusEl('✗ 网络错误: ' + e.message, 'err'); loadProviders(); }
+}
+async function testProvider(pid, btn) {
+  if (btn) btn.disabled = true;
+  ocrStatusEl('测试中（发送空白页 PDF，可能需数十秒）…', 'loading');
+  try {
+    var fd = new FormData(); fd.append('id', pid);
     var r = await fetch('/api/ocr-config/test', { method: 'POST', body: fd });
     var data = await r.json();
-    if (data.ok) { ocrStatusEl('✓ 连通成功' + (data.job_id ? ' (job: ' + data.job_id + ')' : ''), 'ok'); }
-    else { ocrStatusEl('✗ ' + (data.error || '测试失败'), 'err'); }
+    if (data.ok) ocrStatusEl('✓ 连通成功（返回 ' + data.pages + ' 页）', 'ok');
+    else ocrStatusEl('✗ ' + (data.error || '测试失败'), 'err');
   } catch (e) { ocrStatusEl('✗ 网络错误: ' + e.message, 'err'); }
-  btn.disabled = false;
+  if (btn) btn.disabled = false;
 }
-async function saveOcrToken() {
-  var token = document.getElementById('ocrTokenInput').value.trim();
-  if (!token) { alert('请输入 token'); return; }
-  var btn = document.getElementById('ocrSaveBtn');
-  btn.disabled = true;
-  ocrStatusEl('保存中…', 'loading');
+function editProvider(pid) {
+  var p = _providers.filter(function(x) { return x.id === pid; })[0];
+  if (!p) return;
+  document.getElementById('pfId').value = p.id;
+  document.getElementById('pfName').value = p.name;
+  document.getElementById('pfUrl').value = p.url;
+  document.getElementById('pfKey').value = '';
+  document.getElementById('pfModel').value = p.model || '';
+  document.getElementById('providerFormTitle').textContent = '编辑: ' + p.name;
+  document.getElementById('pfCancelBtn').style.display = '';
+  window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+}
+async function deleteProvider(pid) {
+  if (!confirm('确定删除该 OCR 服务配置？')) return;
+  try {
+    var r = await fetch('/api/ocr-config/provider/' + encodeURIComponent(pid), { method: 'DELETE' });
+    var data = await r.json();
+    if (data.ok) { ocrStatusEl('✓ 已删除', 'ok'); loadProviders(); }
+    else ocrStatusEl('✗ ' + (data.error || '删除失败'), 'err');
+  } catch (e) { ocrStatusEl('✗ 网络错误: ' + e.message, 'err'); }
+}
+async function saveProvider() {
+  var id = document.getElementById('pfId').value;
+  var name = document.getElementById('pfName').value.trim();
+  var url = document.getElementById('pfUrl').value.trim();
+  var key = document.getElementById('pfKey').value;
+  var model = document.getElementById('pfModel').value.trim();
+  if (!name || !url) { alert('名称和 URL 不能为空'); return; }
+  var btn = document.getElementById('pfSaveBtn');
+  btn.disabled = true; ocrStatusEl('保存中…', 'loading');
   try {
     var fd = new FormData();
-    fd.append('token', token);
-    var r = await fetch('/api/ocr-config', { method: 'POST', body: fd });
+    fd.append('name', name); fd.append('url', url);
+    fd.append('api_key', key); fd.append('model', model);
+    if (id) fd.append('id', id);
+    var r = await fetch('/api/ocr-config/provider', { method: 'POST', body: fd });
     var data = await r.json();
-    if (data.ok) {
-      ocrStatusEl('✓ 已保存', 'ok');
-      document.getElementById('ocrTokenInput').value = '';
-      loadOcrConfig();
-    } else { ocrStatusEl('✗ ' + (data.error || '保存失败'), 'err'); }
+    if (data.ok) { ocrStatusEl('✓ 已保存 (' + data.id + ')', 'ok'); resetProviderForm(); loadProviders(); }
+    else ocrStatusEl('✗ ' + (data.error || '保存失败'), 'err');
   } catch (e) { ocrStatusEl('✗ 网络错误: ' + e.message, 'err'); }
   btn.disabled = false;
 }
-loadOcrConfig();
+loadProviders();
 </script>
 </body>
 </html>

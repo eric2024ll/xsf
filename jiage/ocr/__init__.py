@@ -1,9 +1,9 @@
-"""OCR provider 子包.
+"""OCR provider 子包 (generic_http 同步协议).
 
-统一入口: ocr_pdf() 或 get_provider().ocr().
+统一入口: get_provider().ocr() — 按配置 (ocr-config.json v2) 构建 adapter。
 """
-from .paddle_api import ocr_pdf
 from .adapter import DirectAdapter
-from .registry import get_provider, list_providers, register
+from .http_api import ocr_file
+from .registry import get_provider, list_providers
 
-__all__ = ["ocr_pdf", "DirectAdapter", "get_provider", "list_providers", "register"]
+__all__ = ["ocr_file", "DirectAdapter", "get_provider", "list_providers"]

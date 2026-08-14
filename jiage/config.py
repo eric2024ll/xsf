@@ -83,36 +83,141 @@ def _write_ocr_config(data: dict) -> None:
         raise
 
 
-def get_ocr_token() -> str:
-    """OCR bearer token: 配置文件优先，环境变量 PADDLE_OCR_TOKEN fallback。"""
+# ── OCR provider 配置 (v2, generic_http 同步协议) ────────
+# schema: {version: 2, providers: [{id, name, url, api_key?, model?}], default?}
+# 唯一协议: POST <url> multipart(file[, model]) [+ Bearer api_key]
+#           → {pages: [{page_index, parsing_res_list, width, height}]}
+# 旧 v1 ({token, provider}) 无对应协议, 不迁移, 读作空列表。
+
+
+def get_ocr_providers() -> list[dict]:
+    """v2 providers 列表 (深拷贝)。v1/损坏配置返回 []。"""
     cfg = _read_ocr_config()
-    token = cfg.get('token', '').strip()
-    if token:
-        return token
-    token = os.environ.get('PADDLE_OCR_TOKEN')
-    if not token:
+    if cfg.get('version') != 2:
+        return []
+    providers = cfg.get('providers', [])
+    return [dict(p) for p in providers if isinstance(p, dict) and p.get('id')]
+
+
+def get_default_ocr_provider_id() -> str | None:
+    """默认 provider id: 配置 default > JIAGE_OCR_METHOD (匹配 id) > 首个。"""
+    cfg = _read_ocr_config()
+    providers = cfg.get('providers', []) if cfg.get('version') == 2 else []
+    ids = [p.get('id') for p in providers if p.get('id')]
+    default = cfg.get('default')
+    if default in ids:
+        return default
+    env = os.environ.get('JIAGE_OCR_METHOD')
+    if env in ids:
+        return env
+    return ids[0] if ids else None
+
+
+def get_ocr_provider_cfg(provider_id: str = None) -> dict:
+    """解析 provider 配置: 显式 id > default 解析链。找不到 raise RuntimeError。"""
+    providers = get_ocr_providers()
+    if not providers:
         raise RuntimeError(
-            'OCR token 未设置。请在前端「OCR 设置」填入，'
-            '或设置 PADDLE_OCR_TOKEN 环境变量。'
+            '未配置 OCR provider。请在前端「OCR 设置」添加 '
+            '(generic_http: POST 文件 → {pages:[...]})，'
+            '或设置 JIAGE_OCR_METHOD 环境变量。'
         )
-    return token
+    want = provider_id or get_default_ocr_provider_id()
+    for p in providers:
+        if p['id'] == want:
+            return p
+    avail = ', '.join(p['id'] for p in providers)
+    raise RuntimeError(f'未知 OCR provider: {want}。已配置: {avail}')
 
 
-def save_ocr_config(token: str, provider: str = 'paddle_api') -> dict:
-    """保存 OCR 配置。返回写入的完整 dict。"""
+def _next_provider_id(providers: list[dict]) -> str:
+    n = 1
+    existing = {p['id'] for p in providers}
+    while f'p{n}' in existing:
+        n += 1
+    return f'p{n}'
+
+
+def save_ocr_provider(name: str, url: str, pid: str = None,
+                      api_key: str = None, model: str = None) -> dict:
+    """新增 (pid 为空) / 编辑 (pid 已存在) provider。
+
+    api_key 传 None/空 且为编辑 → 保留旧值。
+    返回写入后的完整 provider dict (api_key 打码为 has_key 标记由调用方处理)。
+    """
+    name = (name or '').strip()
+    url = (url or '').strip()
+    if not name or not url:
+        raise ValueError('name 和 url 不能为空')
+    if not (url.startswith('http://') or url.startswith('https://')):
+        raise ValueError('url 必须以 http:// 或 https:// 开头')
+
     cfg = _read_ocr_config()
-    cfg['provider'] = provider
-    if token:
-        cfg['token'] = token.strip()
+    if cfg.get('version') != 2:
+        cfg = {'version': 2, 'providers': []}
+    providers = cfg.get('providers', [])
+
+    if pid:
+        target = next((p for p in providers if p['id'] == pid), None)
+        if target is None:
+            raise KeyError(f'provider 不存在: {pid}')
+        target['name'] = name
+        target['url'] = url
+        if api_key:                       # 空 = 保留旧值
+            target['api_key'] = api_key.strip()
+        if model is not None:
+            target['model'] = model.strip() or None
+        target['updated_at'] = datetime.now().isoformat(timespec='seconds')
+        result = dict(target)
+    else:
+        pid = _next_provider_id(providers)
+        entry = {
+            'id': pid,
+            'name': name,
+            'url': url,
+            'model': (model or '').strip() or None,
+            'created_at': datetime.now().isoformat(timespec='seconds'),
+        }
+        if api_key:
+            entry['api_key'] = api_key.strip()
+        providers.append(entry)
+        result = dict(entry)
+
+    cfg['providers'] = providers
+    if not cfg.get('default'):
+        cfg['default'] = pid
     cfg['updated_at'] = datetime.now().isoformat(timespec='seconds')
     _write_ocr_config(cfg)
-    return cfg
+    return result
 
 
-def get_ocr_method() -> str:
-    """OCR provider 名: 配置文件优先，环境变量 JIAGE_OCR_METHOD fallback。"""
+def delete_ocr_provider(pid: str) -> bool:
+    """删除 provider。若它是 default 则清空 default。返回是否删除。"""
     cfg = _read_ocr_config()
-    return cfg.get('provider') or os.environ.get('JIAGE_OCR_METHOD', 'paddle_api')
+    if cfg.get('version') != 2:
+        return False
+    providers = cfg.get('providers', [])
+    remaining = [p for p in providers if p.get('id') != pid]
+    if len(remaining) == len(providers):
+        return False
+    cfg['providers'] = remaining
+    if cfg.get('default') == pid:
+        cfg['default'] = remaining[0]['id'] if remaining else None
+    cfg['updated_at'] = datetime.now().isoformat(timespec='seconds')
+    _write_ocr_config(cfg)
+    return True
+
+
+def set_default_ocr_provider(pid: str) -> None:
+    """设置全局默认 provider。"""
+    cfg = _read_ocr_config()
+    providers = cfg.get('providers', []) if cfg.get('version') == 2 else []
+    ids = [p.get('id') for p in providers]
+    if pid not in ids:
+        raise KeyError(f'provider 不存在: {pid}')
+    cfg['default'] = pid
+    cfg['updated_at'] = datetime.now().isoformat(timespec='seconds')
+    _write_ocr_config(cfg)
 
 
 def get_auth_token() -> str | None:

@@ -41,9 +41,10 @@ git push origin main
 
 ```bash
 cd ~/projects/jiage
-export PADDLE_OCR_TOKEN="<token>"                   # 从 aistudio 获取
+# OCR provider 在 Web「OCR 设置」页添加 (generic_http: 本地 ~/paddleocr-vl/server.py :8091 或任意远程 API)
 .venv/bin/jiage init                                 # 首次初始化 DB
-.venv/bin/jiage add <pdf> -c <collection> --ocr      # OCR 入库
+.venv/bin/jiage add <pdf> -c <collection> --ocr      # OCR 入库 (默认 provider)
+.venv/bin/jiage add <pdf> -c <collection> --ocr --provider p1   # 指定 provider
 .venv/bin/jiage search "<query>"                     # FTS 搜索
 .venv/bin/jiage stats                                # 统计
 ```
@@ -76,7 +77,9 @@ uvicorn jiage.api:app --host 0.0.0.0 --port 8090
 **书架 / 配置 API**
 - `GET /api/collections` 书架列表
 - `POST` / `DELETE` / `PATCH /api/collections/{c}` 创建 / 删除 / 重命名书架
-- `GET` / `POST /api/ocr-config`、`POST /api/ocr-config/test` OCR 配置与连通测试
+- `GET /api/ocr-config` provider 列表 (key 打码) + default
+- `POST /api/ocr-config/provider` 新增/编辑 provider　`DELETE /api/ocr-config/provider/{id}` 删除
+- `POST /api/ocr-config/default` 设默认　`POST /api/ocr-config/test` 连通测试 (空白页 PDF)
 - `GET /api/stats` 全库统计　`GET /collections/{c}/stats` 单书架统计
 
 **文献操作 API**
@@ -121,16 +124,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 
-# 5. 配置 OCR token (持久化到 ~/.bashrc)
-echo 'export PADDLE_OCR_TOKEN="<从 aistudio 获取的 token>"' >> ~/.bashrc
-source ~/.bashrc
-
-# 6. 配置 OSS 数据存储 (collections 上 OSS, jiage.db 留本地)
+# 5. 配置 OSS 数据存储 (collections 上 OSS, jiage.db 留本地)
 mkdir -p /mnt/oss/sources/jiage/collections/uploads
 echo 'export JIAGE_COLLECTIONS_DIR=/mnt/oss/sources/jiage/collections' >> ~/.bashrc
 source ~/.bashrc
 
-# 7. 验证安装
+# 6. 验证安装
 jiage init      # 初始化 ~/jiage-data/jiage.db
 jiage stats     # 应显示空库
 ```
@@ -183,7 +182,6 @@ EOF
 
 ```bash
 cat > /root/jiage/.env << 'EOF'
-PADDLE_OCR_TOKEN=<从 aistudio 获取的 token>
 JIAGE_AUTH_TOKEN=<用户自设密码>
 JIAGE_COLLECTIONS_DIR=/mnt/oss/sources/jiage/collections
 EOF
@@ -247,21 +245,20 @@ curl -s -b /tmp/jiage_cookie http://localhost:8090/ -o /dev/null -w '%{http_code
 
 ### OCR 实测注意事项
 
-- 单文件 **< 100 页** (PaddleOCR-VL 限制)
-- 需 `PADDLE_OCR_TOKEN` 环境变量 (aistudio bearer token)
-- 重试 {429, 500, 502, 503, 504} 自动指数退避, 整体重试 MAX 3 次
+- OCR 走 **generic_http provider**（Web「OCR 设置」添加; 本地 GPU 服务 `~/paddleocr-vl/server.py` :8091 或任意兼容远程 API）
+- 无 provider 时上传 OCR 会报友好错误（引导去 OCR 设置页）
+- 网络错误/5xx 自动指数退避, 整体重试 MAX 3 次
 - **样本来源**: `~/projects/两岸近代三交资料与研究/` 下的史料 PDF (需上传到服务器, 或用服务器上已有的 PDF)
 
 ## 环境变量
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
-| `PADDLE_OCR_TOKEN` | OCR 时必填 | aistudio bearer token |
 | `JIAGE_AUTH_TOKEN` | 可选 | Web 登录密码. 未设则无认证（开发模式）; 设了则所有页面需登录 |
 | `JIAGE_DATA` | 可选 | 数据根目录, 默认 `~/jiage-data/` |
 | `JIAGE_DB_DIR` | 可选 | **数据库目录(本地磁盘!)**, 默认 `JIAGE_DATA/db/`. ossfs 不支持 SQLite 文件锁, 服务器上**不要**指向 OSS |
 | `JIAGE_COLLECTIONS_DIR` | 可选 | 源文件+上传目录, 默认 `JIAGE_DATA/collections/`; 服务器指向 OSS `/mnt/oss/sources/jiage/collections/` |
-| `JIAGE_OCR_METHOD` | 可选 | OCR provider, 默认 `paddle_api` |
+| `JIAGE_OCR_METHOD` | 可选 | 默认 OCR provider id (匹配 ocr-config.json). 未设则取配置文件 default > 首个 provider |
 
 ## 常用命令速查
 

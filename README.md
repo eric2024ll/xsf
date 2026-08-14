@@ -223,7 +223,25 @@ python -m jiage.cli --help
 
 - `PyMuPDF`：PDF 文本提取
 - `jieba`：中文分词
+- `requests`：generic_http OCR provider 客户端
 - `setuptools`：开发模式安装
+
+### OCR provider（generic_http 同步协议）
+
+所有 OCR 服务（本地 GPU / 远程 API / 第三方）统一为一种形态，用户在 Web「OCR 设置」自助添加：
+
+```
+POST <url>                     # multipart/form-data
+  file: PDF/图片
+  model: 可选表单字段
+  Authorization: Bearer <key>  # 可选
+→ 200 {pages: [{page_index, parsing_res_list, width, height}]}
+```
+
+- 配置存 `<JIAGE_DATA>/ocr-config.json`（v2，权限 600），`parsing_res_list` 契约与 histflow-plan 一致
+- 上传/OCR 始终走全局默认 provider（列表点选切换）；CLI 可 `--provider <id>` 显式指定
+- 本地模型示例：`~/paddleocr-vl/server.py`（PaddleOCR-VL-1.6 GPU，:8091，systemd `paddleocr-vl.service`）
+- aistudio 云端三阶段 API（submit→poll→fetch）已废弃；如需云端，自行包一层 sync 服务再添加
 
 ---
 
@@ -232,7 +250,7 @@ python -m jiage.cli --help
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | P0 | 建仓、SQLite schema、基础 CLI、born-digital PDF 解析、FTS 搜索 | ✅ 完成 |
-| P1 | 扫描件 OCR 接入（主力 PaddleOCR-VL 封装流水线，设计见 histflow-plan/system/tools/14-ocr-pipeline.md） | 待做 |
+| P1 | 扫描件 OCR 接入（generic_http 多 provider，用户自助添加本地/远程服务，设计见 histflow-plan/system/tools/14-ocr-pipeline.md §3.3） | ✅ 完成 (2026-08-14) |
 | P2 | 增加书架/集合管理命令；搜索 snippet 高亮；重复文件检测 | 待做 |
 | P3 | Web 界面（FastAPI） | 待做 |
 | P4 | 与 histflow L1 条目格式联动，导出 `摘录/摘要/综述/线索` | 待做 |

@@ -25,7 +25,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import (
     get_collections_dir, list_collections, get_auth_token, get_db_path,
-    get_ocr_token, save_ocr_config, get_ocr_method,
 )
 from .db import init_db, get_conn
 from .search import search, get_block_lines, get_context, get_highlight_terms
@@ -299,50 +298,97 @@ async def api_rename_collection(collection: str, new_name: str = ""):
     return {"ok": True, "new_name": new_name}
 
 
-# ── OCR 配置 ────────────────────────────────────────────
+# ── OCR 配置 (generic_http provider 管理) ───────────────
 
 @app.get("/api/ocr-config")
 async def api_get_ocr_config():
-    """返回当前 OCR 配置状态 (不泄露 token 明文)。"""
-    from .config import _read_ocr_config
-    cfg = _read_ocr_config()
-    has_token = bool(cfg.get('token', '').strip())
+    """provider 列表 (api_key 打码) + default。"""
+    from .config import (get_ocr_providers, get_default_ocr_provider_id)
+    providers = []
+    for p in get_ocr_providers():
+        providers.append({
+            'id': p['id'],
+            'name': p.get('name', p['id']),
+            'url': p.get('url', ''),
+            'model': p.get('model') or '',
+            'has_key': bool(p.get('api_key')),
+            'updated_at': p.get('updated_at') or p.get('created_at'),
+        })
     return {
-        "provider": cfg.get('provider') or 'paddle_api',
-        "has_token": has_token,
-        "updated_at": cfg.get('updated_at'),
+        'providers': providers,
+        'default': get_default_ocr_provider_id(),
     }
 
 
-@app.post("/api/ocr-config")
-async def api_set_ocr_config(token: str = Form(...)):
-    """保存 OCR token 到配置文件。"""
-    token = (token or '').strip()
-    if not token:
-        return JSONResponse({"error": "token 不能为空"}, status_code=400)
+@app.post("/api/ocr-config/provider")
+async def api_save_ocr_provider(name: str = Form(...), url: str = Form(...),
+                                id: str = Form(None),
+                                api_key: str = Form(None),
+                                model: str = Form(None)):
+    """新增/编辑 provider。api_key 留空且为编辑 → 保留旧值。"""
+    from .config import save_ocr_provider
     try:
-        cfg = save_ocr_config(token)
-    except OSError as e:
-        return JSONResponse({"error": f"写入配置失败: {e}"}, status_code=500)
-    return {"ok": True, "provider": cfg.get('provider', 'paddle_api')}
+        p = save_ocr_provider(name=name, url=url, pid=id,
+                              api_key=(api_key or '').strip() or None,
+                              model=model)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except KeyError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    return {"ok": True, "id": p['id']}
+
+
+@app.delete("/api/ocr-config/provider/{pid}")
+async def api_delete_ocr_provider(pid: str):
+    from .config import delete_ocr_provider
+    if not delete_ocr_provider(pid):
+        return JSONResponse({"error": f"provider 不存在: {pid}"},
+                            status_code=404)
+    return {"ok": True}
+
+
+@app.post("/api/ocr-config/default")
+async def api_set_ocr_default(id: str = Form(...)):
+    from .config import set_default_ocr_provider
+    try:
+        set_default_ocr_provider(id)
+    except KeyError:
+        return JSONResponse({"error": f"provider 不存在: {id}"},
+                            status_code=404)
+    return {"ok": True, "default": id}
 
 
 @app.post("/api/ocr-config/test")
-async def api_test_ocr_config(token: str = Form(None)):
-    """测试 OCR token 连通性: 提交一个空白单页 PDF, 拿到 jobId 即成功。
+async def api_test_ocr_config(id: str = Form(None), url: str = Form(None),
+                              api_key: str = Form(None),
+                              model: str = Form(None)):
+    """测试 provider 连通: 发 1 页空白 PDF, 校验 200 + pages 结构。
 
-    token 为空时用已保存的配置。
+    id 非空 → 用已保存配置 (url/api_key 参数可覆盖);
+    无 id → 用表单传入的 url/api_key (添加前预检)。
     """
     import tempfile
-    test_token = (token or '').strip()
-    if not test_token:
+    import requests as _req
+    from .ocr.http_api import _normalize_pages
+
+    if id:
         try:
-            test_token = get_ocr_token()
-        except RuntimeError:
-            return JSONResponse(
-                {"ok": False, "error": "未设置 token"}, status_code=400
-            )
-    # 生成最小 1 页空白 PDF
+            from .config import get_ocr_provider_cfg
+            cfg = get_ocr_provider_cfg(id)
+            test_url = url or cfg['url']
+            test_key = api_key or cfg.get('api_key')
+            test_model = model if model is not None else cfg.get('model')
+        except RuntimeError as e:
+            return JSONResponse({"ok": False, "error": str(e)},
+                                status_code=400)
+    else:
+        test_url = (url or '').strip()
+        test_key = (api_key or '').strip() or None
+        test_model = (model or '').strip() or None
+        if not test_url:
+            return JSONResponse({"ok": False, "error": "未指定 provider id 或 url"},
+                                status_code=400)
+
     fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
     os.close(fd)
     try:
@@ -350,27 +396,23 @@ async def api_test_ocr_config(token: str = Form(None)):
         doc.new_page(width=72, height=72)
         doc.save(tmp_pdf)
         doc.close()
-        # 直接调 paddle submit, 不轮询
-        import requests as _req
-        r = _req.post(
-            "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
-            headers={"Authorization": f"bearer {test_token}"},
-            data={"model": "PaddleOCR-VL-1.6",
-                  "optionalPayload": '{"useDocOrientationClassify":false}'},
-            files={"file": open(tmp_pdf, 'rb')},
-            timeout=30,
-        )
+
+        headers = {"Authorization": f"Bearer {test_key}"} if test_key else {}
+        form = {"model": test_model} if test_model else {}
+        r = _req.post(test_url, headers=headers, data=form,
+                      files={"file": open(tmp_pdf, 'rb')}, timeout=120)
         if r.status_code == 200:
-            data = r.json().get('data', {})
-            if data.get('jobId'):
-                return {"ok": True, "job_id": data['jobId']}
-            return JSONResponse(
-                {"ok": False, "error": f"响应无 jobId: {r.text[:200]}"},
-                status_code=502,
-            )
+            try:
+                pages = _normalize_pages(r.json())
+                return {"ok": True, "pages": len(pages)}
+            except (ValueError, Exception) as e:
+                return JSONResponse(
+                    {"ok": False, "error": f"响应不是 pages 形态: {e}"},
+                    status_code=502,
+                )
         if r.status_code in (401, 403):
             return JSONResponse(
-                {"ok": False, "error": "token 无效或已过期"},
+                {"ok": False, "error": f"鉴权失败 (HTTP {r.status_code}): 检查 api_key"},
                 status_code=r.status_code,
             )
         return JSONResponse(
