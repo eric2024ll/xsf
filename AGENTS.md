@@ -245,7 +245,7 @@ curl -s -b /tmp/jiage_cookie http://localhost:8090/ -o /dev/null -w '%{http_code
 
 ### OCR 实测注意事项
 
-- OCR 走 **generic_http provider**（Web「OCR 设置」添加; 本地 GPU 服务 `~/paddleocr-vl/server.py` :8091 或任意兼容远程 API）
+- OCR provider 两种类型（Web「OCR 设置」添加）: `generic_http`（本地 GPU 服务 `~/paddleocr-vl/server.py` :8091 或任意兼容 API）/ `aistudio`（内置云端三阶段, 只填 token）
 - 无 provider 时上传 OCR 会报友好错误（引导去 OCR 设置页）
 - 网络错误/5xx 自动指数退避, 整体重试 MAX 3 次
 - **样本来源**: `~/projects/两岸近代三交资料与研究/` 下的史料 PDF (需上传到服务器, 或用服务器上已有的 PDF)

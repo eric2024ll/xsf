@@ -226,9 +226,9 @@ python -m jiage.cli --help
 - `requests`：generic_http OCR provider 客户端
 - `setuptools`：开发模式安装
 
-### OCR provider（generic_http 同步协议）
+### OCR provider（两种类型，Web「OCR 设置」自助添加）
 
-所有 OCR 服务（本地 GPU / 远程 API / 第三方）统一为一种形态，用户在 Web「OCR 设置」自助添加：
+**1. `generic_http`（通用）**——本地 GPU / 自建服务 / 第三方 API，统一契约：
 
 ```
 POST <url>                     # multipart/form-data
@@ -238,10 +238,11 @@ POST <url>                     # multipart/form-data
 → 200 {pages: [{page_index, parsing_res_list, width, height}]}
 ```
 
+**2. `aistudio`（内置云端）**——内置三阶段协议（提交→轮询→取结果），只需填 token，无需 URL 与本地服务。
+
 - 配置存 `<JIAGE_DATA>/ocr-config.json`（v2，权限 600），`parsing_res_list` 契约与 histflow-plan 一致
 - 上传/OCR 始终走全局默认 provider（列表点选切换）；CLI 可 `--provider <id>` 显式指定
 - 本地模型示例：`~/paddleocr-vl/server.py`（PaddleOCR-VL-1.6 GPU，:8091，systemd `paddleocr-vl.service`）
-- aistudio 云端三阶段 API（submit→poll→fetch）已废弃；如需云端，自行包一层 sync 服务再添加
 
 ---
 

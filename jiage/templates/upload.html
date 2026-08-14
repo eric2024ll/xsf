@@ -190,24 +190,30 @@
       <div class="section-title" id="providerFormTitle">添加 OCR 服务</div>
       <input type="hidden" id="pfId" value="">
       <div class="field">
-        <label>名称</label>
-        <input type="text" id="pfName" placeholder="如: 本机 GPU / 远程 OCR 服务">
+        <label>类型</label>
+        <select id="pfType" onchange="onTypeChange()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;">
+          <option value="generic_http">通用 HTTP 服务（本地 GPU / 自建 API）</option>
+          <option value="aistudio">aistudio 云端（内置，免 URL）</option>
+        </select>
       </div>
       <div class="field">
+        <label>名称</label>
+        <input type="text" id="pfName" placeholder="如: 本机 GPU / aistudio 云端">
+      </div>
+      <div class="field" id="pfUrlRow">
         <label>URL</label>
         <input type="text" id="pfUrl" placeholder="http://127.0.0.1:8091/ocr">
       </div>
       <div class="field">
-        <label>API Key（可选，发送 Bearer 头）</label>
-        <input type="password" id="pfKey" placeholder="留空 = 不鉴权（编辑时留空保留原值）">
+        <label>API Key（aistudio 即其 token；编辑时留空保留原值）</label>
+        <input type="password" id="pfKey" placeholder="aistudio 类型必填；其他留空 = 不鉴权">
       </div>
       <div class="field">
-        <label>Model（可选，作为表单字段发送）</label>
-        <input type="text" id="pfModel" placeholder="如: PaddleOCR-VL-1.6">
+        <label>Model（可选）</label>
+        <input type="text" id="pfModel" placeholder="如: PaddleOCR-VL-1.6（留空用默认）">
       </div>
-      <div class="hint">
-        统一 <b>generic_http</b> 同步协议：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code>。
-        本地模型先包装成 HTTP 服务（如 <code>~/paddleocr-vl/server.py</code>）再添加。
+      <div class="hint" id="pfHint">
+        通用类型契约：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code>。本地模型先包装成 HTTP 服务再添加。
         上传 OCR 始终使用默认服务（点选列表项切换）。
       </div>
       <div class="actions">
@@ -349,12 +355,25 @@ function ocrStatusEl(msg, cls) {
 }
 function resetProviderForm() {
   document.getElementById('pfId').value = '';
+  document.getElementById('pfType').value = 'generic_http';
   document.getElementById('pfName').value = '';
   document.getElementById('pfUrl').value = '';
   document.getElementById('pfKey').value = '';
   document.getElementById('pfModel').value = '';
   document.getElementById('providerFormTitle').textContent = '添加 OCR 服务';
   document.getElementById('pfCancelBtn').style.display = 'none';
+  onTypeChange();
+}
+function onTypeChange() {
+  var t = document.getElementById('pfType').value;
+  var isAi = t === 'aistudio';
+  document.getElementById('pfUrlRow').style.display = isAi ? 'none' : '';
+  var hint = document.getElementById('pfHint');
+  if (isAi) {
+    hint.innerHTML = 'aistudio 内置三阶段协议 (提交→轮询→取结果)，只需填 token。单文件 &lt; 100 页。';
+  } else {
+    hint.innerHTML = '通用类型契约：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code>。本地模型先包装成 HTTP 服务再添加。上传 OCR 始终使用默认服务（点选列表项切换）。';
+  }
 }
 var _providers = [], _defaultPid = null;
 async function loadProviders() {
@@ -378,8 +397,9 @@ function renderProviders() {
       '<input type="radio" name="defProvider" class="radio" ' + (isDef ? 'checked' : '') +
       ' title="设为默认" onchange="setDefault(\'' + p.id + '\')">' +
       '<div class="meta">' +
-      '<div class="pname">' + escapeHtml(p.name) + (isDef ? ' <span class="badge-def">默认</span>' : '') + '</div>' +
-      '<div class="purl">' + escapeHtml(p.url) + '</div>' +
+      '<div class="pname">' + escapeHtml(p.name) + (isDef ? ' <span class="badge-def">默认</span>' : '') +
+      (p.type === 'aistudio' ? ' <span class="badge-def" style="color:var(--text-muted)">aistudio</span>' : '') + '</div>' +
+      '<div class="purl">' + (p.type === 'aistudio' ? 'aistudio 云端 (内置)' : escapeHtml(p.url)) + '</div>' +
       '<div class="pinfo">' +
       (p.has_key ? '<span class="badge-ok">🔑 已设密钥</span> · ' : '') +
       (p.model ? 'model: ' + escapeHtml(p.model) + ' · ' : '') +
@@ -417,10 +437,12 @@ function editProvider(pid) {
   var p = _providers.filter(function(x) { return x.id === pid; })[0];
   if (!p) return;
   document.getElementById('pfId').value = p.id;
+  document.getElementById('pfType').value = p.type || 'generic_http';
   document.getElementById('pfName').value = p.name;
-  document.getElementById('pfUrl').value = p.url;
+  document.getElementById('pfUrl').value = p.url || '';
   document.getElementById('pfKey').value = '';
   document.getElementById('pfModel').value = p.model || '';
+  onTypeChange();
   document.getElementById('providerFormTitle').textContent = '编辑: ' + p.name;
   document.getElementById('pfCancelBtn').style.display = '';
   window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
@@ -436,16 +458,19 @@ async function deleteProvider(pid) {
 }
 async function saveProvider() {
   var id = document.getElementById('pfId').value;
+  var type = document.getElementById('pfType').value;
   var name = document.getElementById('pfName').value.trim();
   var url = document.getElementById('pfUrl').value.trim();
   var key = document.getElementById('pfKey').value;
   var model = document.getElementById('pfModel').value.trim();
-  if (!name || !url) { alert('名称和 URL 不能为空'); return; }
+  if (!name) { alert('名称不能为空'); return; }
+  if (type === 'generic_http' && !url) { alert('URL 不能为空'); return; }
+  if (type === 'aistudio' && !id && !key) { alert('aistudio 类型需要填写 token'); return; }
   var btn = document.getElementById('pfSaveBtn');
   btn.disabled = true; ocrStatusEl('保存中…', 'loading');
   try {
     var fd = new FormData();
-    fd.append('name', name); fd.append('url', url);
+    fd.append('name', name); fd.append('url', url); fd.append('type', type);
     fd.append('api_key', key); fd.append('model', model);
     if (id) fd.append('id', id);
     var r = await fetch('/api/ocr-config/provider', { method: 'POST', body: fd });

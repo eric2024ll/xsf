@@ -14,17 +14,28 @@ from .http_api import ocr_file
 
 
 def _build_adapter(provider_id: str = None) -> DirectAdapter:
-    """按配置构建 sync HTTP adapter。找不到配置 raise RuntimeError。"""
+    """按配置构建 adapter (type: generic_http | aistudio)。找不到配置 raise RuntimeError。"""
     cfg = get_ocr_provider_cfg(provider_id)
     pid = cfg['id']
+    ptype = cfg.get('type', 'generic_http')
 
-    def _ocr(pdf_path, _cfg=cfg):
-        return ocr_file(
-            pdf_path,
-            url=_cfg['url'],
-            api_key=_cfg.get('api_key'),
-            model=_cfg.get('model'),
-        )
+    if ptype == 'aistudio':
+        from .aistudio_api import ocr_file_aistudio
+
+        def _ocr(pdf_path, _cfg=cfg):
+            return ocr_file_aistudio(
+                pdf_path,
+                token=_cfg.get('api_key'),
+                model=_cfg.get('model'),
+            )
+    else:
+        def _ocr(pdf_path, _cfg=cfg):
+            return ocr_file(
+                pdf_path,
+                url=_cfg['url'],
+                api_key=_cfg.get('api_key'),
+                model=_cfg.get('model'),
+            )
 
     return DirectAdapter(_ocr, pid)
 

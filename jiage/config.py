@@ -139,18 +139,27 @@ def _next_provider_id(providers: list[dict]) -> str:
 
 
 def save_ocr_provider(name: str, url: str, pid: str = None,
-                      api_key: str = None, model: str = None) -> dict:
+                      api_key: str = None, model: str = None,
+                      type: str = 'generic_http') -> dict:
     """新增 (pid 为空) / 编辑 (pid 已存在) provider。
 
+    type: 'generic_http' (自定义同步端点, 需 url) | 'aistudio' (内置云端, 无需 url)。
     api_key 传 None/空 且为编辑 → 保留旧值。
-    返回写入后的完整 provider dict (api_key 打码为 has_key 标记由调用方处理)。
+    返回写入后的完整 provider dict。
     """
+    PROVIDER_TYPES = ('generic_http', 'aistudio')
     name = (name or '').strip()
     url = (url or '').strip()
-    if not name or not url:
-        raise ValueError('name 和 url 不能为空')
-    if not (url.startswith('http://') or url.startswith('https://')):
-        raise ValueError('url 必须以 http:// 或 https:// 开头')
+    ptype = (type or 'generic_http').strip() or 'generic_http'
+    if ptype not in PROVIDER_TYPES:
+        raise ValueError(f'未知 provider 类型: {ptype} (可选: {", ".join(PROVIDER_TYPES)})')
+    if not name:
+        raise ValueError('name 不能为空')
+    if ptype == 'generic_http':
+        if not url:
+            raise ValueError('generic_http 类型必须填 url')
+        if not (url.startswith('http://') or url.startswith('https://')):
+            raise ValueError('url 必须以 http:// 或 https:// 开头')
 
     cfg = _read_ocr_config()
     if cfg.get('version') != 2:
@@ -163,6 +172,7 @@ def save_ocr_provider(name: str, url: str, pid: str = None,
             raise KeyError(f'provider 不存在: {pid}')
         target['name'] = name
         target['url'] = url
+        target['type'] = ptype
         if api_key:                       # 空 = 保留旧值
             target['api_key'] = api_key.strip()
         if model is not None:
@@ -175,6 +185,7 @@ def save_ocr_provider(name: str, url: str, pid: str = None,
             'id': pid,
             'name': name,
             'url': url,
+            'type': ptype,
             'model': (model or '').strip() or None,
             'created_at': datetime.now().isoformat(timespec='seconds'),
         }

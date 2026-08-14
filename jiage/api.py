@@ -309,6 +309,7 @@ async def api_get_ocr_config():
         providers.append({
             'id': p['id'],
             'name': p.get('name', p['id']),
+            'type': p.get('type', 'generic_http'),
             'url': p.get('url', ''),
             'model': p.get('model') or '',
             'has_key': bool(p.get('api_key')),
@@ -321,20 +322,25 @@ async def api_get_ocr_config():
 
 
 @app.post("/api/ocr-config/provider")
-async def api_save_ocr_provider(name: str = Form(...), url: str = Form(...),
+async def api_save_ocr_provider(name: str = Form(...), url: str = Form(''),
                                 id: str = Form(None),
                                 api_key: str = Form(None),
-                                model: str = Form(None)):
+                                model: str = Form(None),
+                                type: str = Form('generic_http')):
     """新增/编辑 provider。api_key 留空且为编辑 → 保留旧值。"""
     from .config import save_ocr_provider
     try:
         p = save_ocr_provider(name=name, url=url, pid=id,
                               api_key=(api_key or '').strip() or None,
-                              model=model)
+                              model=model, type=type)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except KeyError as e:
         return JSONResponse({"error": str(e)}, status_code=404)
+    if p.get('type') == 'aistudio' and not p.get('api_key'):
+        return JSONResponse(
+            {"error": "aistudio 类型必须填写 token (API Key)"}, status_code=400
+        )
     return {"ok": True, "id": p['id']}
 
 
@@ -371,10 +377,12 @@ async def api_test_ocr_config(id: str = Form(None), url: str = Form(None),
     import requests as _req
     from .ocr.http_api import _normalize_pages
 
+    ptype = 'generic_http'
     if id:
         try:
             from .config import get_ocr_provider_cfg
             cfg = get_ocr_provider_cfg(id)
+            ptype = cfg.get('type', 'generic_http')
             test_url = url or cfg['url']
             test_key = api_key or cfg.get('api_key')
             test_model = model if model is not None else cfg.get('model')
@@ -385,7 +393,7 @@ async def api_test_ocr_config(id: str = Form(None), url: str = Form(None),
         test_url = (url or '').strip()
         test_key = (api_key or '').strip() or None
         test_model = (model or '').strip() or None
-        if not test_url:
+        if not test_url and ptype == 'generic_http':
             return JSONResponse({"ok": False, "error": "未指定 provider id 或 url"},
                                 status_code=400)
 
@@ -396,6 +404,16 @@ async def api_test_ocr_config(id: str = Form(None), url: str = Form(None),
         doc.new_page(width=72, height=72)
         doc.save(tmp_pdf)
         doc.close()
+
+        if ptype == 'aistudio':
+            from .ocr.aistudio_api import ocr_file_aistudio
+            try:
+                pages = ocr_file_aistudio(tmp_pdf, token=test_key or '',
+                                          model=test_model)
+                return {"ok": True, "pages": len(pages)}
+            except Exception as e:
+                return JSONResponse({"ok": False, "error": str(e)},
+                                    status_code=502)
 
         headers = {"Authorization": f"Bearer {test_key}"} if test_key else {}
         form = {"model": test_model} if test_model else {}
