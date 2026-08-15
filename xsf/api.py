@@ -1,4 +1,4 @@
-"""jiage FastAPI Web 界面"""
+"""xsf FastAPI Web 界面"""
 
 import html
 import io
@@ -103,7 +103,7 @@ def _is_authenticated(request: Request) -> bool:
     token = get_auth_token()
     if token is None:
         return True
-    cookie_val = request.cookies.get('jiage_auth', '')
+    cookie_val = request.cookies.get('xsf_auth', '')
     return secrets.compare_digest(cookie_val, token)
 
 
@@ -179,7 +179,7 @@ async def login_submit(request: Request, password: str = Form(...)):
     if token is not None and secrets.compare_digest(password, token):
         resp = RedirectResponse('/', status_code=303)
         resp.set_cookie(
-            'jiage_auth', token,
+            'xsf_auth', token,
             httponly=True,
             max_age=7 * 24 * 3600,
             samesite='lax',
@@ -195,7 +195,7 @@ async def login_submit(request: Request, password: str = Form(...)):
 @app.get("/logout")
 async def logout():
     resp = RedirectResponse('/login', status_code=303)
-    resp.delete_cookie('jiage_auth')
+    resp.delete_cookie('xsf_auth')
     return resp
 
 
@@ -1162,7 +1162,7 @@ async def api_export_bib(collection: str, request: Request):
             content=content.encode("utf-8"),
             media_type="application/x-bibtex",
             headers={
-                "Content-Disposition": "attachment; filename=jiage_export.bib"
+                "Content-Disposition": "attachment; filename=xsf_export.bib"
             },
         )
     except Exception as e:
@@ -1220,7 +1220,7 @@ async def api_export_md(collection: str, request: Request):
             content=buf.getvalue(),
             media_type="application/zip",
             headers={
-                "Content-Disposition": "attachment; filename=jiage_docs.zip"
+                "Content-Disposition": "attachment; filename=xsf_docs.zip"
             },
         )
     except Exception as e:
@@ -1403,7 +1403,7 @@ async def api_import_archive(collection: str, file: UploadFile = File(...)):
                                 content={"error": "空文件"})
 
         # 1. 解包到临时目录
-        tmp_dir = tempfile.mkdtemp(prefix="jiage_import_")
+        tmp_dir = tempfile.mkdtemp(prefix="xsf_import_")
         try:
             tar_io = io.BytesIO(raw)
             with tarfile.open(fileobj=tar_io, mode="r:gz") as tar:

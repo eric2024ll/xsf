@@ -161,7 +161,7 @@ def cmd_stats(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='jiage', description='小書房 — 文献池检索系统')
+        prog='xsf', description='小書房 — 文献池检索系统')
     sub = parser.add_subparsers(dest='command')
 
     sub.add_parser('init', help='初始化数据库')

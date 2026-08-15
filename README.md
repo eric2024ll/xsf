@@ -1,4 +1,4 @@
-# 小書房 (jiage)
+# 小書房 (xsf)
 
 > 主题研究文献池检索系统
 
@@ -19,7 +19,7 @@
 ### 1. 安装
 
 ```bash
-cd ~/projects/jiage
+cd ~/projects/xsf
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -27,10 +27,10 @@ pip install -e .
 
 ### 2. 指定数据目录（可选）
 
-默认数据目录为 `~/jiage-data/`。想改位置：
+默认数据目录为 `~/xsf-data/`。想改位置：
 
 ```bash
-export JIAGE_DATA=/path/to/data
+export XSF_DATA=/path/to/data
 ```
 
 或写入 `.env`、shell profile 持久生效。
@@ -38,21 +38,21 @@ export JIAGE_DATA=/path/to/data
 ### 3. 初始化
 
 ```bash
-jiage init
+xsf init
 ```
 
 输出示例：
 
 ```
 小書房已初始化
-  数据目录: /home/eric/jiage-data
-  书架目录: /home/eric/jiage-data/collections
+  数据目录: /home/eric/xsf-data
+  书架目录: /home/eric/xsf-data/collections
 ```
 
 ### 4. 添加文献
 
 ```bash
-jiage add /path/to/云南茶业考.pdf -c 民族研究 \
+xsf add /path/to/云南茶业考.pdf -c 民族研究 \
   --cite-key zhang2010yunnan \
   --title "云南茶业考" \
   --author "张某"
@@ -63,7 +63,7 @@ jiage add /path/to/云南茶业考.pdf -c 民族研究 \
 ### 5. 搜索
 
 ```bash
-jiage search 云南茶业
+xsf search 云南茶业
 ```
 
 输出示例：
@@ -79,13 +79,13 @@ jiage search 云南茶业
 ### 6. 查看上下文
 
 ```bash
-jiage context <doc_id> <page_num> <block_num> [-r 1]
+xsf context <doc_id> <page_num> <block_num> [-r 1]
 ```
 
 例如命中结果显示「页 3 | 段 2」、doc_id 为 1：
 
 ```bash
-jiage context 1 3 2
+xsf context 1 3 2
 ```
 
 输出中 `▶` 标记命中段，方便回原文核对。
@@ -93,7 +93,7 @@ jiage context 1 3 2
 ### 7. 统计
 
 ```bash
-jiage stats
+xsf stats
 ```
 
 ---
@@ -102,12 +102,12 @@ jiage stats
 
 | 命令 | 说明 | 示例 |
 |------|------|------|
-| `jiage init` | 初始化数据库与目录 | `jiage init` |
-| `jiage add <pdf> -c <书架> [--cite-key ...] [--title ...] [--author ...]` | 导入 PDF | `jiage add book.pdf -c 民族研究 --cite-key wu1963xibei` |
-| `jiage search <query> [-c <书架>] [-n <条数>]` | 全文搜索 | `jiage search 茶马古道 -c 民族研究` |
-| `jiage context <doc_id> <page> <block> [-r <半径>]` | 查看上下文 | `jiage context 1 3 2 -r 2` |
-| `jiage remove <doc_id>` | 删除文献 | `jiage remove 1` |
-| `jiage stats` | 统计书架与文献 | `jiage stats` |
+| `xsf init` | 初始化数据库与目录 | `xsf init` |
+| `xsf add <pdf> -c <书架> [--cite-key ...] [--title ...] [--author ...]` | 导入 PDF | `xsf add book.pdf -c 民族研究 --cite-key wu1963xibei` |
+| `xsf search <query> [-c <书架>] [-n <条数>]` | 全文搜索 | `xsf search 茶马古道 -c 民族研究` |
+| `xsf context <doc_id> <page> <block> [-r <半径>]` | 查看上下文 | `xsf context 1 3 2 -r 2` |
+| `xsf remove <doc_id>` | 删除文献 | `xsf remove 1` |
+| `xsf stats` | 统计书架与文献 | `xsf stats` |
 
 ---
 
@@ -118,7 +118,7 @@ jiage stats
 ### 导出
 
 ```bash
-cd ~/projects/jiage && source .venv/bin/activate
+cd ~/projects/xsf && source .venv/bin/activate
 python scripts/collection_io.py export <collection> [-o output.tar.gz]
 ```
 
@@ -137,23 +137,25 @@ python scripts/collection_io.py import <collection> <archive.tar.gz> \
 | `--conflict overwrite` | 同名源文件覆盖（默认 skip） |
 | `--force` | 覆盖已存在的 collection DB |
 
+> 兼容：导入时同时接受 `xsf.db` 与旧名 `jiage.db`（2026-08 改名前的归档）。
+
 ### OSS 服务器场景
 
-源文件在 OSS 挂载路径（`JIAGE_COLLECTIONS_DIR`）下。大文件导入 OSS 可能慢，推荐分两步：
+源文件在 OSS 挂载路径（`XSF_COLLECTIONS_DIR`）下。大文件导入 OSS 可能慢，推荐分两步：
 
 ```bash
 # 1. 先只导 DB
 python scripts/collection_io.py import 两岸三交 backup.tar.gz --db-only
 
 # 2. 源文件手动 rsync 到 OSS 挂载路径
-rsync -av uploads/ /mnt/oss/sources/jiage/collections/uploads/
+rsync -av uploads/ /mnt/oss/sources/xsf/collections/uploads/
 ```
 
 ### 打包格式
 
 ```
 {collection}_YYYYMMDD.tar.gz
-├── jiage.db                # SQLite 快照
+├── xsf.db                  # SQLite 快照
 ├── manifest.json           # collection 名、导出时间、文献数、filename 列表
 └── uploads/                # 该 collection 的全部源文件
 ```
@@ -163,21 +165,21 @@ rsync -av uploads/ /mnt/oss/sources/jiage/collections/uploads/
 ## 数据目录结构
 
 ```
-~/jiage-data/                      # 由 JIAGE_DATA 指定，默认 ~/jiage-data
+~/xsf-data/                       # 由 XSF_DATA 指定，默认 ~/xsf-data
 ├── db/                             # 数据库（本地磁盘，不放 OSS）
-│   ├── 民族研究/jiage.db           #   每个 collection 独立 SQLite + FTS5
-│   └── 历史理论/jiage.db
+│   ├── 民族研究/xsf.db             #   每个 collection 独立 SQLite + FTS5
+│   └── 历史理论/xsf.db
 └── collections/                    # 书架目录
     └── uploads/                    #   源文件（全局共享，服务器指 OSS）
         ├── 云南茶业考.pdf
         └── 茶马古道.md
 ```
 
-- `JIAGE_DB_DIR`：DB 目录（默认 `JIAGE_DATA/db/`），**必须本地磁盘**——OSS 不支持 SQLite 文件锁。
-- `JIAGE_COLLECTIONS_DIR`：源文件目录（默认 `JIAGE_DATA/collections/`），服务器可指 OSS 挂载路径。
+- `XSF_DB_DIR`：DB 目录（默认 `XSF_DATA/db/`），**必须本地磁盘**——OSS 不支持 SQLite 文件锁。
+- `XSF_COLLECTIONS_DIR`：源文件目录（默认 `XSF_DATA/collections/`），服务器可指 OSS 挂载路径。
 - DB 内只存 `filename`（不含绝对路径），迁移时无需修改 DB 内容。
 
-代码目录（`~/projects/jiage/`）只放程序与配置，不存文献或数据库。
+代码目录（`~/projects/xsf/`）只放程序与配置，不存文献或数据库。
 
 ---
 
@@ -191,7 +193,7 @@ rsync -av uploads/ /mnt/oss/sources/jiage/collections/uploads/
 
 为什么分「块」与「行」两层？
 - **块**：FTS 搜索的基本单元，jieba 分词后建立索引，命中时可定位到页与段。
-- **行**：保留原文的物理行，便于 `jiage context` 展示上下行，未来也支撑 OCR 校对管线。
+- **行**：保留原文的物理行，便于 `xsf context` 展示上下行，未来也支撑 OCR 校对管线。
 
 ---
 
@@ -200,11 +202,11 @@ rsync -av uploads/ /mnt/oss/sources/jiage/collections/uploads/
 小書房是 histflow 研究循环中 **L1 感知层** 的上游工具之一：
 
 ```
-文献池 (jiage)          L1 感知层
+文献池 (xsf)            L1 感知层
    ↓ 检索、定位
 阅读 / 摘录 / 摘要 / 综述  →  histflow 写作
    ↓ 发现缺口
-回到 jiage 补充文献
+回到 xsf 补充文献
 ```
 
 它不负责笔记管理、文献综述或写作；只解决一个问题：**把散落在各处的 PDF 快速找出来、定位到页与段**。
@@ -214,9 +216,9 @@ rsync -av uploads/ /mnt/oss/sources/jiage/collections/uploads/
 ## 开发
 
 ```bash
-cd ~/projects/jiage
+cd ~/projects/xsf
 source .venv/bin/activate
-python -m jiage.cli --help
+python -m xsf.cli --help
 ```
 
 依赖：
@@ -240,7 +242,7 @@ POST <url>                     # multipart/form-data
 
 **2. `aistudio`（内置云端）**——内置三阶段协议（提交→轮询→取结果），只需填 token，无需 URL 与本地服务。
 
-- 配置存 `<JIAGE_DATA>/ocr-config.json`（v2，权限 600），`parsing_res_list` 契约与 histflow-plan 一致
+- 配置存 `<XSF_DATA>/ocr-config.json`（v2，权限 600），`parsing_res_list` 契约与 histflow-plan 一致
 - 上传/OCR 始终走全局默认 provider（列表点选切换）；CLI 可 `--provider <id>` 显式指定
 - 本地模型示例：`~/paddleocr-vl/server.py`（PaddleOCR-VL-1.6 GPU，:8091，systemd `paddleocr-vl.service`）
 

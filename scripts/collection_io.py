@@ -7,13 +7,15 @@
       [--conflict skip|overwrite] [--db-only] [--force]
 
 数据结构:
-  db/{collection}/jiage.db          — per-collection SQLite（本地磁盘）
+  db/{collection}/xsf.db           — per-collection SQLite（本地磁盘）
   collections/uploads/{filename}    — 源文件（全局共享，服务器指 OSS）
 
 打包格式 (tar.gz):
-  jiage.db
+  xsf.db
   manifest.json                     — collection 名、导出时间、文献数、filename 列表
   uploads/{filename}                — 该 collection 的全部源文件
+
+兼容: 导入时同时接受 xsf.db 与旧名 jiage.db（2026-08 改名前的归档）。
 """
 
 import argparse
@@ -26,9 +28,9 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-# 确保 jiage 包可 import
+# 确保 xsf 包可 import
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from jiage.config import get_db_path, get_collections_dir  # noqa: E402
+from xsf.config import get_db_path, get_collections_dir  # noqa: E402
 
 
 # ── export ──────────────────────────────────────────────
@@ -68,7 +70,7 @@ def cmd_export(collection: str, output: str | None):
         tdp = Path(td)
 
         # DB 快照（backup API 确保 WAL 一致性）
-        snapshot = tdp / "jiage.db"
+        snapshot = tdp / "xsf.db"
         src_conn = sqlite3.connect(str(db_path))
         dst_conn = sqlite3.connect(str(snapshot))
         try:
@@ -95,7 +97,7 @@ def cmd_export(collection: str, output: str | None):
 
         # 打包
         with tarfile.open(str(out_path), "w:gz") as tar:
-            tar.add(str(snapshot), arcname="jiage.db")
+            tar.add(str(snapshot), arcname="xsf.db")
             tar.add(str(tdp / "manifest.json"), arcname="manifest.json")
             if files_tmp.iterdir():
                 tar.add(str(files_tmp), arcname="uploads")
@@ -145,10 +147,12 @@ def cmd_import(collection: str, archive: str, conflict: str,
         else:
             manifest = {}
 
-        # 导入 DB
-        snapshot = tdp / "jiage.db"
+        # 导入 DB（兼容旧归档中的 jiage.db）
+        snapshot = tdp / "xsf.db"
         if not snapshot.exists():
-            print("错误: 归档中缺少 jiage.db", file=sys.stderr)
+            snapshot = tdp / "jiage.db"
+        if not snapshot.exists():
+            print("错误: 归档中缺少 xsf.db", file=sys.stderr)
             sys.exit(1)
 
         db_path.parent.mkdir(parents=True, exist_ok=True)

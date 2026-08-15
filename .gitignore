@@ -18,7 +18,7 @@ ENV/
 # Environment variables
 .env
 
-# Local databases and caches (data is stored in JIAGE_DATA, not here)
+# Local databases and caches (data is stored in XSF_DATA, not here)
 *.db
 *.db-journal
 *.cache

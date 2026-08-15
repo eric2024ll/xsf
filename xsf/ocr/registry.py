@@ -43,7 +43,7 @@ def _build_adapter(provider_id: str = None) -> DirectAdapter:
 def get_provider(method=None):
     """按 provider id 取 adapter。
 
-    method 解析链: 显式 id > 配置 default > JIAGE_OCR_METHOD(匹配 id) > 首个。
+    method 解析链: 显式 id > 配置 default > XSF_OCR_METHOD(匹配 id) > 首个。
     """
     pid = method or get_default_ocr_provider_id()
     if pid is None:

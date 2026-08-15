@@ -1,23 +1,41 @@
-# AGENTS.md — jiage
+# AGENTS.md — xsf
 
 > histflow-plan 设计的代码落地仓库. 本文件定义**本地开发 + 服务器部署实测**的标准流程.
 > 设计依据: histflow-plan `system/tools/14-ocr-pipeline.md`
 
 ## 项目定位
 
-jiage 是史学研究工具链的**感知层上游**——把 PDF 变成可检索的文本池，以 Web『小書房』(FastAPI) 为主入口、CLI 为辅.
+xsf 是史学研究工具链的**感知层上游**——把 PDF 变成可检索的文本池，以 Web『小書房』(FastAPI) 为主入口、CLI 为辅.
 
-- **设计来源**: histflow-plan (`/mnt/d/workspace/mem/histflow-plan/`). 两库分工与关系方向的权威定义见其 `schema.md` §与外部系统/仓库的关系；本文件只聚焦 jiage 的开发与部署.
-- **原则**: 设计决策在 histflow-plan; 代码与数据实验在 jiage; Bug/约束反馈回 histflow 修订设计
-- **数据分离**: 代码在本仓库, 数据在 `~/jiage-data/` (`JIAGE_DATA` 环境变量可覆盖)
+- **设计来源**: histflow-plan (`/mnt/d/workspace/mem/histflow-plan/`). 两库分工与关系方向的权威定义见其 `schema.md` §与外部系统/仓库的关系；本文件只聚焦 xsf 的开发与部署.
+- **原则**: 设计决策在 histflow-plan; 代码与数据实验在 xsf; Bug/约束反馈回 histflow 修订设计
+- **数据分离**: 代码在本仓库, 数据在 `~/xsf-data/` (`XSF_DATA` 环境变量可覆盖)
 
-## 两地架构
+## 多机架构
 
 | 角色 | 位置 | 用途 |
 |------|------|------|
-| **开发机 (WSL)** | `~/projects/jiage/` | 写代码、git commit/push |
-| **GitHub** | `git@github.com:eric2024ll/jiage.git` (私有, SSH) | 版本控制中转 |
-| **服务器** | `root@47.93.199.96:~/jiage/` | 实测、OCR 跑批 |
+| **开发机 (WSL)** | `~/projects/xsf/` | 写代码、git commit/push |
+| **GitHub** | `git@github.com:eric2024ll/xsf.git` (私有, SSH) | 版本控制中转 |
+| **本机 GPU 机** | `~/xsf/` | systemd 常驻 Web (:8090) + 本地 OCR (:8091) |
+| **阿里云服务器** | `root@47.93.199.96:~/xsf/` | 实测、OCR 跑批 |
+
+> 2026-08-15 由 `jiage` 全面改名 `xsf`. GitHub 旧 URL 自动 redirect;
+> WSL `~/projects/jiage/` 与阿里云 `~/jiage/` 尚待各自迁移 (见 §改名记录).
+
+## 本机 GPU 机部署 (当前实际运行)
+
+- **代码**: `~/xsf/` (git clone, venv 同目录)
+- **Web**: systemd `xsf.service` — `uvicorn xsf.api:app --host 0.0.0.0 --port 8090`, `EnvironmentFile=/home/eric/xsf/.env`
+- **数据**: `~/xsf-data/` (`.env` 里 `XSF_DATA` 指定; db/collections/ocr-config.json 都在此)
+- **本地 OCR**: systemd `paddleocr-vl.service` (:8091, `~/paddleocr-vl/server.py`), Web「OCR 设置」里以 generic_http provider 接入
+- **认证**: `.env` 里 `XSF_AUTH_TOKEN` 设密码, 所有页面需登录
+
+```bash
+systemctl restart xsf            # 更新代码/配置后重启
+journalctl -u xsf -f             # 实时日志
+cd ~/xsf && git pull origin main && .venv/bin/pip install -e .   # 更新代码
+```
 
 ## 本地开发规范 (WSL)
 
@@ -29,7 +47,7 @@ jiage 是史学研究工具链的**感知层上游**——把 PDF 变成可检�
 ### git 流程
 
 ```bash
-cd ~/projects/jiage
+cd ~/projects/xsf
 git add -A
 git commit -m "<type>: <描述>"    # type = feat / fix / docs / refactor
 git push origin main
@@ -40,26 +58,26 @@ git push origin main
 ### 本地测试
 
 ```bash
-cd ~/projects/jiage
+cd ~/projects/xsf
 # OCR provider 在 Web「OCR 设置」页添加 (generic_http: 本地 ~/paddleocr-vl/server.py :8091 或任意远程 API)
-.venv/bin/jiage init                                 # 首次初始化 DB
-.venv/bin/jiage add <pdf> -c <collection> --ocr      # OCR 入库 (默认 provider)
-.venv/bin/jiage add <pdf> -c <collection> --ocr --provider p1   # 指定 provider
-.venv/bin/jiage search "<query>"                     # FTS 搜索
-.venv/bin/jiage stats                                # 统计
+.venv/bin/xsf init                                 # 首次初始化 DB
+.venv/bin/xsf add <pdf> -c <collection> --ocr      # OCR 入库 (默认 provider)
+.venv/bin/xsf add <pdf> -c <collection> --ocr --provider p1   # 指定 provider
+.venv/bin/xsf search "<query>"                     # FTS 搜索
+.venv/bin/xsf stats                                # 统计
 ```
 
 ### Web 界面 (FastAPI)
 
 ```bash
 # 本地 (开发模式, auto-reload)
-cd ~/projects/jiage
-.venv/bin/uvicorn jiage.api:app --reload --port 8090
+cd ~/projects/xsf
+.venv/bin/uvicorn xsf.api:app --reload --port 8090
 
 # 服务器 (绑外网)
-cd ~/jiage
+cd ~/xsf
 source .venv/bin/activate
-uvicorn jiage.api:app --host 0.0.0.0 --port 8090
+uvicorn xsf.api:app --host 0.0.0.0 --port 8090
 # → 浏览器访问 http://47.93.199.96:8090
 ```
 
@@ -110,28 +128,28 @@ uvicorn jiage.api:app --host 0.0.0.0 --port 8090
 ssh root@47.93.199.96
 
 # 2. 配置 GitHub SSH key (如未配置)
-ssh-keygen -t ed25519 -C "jiage-server"
+ssh-keygen -t ed25519 -C "xsf-server"
 cat ~/.ssh/id_ed25519.pub
 # → 复制输出, 添加到 GitHub → Settings → SSH and GPG keys → New SSH key
 
 # 3. clone 仓库
-cd ~ && git clone git@github.com:eric2024ll/jiage.git
+cd ~ && git clone git@github.com:eric2024ll/xsf.git
 
 # 4. 创建 venv + 安装
-cd ~/jiage
+cd ~/xsf
 sudo apt install python3.12-venv -y    # Debian/Ubuntu 前置依赖 (ensurepip)
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 
-# 5. 配置 OSS 数据存储 (collections 上 OSS, jiage.db 留本地)
-mkdir -p /mnt/oss/sources/jiage/collections/uploads
-echo 'export JIAGE_COLLECTIONS_DIR=/mnt/oss/sources/jiage/collections' >> ~/.bashrc
+# 5. 配置 OSS 数据存储 (collections 上 OSS, xsf.db 留本地)
+mkdir -p /mnt/oss/sources/xsf/collections/uploads
+echo 'export XSF_COLLECTIONS_DIR=/mnt/oss/sources/xsf/collections' >> ~/.bashrc
 source ~/.bashrc
 
 # 6. 验证安装
-jiage init      # 初始化 ~/jiage-data/jiage.db
-jiage stats     # 应显示空库
+xsf init       # 初始化 ~/xsf-data/ 目录结构
+xsf stats      # 应显示空库
 ```
 
 ### 日常更新 (本地 push 后)
@@ -139,17 +157,17 @@ jiage stats     # 应显示空库
 ```bash
 # 1. 服务器拉取最新代码
 ssh root@47.93.199.96
-cd ~/jiage && git pull origin main
+cd ~/xsf && git pull origin main
 
 # 2. 依赖变更时重新安装 (pyproject.toml 改了才需要)
 source .venv/bin/activate
 pip install -e .
 
 # 3. 重启 systemd 服务
-systemctl restart jiage
+systemctl restart xsf
 
 # 4. 查看日志
-journalctl -u jiage -f
+journalctl -u xsf -f
 ```
 
 ### systemd 服务部署 (推荐)
@@ -159,17 +177,17 @@ journalctl -u jiage -f
 #### 1. 创建服务文件
 
 ```bash
-cat > /etc/systemd/system/jiage.service << 'EOF'
+cat > /etc/systemd/system/xsf.service << 'EOF'
 [Unit]
-Description=jiage Web Service
+Description=xsf Web Service
 After=network.target ossfs2-sources.service
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/jiage
-EnvironmentFile=/root/jiage/.env
-ExecStart=/root/jiage/.venv/bin/uvicorn jiage.api:app --host 0.0.0.0 --port 8090
+WorkingDirectory=/root/xsf
+EnvironmentFile=/root/xsf/.env
+ExecStart=/root/xsf/.venv/bin/uvicorn xsf.api:app --host 0.0.0.0 --port 8090
 Restart=always
 RestartSec=5
 
@@ -181,50 +199,39 @@ EOF
 #### 2. 创建 .env 文件 (chmod 600)
 
 ```bash
-cat > /root/jiage/.env << 'EOF'
-JIAGE_AUTH_TOKEN=<用户自设密码>
-JIAGE_COLLECTIONS_DIR=/mnt/oss/sources/jiage/collections
+cat > /root/xsf/.env << 'EOF'
+XSF_AUTH_TOKEN=<用户自设密码>
+XSF_COLLECTIONS_DIR=/mnt/oss/sources/xsf/collections
 EOF
-chmod 600 /root/jiage/.env
+chmod 600 /root/xsf/.env
 ```
 
-> **JIAGE_AUTH_TOKEN**: 设为你的登录密码. 留空或不设则无认证（开发模式）.
+> **XSF_AUTH_TOKEN**: 设为你的登录密码. 留空或不设则无认证（开发模式）.
 > 设了之后访问任何页面都需先登录 (`/login`).
 
-> **⚠ DB 存储位置**: jiage.db 必须在**本地磁盘** (`JIAGE_DB_DIR`, 默认 `~/jiage-data/db/`),
+> **⚠ DB 存储位置**: xsf.db 必须在**本地磁盘** (`XSF_DB_DIR`, 默认 `~/xsf-data/db/`),
 > 不能放 OSS (ossfs 不支持 SQLite 文件锁, 会报 `disk I/O error`).
-> 如果旧版 collection 重构时 DB 被放到了 OSS 上, 需迁移到本地:
-> ```bash
-> mkdir -p ~/jiage-data/db
-> for d in /mnt/oss/sources/jiage/collections/*/; do
->   coll=$(basename "$d")
->   if [ -f "$d/jiage.db" ]; then
->     mkdir -p ~/jiage-data/db/"$coll"
->     mv "$d/jiage.db" ~/jiage-data/db/"$coll"/
->   fi
-> done
-> ```
 
 #### 3. 部署命令
 
 ```bash
 # 首次
 systemctl daemon-reload
-systemctl enable jiage
-systemctl start jiage
-systemctl status jiage          # 确认 active (running)
+systemctl enable xsf
+systemctl start xsf
+systemctl status xsf          # 确认 active (running)
 
 # 查看日志
-journalctl -u jiage -f          # 实时跟踪
-journalctl -u jiage --since "1 hour ago"  # 最近1小时
+journalctl -u xsf -f          # 实时跟踪
+journalctl -u xsf --since "1 hour ago"  # 最近1小时
 
 # 更新代码后
-cd /root/jiage && git pull origin main && .venv/bin/pip install -e .
-systemctl restart jiage
+cd /root/xsf && git pull origin main && .venv/bin/pip install -e .
+systemctl restart xsf
 
 # 停止/启动
-systemctl stop jiage
-systemctl start jiage
+systemctl stop xsf
+systemctl start xsf
 ```
 
 #### 4. 验证
@@ -237,10 +244,10 @@ curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/
 curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/
 
 # 登录获取 cookie
-curl -s -X POST http://localhost:8090/login -d 'password=<你的密码>' -c /tmp/jiage_cookie -w '%{http_code}\n'
+curl -s -X POST http://localhost:8090/login -d 'password=<你的密码>' -c /tmp/xsf_cookie -w '%{http_code}\n'
 
 # 带 cookie 访问
-curl -s -b /tmp/jiage_cookie http://localhost:8090/ -o /dev/null -w '%{http_code}\n'
+curl -s -b /tmp/xsf_cookie http://localhost:8090/ -o /dev/null -w '%{http_code}\n'
 ```
 
 ### OCR 实测注意事项
@@ -254,32 +261,49 @@ curl -s -b /tmp/jiage_cookie http://localhost:8090/ -o /dev/null -w '%{http_code
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
-| `JIAGE_AUTH_TOKEN` | 可选 | Web 登录密码. 未设则无认证（开发模式）; 设了则所有页面需登录 |
-| `JIAGE_DATA` | 可选 | 数据根目录, 默认 `~/jiage-data/` |
-| `JIAGE_DB_DIR` | 可选 | **数据库目录(本地磁盘!)**, 默认 `JIAGE_DATA/db/`. ossfs 不支持 SQLite 文件锁, 服务器上**不要**指向 OSS |
-| `JIAGE_COLLECTIONS_DIR` | 可选 | 源文件+上传目录, 默认 `JIAGE_DATA/collections/`; 服务器指向 OSS `/mnt/oss/sources/jiage/collections/` |
-| `JIAGE_OCR_METHOD` | 可选 | 默认 OCR provider id (匹配 ocr-config.json). 未设则取配置文件 default > 首个 provider |
+| `XSF_AUTH_TOKEN` | 可选 | Web 登录密码. 未设则无认证（开发模式）; 设了则所有页面需登录 |
+| `XSF_DATA` | 可选 | 数据根目录, 默认 `~/xsf-data/` |
+| `XSF_DB_DIR` | 可选 | **数据库目录(本地磁盘!)**, 默认 `XSF_DATA/db/`. ossfs 不支持 SQLite 文件锁, 服务器上**不要**指向 OSS |
+| `XSF_COLLECTIONS_DIR` | 可选 | 源文件+上传目录, 默认 `XSF_DATA/collections/`; 服务器指向 OSS `/mnt/oss/sources/xsf/collections/` |
+| `XSF_OCR_METHOD` | 可选 | 默认 OCR provider id (匹配 ocr-config.json). 未设则取配置文件 default > 首个 provider |
 
 ## 常用命令速查
 
 ```bash
 # === 本地 (WSL, uv venv) ===
-cd ~/projects/jiage
+cd ~/projects/xsf
 uv pip install -e .                                  # 安装/更新依赖
-.venv/bin/jiage init                                 # 初始化 DB
-.venv/bin/jiage add <pdf> -c <col>                   # born-digital PDF
-.venv/bin/jiage add <pdf> -c <col> --ocr             # 扫描件 OCR (PaddleOCR-VL)
-.venv/bin/jiage search "<query>"                     # FTS 搜索
-.venv/bin/jiage context <doc_id> <page> <block>      # 查看上下文
-.venv/bin/jiage remove <doc_id>                      # 删除文献
-.venv/bin/jiage stats                                # 统计
+.venv/bin/xsf init                                   # 初始化 DB
+.venv/bin/xsf add <pdf> -c <col>                     # born-digital PDF
+.venv/bin/xsf add <pdf> -c <col> --ocr               # 扫描件 OCR (PaddleOCR-VL)
+.venv/bin/xsf search "<query>"                       # FTS 搜索
+.venv/bin/xsf context <doc_id> <page> <block>        # 查看上下文
+.venv/bin/xsf remove <doc_id>                        # 删除文献
+.venv/bin/xsf stats                                  # 统计
 
-# === 服务器 (标准 venv) ===
-ssh root@47.93.199.96
-cd ~/jiage && git pull origin main                   # 更新代码
+# === 本机 GPU 机 / 服务器 (标准 venv) ===
+cd ~/xsf && git pull origin main                     # 更新代码
 source .venv/bin/activate
-jiage <command>                                      # 同上
+xsf <command>                                        # 同上
 ```
+
+## 改名记录 (2026-08-15)
+
+`jiage` → `xsf` 全面改名 (仓库/包/CLI/环境变量/db 文件名/cookie/导出文件名):
+
+| 项 | 旧 | 新 |
+|----|----|----|
+| 目录 | `~/jiage` (本机/服务器), `~/projects/jiage` (WSL) | `~/xsf`, `~/projects/xsf` |
+| 包名 / CLI | `jiage` / `jiage` | `xsf` / `xsf` |
+| 环境变量 | `JIAGE_DATA` 等 5 个 | `XSF_DATA` 等 5 个 (**不识别旧名**) |
+| DB 文件 | `db/{collection}/jiage.db` | `db/{collection}/xsf.db` (导入兼容旧名) |
+| 登录 cookie | `jiage_auth` | `xsf_auth` (改名后需重新登录) |
+| GitHub | `eric2024ll/jiage` | `eric2024ll/xsf` (旧 URL redirect) |
+
+**遗留 follow-up**:
+- [ ] WSL 开发机: `mv ~/projects/jiage ~/projects/xsf` + 改 remote + 重建 venv
+- [ ] 阿里云服务器: `~/jiage` 迁移 + systemd unit 更名 + OSS 路径迁移
+- [ ] 旧数据目录 `~/jiage-data`、`~/xiaoshufang` 确认后清理
 
 ## Notes for the LLM
 

@@ -357,7 +357,7 @@ function getSelectedIds(){
 
 async function exportBib(){
   const ids = getSelectedIds(); if(!ids) return;
-  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-bib', {ids}, 'jiage_export.bib', 'application/x-bibtex');
+  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-bib', {ids}, 'xsf_export.bib', 'application/x-bibtex');
 }
 
 async function exportAllBib(){
@@ -366,12 +366,12 @@ async function exportAllBib(){
 
 async function exportMd(){
   const ids = getSelectedIds(); if(!ids) return;
-  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-md', {ids}, 'jiage_docs.zip', 'application/zip');
+  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-md', {ids}, 'xsf_docs.zip', 'application/zip');
 }
 
 async function exportArchive(){
   const ids = getSelectedIds(); if(!ids) return;
-  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-archive', {ids}, 'jiage_archive.tar.gz', 'application/gzip');
+  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-archive', {ids}, 'xsf_archive.tar.gz', 'application/gzip');
 }
 
 async function downloadPost(url, body, filename, mime){

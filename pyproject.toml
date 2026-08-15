@@ -1,5 +1,5 @@
 [project]
-name = "jiage"
+name = "xsf"
 version = "0.1.0"
 description = "小書房 — 文献池检索系统"
 requires-python = ">=3.11"
@@ -16,10 +16,10 @@ dependencies = [
 ]
 
 [project.scripts]
-jiage = "jiage.cli:main"
+xsf = "xsf.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["jiage*"]
+include = ["xsf*"]
 
 [build-system]
 requires = ["setuptools>=64"]
