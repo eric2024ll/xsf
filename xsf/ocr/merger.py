@@ -1,12 +1,15 @@
-"""本地合并 OCR 通道: 并发调用 PP-OCRv66 + PP-StructureV3, 合并结果.
+"""本地合并 OCR 通道: 并发调用 PP-OCRv6 + PP-StructureV3, 合并结果.
 
-策略:
-  - 非文本块 (table_html / formula_latex / figure / ...) → 取 StructureV3 的 block_content, 不覆盖
-  - 文本块 (text / text_header / doc_title / paragraph_title / ...) → 取 StructureV3 的 block_label + block_bbox,
-    block_content 取 v66 的识别文字 (v66 识别准确率更高)
-  - 重叠区: bbox 重合度 > 0.3 → 按 StructureV3 标签 + v66 文字
-  - 非重叠区 v66 多识别的行 → 补入, label 标 "text"
-  - 非重叠区 StructureV3 多识别但 v66 遗漏 → 保留 StructureV3 的 block_content
+适用范围: 横排文档. 竖排文字 (v6 det 为横排行模型, 竖排列被横切) 不可用,
+竖排文档请走 PaddleOCR-VL 通道 (见 2026-08-17 实测, 校闻_台湾生番标本).
+
+策略 (行覆盖率归属, 2026-08-17 v2):
+  - v6 行是细长小框, sv3 块是大框; 归属判据 = area(行 ∩ 块) / area(行) > 0.6
+  - sv3 文本块收集其覆盖的所有 v6 行, 按 (y, x) 排序后用 \\n 拼接为 block_content
+    (v6 识别准确率高于 sv3, sv3 提供 label + bbox)
+  - sv3 块一行都没收到 → 保留 sv3 原文 (v6 漏检)
+  - 非文本块 (表格/公式/图) → 原样保留, 落入其中的 v6 行丢弃 (避免文字散进表格)
+  - 不属于任何 sv3 块的 v6 行 → 独立 text 块补入 (v6 多检)
 """
 import logging
 
@@ -18,26 +21,38 @@ NON_TEXT_LABELS = {
     "table_caption", "header_image", "footer_image", "seal",
 }
 
+# 行覆盖率阈值: v6 行与 sv3 块交面积 / 行面积 超过此值则归属该块
+LINE_COVER_THRESH = 0.6
+
+
+def _area(bbox):
+    return max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1])
+
+
+def _inter_area(a, b):
+    ix0 = max(a[0], b[0])
+    iy0 = max(a[1], b[1])
+    ix1 = min(a[2], b[2])
+    iy1 = min(a[3], b[3])
+    if ix0 >= ix1 or iy0 >= iy1:
+        return 0.0
+    return (ix1 - ix0) * (iy1 - iy0)
+
+
+def _line_cover(line_bbox, block_bbox):
+    """v6 行被 sv3 块覆盖的比例: area(交) / area(行)。"""
+    la = _area(line_bbox)
+    if la <= 0:
+        return 0.0
+    return _inter_area(line_bbox, block_bbox) / la
+
 
 def _bbox_iou(a, b):
     """计算两个 bbox [x0,y0,x1,y1] 的 IoU。"""
-    ax0, ay0, ax1, ay1 = a
-    bx0, by0, bx1, by1 = b
-    ix0 = max(ax0, bx0)
-    iy0 = max(ay0, by0)
-    ix1 = min(ax1, bx1)
-    iy1 = min(ay1, by1)
-    if ix0 >= ix1 or iy0 >= iy1:
+    inter = _inter_area(a, b)
+    if inter <= 0:
         return 0.0
-    inter = (ix1 - ix0) * (iy1 - iy0)
-    area_a = (ax1 - ax0) * (ay1 - ay0)
-    area_b = (bx1 - bx0) * (by1 - by0)
-    return inter / (area_a + area_b - inter)
-
-
-def _center_in_bbox(center_x, center_y, bbox):
-    """判断点 (center_x, center_y) 是否在 bbox [x0,y0,x1,y1] 内。"""
-    return bbox[0] <= center_x <= bbox[2] and bbox[1] <= center_y <= bbox[3]
+    return inter / (_area(a) + _area(b) - inter)
 
 
 def merge_pages(pages_v66: list[dict], pages_sv3: list[dict]) -> list[dict]:
@@ -65,56 +80,85 @@ def merge_pages(pages_v66: list[dict], pages_sv3: list[dict]) -> list[dict]:
     return merged
 
 
+def _join_lines(line_contents: list[str]) -> str:
+    """拼接同一 sv3 块内的多行 v66 文字。
+
+    中文行直接相连会粘连歧义, 统一用换行连接 (保留行结构, 校对友好)。
+    """
+    return "\n".join(c for c in line_contents if c)
+
+
 def _merge_single_page(p_v66: dict, p_sv3: dict) -> dict:
-    """合并单页两个通道的结果。"""
+    """合并单页两个通道的结果 (行覆盖率归属算法)。"""
     blocks_v66 = p_v66.get("parsing_res_list", [])
     blocks_sv3 = p_sv3.get("parsing_res_list", [])
     w = p_sv3.get("width") or p_v66.get("width", 0)
     h = p_sv3.get("height") or p_v66.get("height", 0)
 
-    used_v66 = set()
-    merged_blocks = []
-
-    for b_sv3 in blocks_sv3:
-        label = b_sv3.get("block_label", "text")
-        bbox_sv3 = b_sv3.get("block_bbox", [0, 0, 0, 0])
-        cx = (bbox_sv3[0] + bbox_sv3[2]) / 2
-        cy = (bbox_sv3[1] + bbox_sv3[3]) / 2
-
-        if label in NON_TEXT_LABELS:
-            merged_blocks.append(b_sv3)
-            continue
-
-        best = None
-        best_iou = 0.3
-        for j, b_v66 in enumerate(blocks_v66):
-            if j in used_v66:
-                continue
-            iou = _bbox_iou(bbox_sv3, b_v66.get("block_bbox", [0, 0, 0, 0]))
-            if iou > best_iou or _center_in_bbox(cx, cy, b_v66.get("block_bbox", [0, 0, 0, 0])):
-                best = j
-                best_iou = iou
-
-        if best is not None:
-            used_v66.add(best)
-            merged_blocks.append({
-                "block_label": label,
-                "block_content": blocks_v66[best].get("block_content", ""),
-                "block_bbox": bbox_sv3,
-                "block_order": b_sv3.get("block_order", len(merged_blocks) + 1),
-            })
+    # 预处理: sv3 块分为文本块 / 非文本块
+    text_blocks = []      # (bbox, block)
+    non_text_bboxes = []  # [bbox]
+    for b in blocks_sv3:
+        bbox = b.get("block_bbox", [0, 0, 0, 0])
+        if b.get("block_label", "text") in NON_TEXT_LABELS:
+            non_text_bboxes.append(bbox)
         else:
-            merged_blocks.append(b_sv3)
+            text_blocks.append((bbox, b))
 
+    # 归属: 每个 v6 行找覆盖率最高的 sv3 文本块
+    owner = [None] * len(blocks_v66)          # 行 j -> 文本块索引
+    dropped = [False] * len(blocks_v66)       # 落入非文本块 → 丢弃
     for j, b_v66 in enumerate(blocks_v66):
-        if j in used_v66:
+        lb = b_v66.get("block_bbox", [0, 0, 0, 0])
+        best_cov = LINE_COVER_THRESH
+        best_k = None
+        for k, (sb, _) in enumerate(text_blocks):
+            cov = _line_cover(lb, sb)
+            if cov > best_cov:
+                best_cov = cov
+                best_k = k
+        if best_k is not None:
+            owner[j] = best_k
             continue
+        # 不属于任何文本块: 落入非文本块 (表格/图) 超过阈值 → 丢弃
+        for nb in non_text_bboxes:
+            if _line_cover(lb, nb) > LINE_COVER_THRESH:
+                dropped[j] = True
+                break
+
+    # 收集: 每个文本块按 (y, x) 序拼接其行
+    merged_blocks = []
+    for k, (sb, b_sv3) in enumerate(text_blocks):
+        lines = [blocks_v66[j] for j in range(len(blocks_v66))
+                 if owner[j] == k]
+        if lines:
+            lines.sort(key=lambda b: (
+                b["block_bbox"][1], b["block_bbox"][0]))
+            content = _join_lines(
+                [str(b.get("block_content", "")) for b in lines])
+        else:
+            content = str(b_sv3.get("block_content", ""))
         merged_blocks.append({
-            "block_label": "text",
-            "block_content": b_v66.get("block_content", ""),
-            "block_bbox": b_v66.get("block_bbox", [0, 0, 0, 0]),
-            "block_order": len(merged_blocks) + 1,
+            "block_label": b_sv3.get("block_label", "text"),
+            "block_content": content,
+            "block_bbox": sb,
+            "block_order": b_sv3.get("block_order", len(merged_blocks) + 1),
         })
+
+    # 非文本块原样保留
+    for b in blocks_sv3:
+        if b.get("block_label", "text") in NON_TEXT_LABELS:
+            merged_blocks.append(dict(b))
+
+    # 未归属且未丢弃的 v6 行 → 独立 text 补入
+    for j, b_v66 in enumerate(blocks_v66):
+        if owner[j] is None and not dropped[j]:
+            merged_blocks.append({
+                "block_label": "text",
+                "block_content": str(b_v66.get("block_content", "")),
+                "block_bbox": b_v66.get("block_bbox", [0, 0, 0, 0]),
+                "block_order": len(merged_blocks) + 1,
+            })
 
     merged_blocks.sort(key=lambda b: (
         b.get("block_bbox", [0, 0, 0, 0])[1],
