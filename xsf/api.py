@@ -1169,6 +1169,30 @@ async def api_export_bib(collection: str, request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+def _md_frontmatter(doc) -> str:
+    """从 doc 行生成 YAML frontmatter (cite_key + bib_type + bib_data 字段).
+
+    无任何书目数据时返回空串 (保持文件干净)。
+    值用 json.dumps 序列化 — JSON 字符串是合法 YAML, 自动处理引号/冒号转义。
+    """
+    fields = {}
+    if doc["cite_key"]:
+        fields["cite_key"] = doc["cite_key"]
+    if doc["bib_type"]:
+        fields["bib_type"] = doc["bib_type"]
+    bib = parse_bib_data(doc["bib_data"]) or {}
+    for k, v in bib.items():
+        if v:
+            fields[k] = v
+    if not fields:
+        return ""
+    lines = ["---"]
+    for k, v in fields.items():
+        lines.append(f"{k}: {json.dumps(v, ensure_ascii=False)}")
+    lines.append("---")
+    return "\n".join(lines) + "\n\n"
+
+
 @app.post("/collections/{collection}/docs/export-md")
 async def api_export_md(collection: str, request: Request):
     """批量导出 Markdown（每篇一个文件，打包 zip）。"""
@@ -1185,7 +1209,8 @@ async def api_export_md(collection: str, request: Request):
             try:
                 placeholders = ",".join("?" * len(ids))
                 docs = conn.execute(
-                    f"""SELECT id, cite_key, title, author
+                    f"""SELECT id, cite_key, title, author,
+                               bib_type, bib_data
                         FROM documents
                         WHERE id IN ({placeholders})""",
                     ids,
@@ -1202,12 +1227,15 @@ async def api_export_md(collection: str, request: Request):
                     content = "\n\n".join(
                         r["text"] for r in lines if r["text"]
                     )
+                    fm = _md_frontmatter(doc)
                     header = (doc["title"] or doc["cite_key"]
                               or f"doc_{doc_id}")
                     md = f"# {header}\n\n"
                     if doc["author"]:
                         md += f"**作者**: {doc['author']}\n\n"
                     md += content + "\n"
+                    if fm:
+                        md = fm + md
                     filename = (
                         f"{doc['cite_key'] or f'doc_{doc_id}'}.md"
                     )
