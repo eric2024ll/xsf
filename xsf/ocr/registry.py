@@ -14,7 +14,7 @@ from .http_api import ocr_file
 
 
 def _build_adapter(provider_id: str = None) -> DirectAdapter:
-    """按配置构建 adapter (type: generic_http | aistudio)。找不到配置 raise RuntimeError。"""
+    """按配置构建 adapter (type: generic_http | aistudio | local_merged)。找不到配置 raise RuntimeError。"""
     cfg = get_ocr_provider_cfg(provider_id)
     pid = cfg['id']
     ptype = cfg.get('type', 'generic_http')
@@ -28,6 +28,31 @@ def _build_adapter(provider_id: str = None) -> DirectAdapter:
                 token=_cfg.get('api_key'),
                 model=_cfg.get('model'),
             )
+    elif ptype == 'local_merged':
+        from .merger import merge_pages
+
+        urls = cfg.get('urls', [])
+        if len(urls) < 2:
+            raise RuntimeError(f'local_merged provider "{pid}" 需要至少 2 个 URL, 当前 {len(urls)}')
+
+        def _ocr(pdf_path, _urls=urls, _cfg=cfg):
+            import concurrent.futures
+            pages_list = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                futures = {
+                    ex.submit(ocr_file, pdf_path, url=u,
+                              api_key=_cfg.get('api_key'),
+                              model=_cfg.get('model')): u
+                    for u in _urls
+                }
+                for fut in concurrent.futures.as_completed(futures):
+                    try:
+                        pages_list.append(fut.result())
+                    except Exception as e:
+                        raise RuntimeError(
+                            f'合并 OCR 子调用失败 ({futures[fut]}): {e}'
+                        )
+            return merge_pages(pages_list[0], pages_list[1])
     else:
         def _ocr(pdf_path, _cfg=cfg):
             return ocr_file(

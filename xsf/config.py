@@ -138,16 +138,21 @@ def _next_provider_id(providers: list[dict]) -> str:
     return f'p{n}'
 
 
-def save_ocr_provider(name: str, url: str, pid: str = None,
+def save_ocr_provider(name: str, url: str = None, pid: str = None,
                       api_key: str = None, model: str = None,
-                      type: str = 'generic_http') -> dict:
+                      type: str = 'generic_http',
+                      urls: list[str] = None) -> dict:
     """新增 (pid 为空) / 编辑 (pid 已存在) provider。
 
-    type: 'generic_http' (自定义同步端点, 需 url) | 'aistudio' (内置云端, 无需 url)。
+    type:
+      'generic_http' (自定义同步端点, 需 url)
+      'aistudio'     (内置云端, 无需 url)
+      'local_merged' (本地合并: PP-OCRv66 + PP-StructureV3, 需 urls 列表)
     api_key 传 None/空 且为编辑 → 保留旧值。
+    urls 仅用于 local_merged 类型, 双 URL 列表。
     返回写入后的完整 provider dict。
     """
-    PROVIDER_TYPES = ('generic_http', 'aistudio')
+    PROVIDER_TYPES = ('generic_http', 'aistudio', 'local_merged')
     name = (name or '').strip()
     url = (url or '').strip()
     ptype = (type or 'generic_http').strip() or 'generic_http'
@@ -171,8 +176,13 @@ def save_ocr_provider(name: str, url: str, pid: str = None,
         if target is None:
             raise KeyError(f'provider 不存在: {pid}')
         target['name'] = name
-        target['url'] = url
         target['type'] = ptype
+        if urls is not None:
+            target['urls'] = urls
+        elif ptype == 'local_merged':
+            target.pop('url', None)
+        else:
+            target['url'] = url
         if api_key:                       # 空 = 保留旧值
             target['api_key'] = api_key.strip()
         if model is not None:
@@ -184,11 +194,16 @@ def save_ocr_provider(name: str, url: str, pid: str = None,
         entry = {
             'id': pid,
             'name': name,
-            'url': url,
             'type': ptype,
             'model': (model or '').strip() or None,
             'created_at': datetime.now().isoformat(timespec='seconds'),
         }
+        if ptype == 'local_merged':
+            if not urls or len(urls) < 2:
+                raise ValueError('local_merged 类型必须提供 urls 列表 (至少 2 个 URL)')
+            entry['urls'] = list(urls)
+        else:
+            entry['url'] = url
         if api_key:
             entry['api_key'] = api_key.strip()
         providers.append(entry)
