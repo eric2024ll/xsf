@@ -756,7 +756,7 @@ mark {
 {%- for ln in b.lines %}
 {{- highlight(ln.text, keyword) | safe }}{% if not loop.last %}<br>{% endif -%}
 {%- endfor %}
-{%- if not loop.last %}<br>{% endif -%}
+{%- if not loop.last %}<br><br>{% endif -%}
 {%- endfor %}
     </div>
   </div>
@@ -1371,8 +1371,9 @@ function buildPageMarkdown() {
   if (doc.cite_key) lines.push('cite_key: ' + yamlEscape(doc.cite_key));
   if (doc.bib_type) lines.push('bib_type: ' + yamlEscape(doc.bib_type));
   if (doc.bib_data) {
+    const bibData = typeof doc.bib_data === 'string' ? JSON.parse(doc.bib_data || '{}') : (doc.bib_data || {});
     const skip = ['title', 'author'];
-    Object.entries(doc.bib_data).forEach(([k, v]) => {
+    Object.entries(bibData).forEach(([k, v]) => {
       if (v && !skip.includes(k)) lines.push(k + ': ' + yamlEscape(v));
     });
   }
