@@ -1353,7 +1353,7 @@ function showToast(msg) {
 function collectPageText() {
   const el = document.getElementById('pageText');
   if (!el) return '';
-  return el.textContent.trim();
+  return el.innerText.trim();
 }
 
 function yamlEscape(v) {

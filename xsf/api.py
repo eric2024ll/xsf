@@ -1218,14 +1218,22 @@ async def api_export_md(collection: str, request: Request):
 
                 for doc in docs:
                     doc_id = doc["id"]
-                    lines = conn.execute(
-                        """SELECT text FROM lines
+                    rows = conn.execute(
+                        """SELECT text, page_num, block_num FROM lines
                            WHERE doc_id = ?
                            ORDER BY page_num, block_num, line_num""",
                         (doc_id,),
                     ).fetchall()
+                    blocks = []
+                    for r in rows:
+                        if not r["text"]:
+                            continue
+                        key = (r["page_num"], r["block_num"])
+                        if not blocks or blocks[-1]["key"] != key:
+                            blocks.append({"key": key, "lines": []})
+                        blocks[-1]["lines"].append(r["text"])
                     content = "\n\n".join(
-                        r["text"] for r in lines if r["text"]
+                        "\n".join(b["lines"]) for b in blocks
                     )
                     fm = _md_frontmatter(doc)
                     header = (doc["title"] or doc["cite_key"]
