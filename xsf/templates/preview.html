@@ -9,8 +9,13 @@
 <style>
 .doc-header {
   background: var(--card-bg); border-bottom: 1px solid var(--border);
-  padding: 12px 24px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 8px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
 }
+.back-link {
+  font-size: 0.78rem; color: var(--primary); text-decoration: none;
+  white-space: nowrap; padding: 3px 8px; border-radius: 4px; flex-shrink: 0;
+}
+.back-link:hover { background: var(--accent); }
 .doc-header .doc-title { font-size: 1.1rem; font-weight: 700; }
 .doc-header .doc-meta { font-size: 0.8rem; color: var(--text-muted); }
 .doc-header .doc-ck { font-size: 0.78rem; color: var(--primary); font-family: monospace;
@@ -43,12 +48,11 @@
 </style>
 </head>
 <body data-page="preview">
-{% include '_nav.html' %}
-
 {% if error %}
 <div class="doc-body"><div class="viewer-empty">{{ error }}</div></div>
 {% else %}
 <div class="doc-header">
+  <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 文献列表</a>
   <span class="doc-title">{{ doc.title or doc.filename or ('#%s' % doc_id) }}</span>
   {% if doc.cite_key %}<span class="doc-ck">{{ doc.cite_key }}</span>{% endif %}
   <span class="doc-meta">{{ doc.page_count or '?' }}页 · {{ doc.doc_type or '' }}</span>
@@ -62,7 +66,6 @@
 </div>
 {% endif %}
 
-<script src="/static/nav.js"></script>
 <script>
 var DOC_ID = {{ doc_id | tojson if doc_id else 'null' }};
 var COLLECTION = {{ collection | tojson }};

@@ -23,24 +23,29 @@
   border:1px dashed var(--border); border-radius:10px; outline:none;
 }
 
-/* ── 校对页 sub-header ── */
+/* ── 校对页 header (单行, 无全局导航) ── */
 .proof-header {
   background:var(--card-bg); border-bottom:1px solid var(--border);
-  padding:6px 20px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  padding:5px 12px; display:flex; align-items:center; gap:10px;
 }
-.proof-header h1 { font-size:1rem; font-weight:700; white-space:nowrap; overflow:hidden;
-  text-overflow:ellipsis; max-width:30vw; }
-.proof-ck { font-size:0.78rem; color:var(--primary); font-family:monospace;
-  background:var(--accent); padding:2px 8px; border-radius:4px; white-space:nowrap; }
+.back-link {
+  font-size:0.78rem; color:var(--primary); text-decoration:none;
+  white-space:nowrap; padding:3px 8px; border-radius:4px; flex-shrink:0;
+}
+.back-link:hover { background:var(--accent); }
+.proof-header h1 { font-size:0.92rem; font-weight:700; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; max-width:22vw; min-width:60px; }
+.proof-ck { font-size:0.72rem; color:var(--primary); font-family:monospace;
+  background:var(--accent); padding:2px 7px; border-radius:4px; white-space:nowrap; }
+.doc-tags { flex-shrink:1; overflow:hidden; }
+.bib-toggle-btn {
+  font-size:0.72rem; color:var(--primary); background:var(--accent);
+  border:1px solid var(--border); border-radius:4px; padding:3px 10px;
+  cursor:pointer; white-space:nowrap; flex-shrink:0;
+}
+.bib-toggle-btn:hover { background:var(--bg-secondary); }
 
 /* ── 书目元数据 ── */
-.bib-bar { display:flex; align-items:center; gap:8px; padding:5px 16px;
-  background:var(--accent); border-bottom:1px solid var(--border);
-  font-size:0.74rem; cursor:pointer; user-select:none; }
-.bib-bar .bib-bar-label { font-weight:600; color:var(--primary); white-space:nowrap; }
-.bib-bar .bib-bar-summary { color:var(--text-muted); flex:1; overflow:hidden;
-  text-overflow:ellipsis; white-space:nowrap; }
-.bib-bar .bib-bar-toggle { font-size:0.68rem; color:var(--text-muted); transition:transform .2s; }
 .bib-panel { display:none; padding:10px 16px; border-bottom:1px solid var(--border);
   background:var(--card-bg); max-height:400px; overflow-y:auto; }
 .bib-panel.show { display:block; }
@@ -84,31 +89,33 @@
 .nav {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .nav select {
-  padding: 6px 10px;
+  padding: 4px 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: white;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   cursor: pointer;
 }
 .nav button {
-  padding: 6px 12px;
+  padding: 4px 9px;
   background: white;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
 }
 .nav button:hover:not(:disabled) { background: var(--accent); }
 .nav button:disabled { opacity: 0.5; cursor: not-allowed; }
 .nav a {
   text-decoration: none;
   color: var(--text-muted);
-  font-size: 0.85rem;
-  padding: 6px 10px;
+  font-size: 0.8rem;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
@@ -116,30 +123,30 @@
 
 .in-page-search {
   display: flex;
-  gap: 6px;
-  margin-left: 8px;
+  gap: 4px;
+  margin-left: 6px;
 }
 .in-page-search input {
-  padding: 5px 8px;
+  padding: 4px 7px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  font-size: 0.85rem;
-  width: 120px;
+  font-size: 0.8rem;
+  width: 104px;
 }
 .in-page-search button {
-  padding: 5px 10px;
+  padding: 4px 8px;
   background: var(--primary);
   color: white;
   border: none;
   border-radius: var(--radius);
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
 }
 .in-page-search button:hover { background: var(--primary-hover); }
 
 .main {
   display: flex;
-  height: calc(100vh - 100px);
+  height: calc(100vh - 40px);
   overflow: hidden;
 }
 
@@ -148,7 +155,7 @@
   min-width: 0;
   overflow: auto;
   background: #e9ecef;
-  padding: 20px;
+  padding: 8px;
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
@@ -208,7 +215,7 @@
   overflow-y: auto;
   background: var(--card-bg);
   border-left: 1px solid var(--border);
-  padding: 16px;
+  padding: 8px 10px;
 }
 .right.md-mode {
   width: 100%;
@@ -217,6 +224,30 @@
   max-width: 900px;
   margin: 0 auto;
 }
+
+/* md 纯文模式无图面板, 分割条隐藏 */
+.main:has(> .right.md-mode) > .divider { display: none; }
+
+/* ── 拖拽分割条 ── */
+.divider {
+  width: 6px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: var(--border);
+  transition: background 0.15s;
+  position: relative;
+}
+.divider::after {
+  content: '';
+  position: absolute;
+  inset: 0 -3px;
+}
+.divider:hover, .divider.dragging { background: var(--primary); }
+
+/* ── 专注模式 (F11 进入 / Esc 退出) ── */
+body.focus-mode .proof-header,
+body.focus-mode .bib-panel { display: none; }
+body.focus-mode .main { height: 100vh; }
 
 .block-group {
   margin-bottom: 14px;
@@ -365,22 +396,24 @@ mark {
   margin: 20px;
 }
 
-/* 类型图例条 */
+/* 类型图例 (并入 img-toolbar, 不再单独一行) */
 .type-legend {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
-  padding: 2px 2px 8px;
-  font-size: 0.72rem;
   align-items: center;
+  font-size: 0.7rem;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
 }
 .type-legend .lg-label { color: var(--text-muted); margin-right: 2px; }
 .legend-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 9px;
-  border-radius: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--card-bg);
   cursor: pointer;
@@ -409,7 +442,7 @@ mark {
   color: var(--tc, var(--primary));
 }
 
-/* 右栏动作栏（复制/导出） */
+/* 右栏动作栏 (单行 + 「⋯」下拉) */
 .text-actions {
   position: sticky;
   top: 0;
@@ -417,21 +450,20 @@ mark {
   display: flex;
   gap: 6px;
   align-items: center;
-  padding: 8px 0 10px;
-  margin-bottom: 6px;
+  padding: 5px 0 7px;
+  margin-bottom: 4px;
   background: var(--card-bg);
   border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
 }
 .text-actions .ta-title {
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   color: var(--text-muted);
   flex: 1;
-  min-width: 80px;
+  min-width: 60px;
 }
 .text-actions button {
-  padding: 4px 12px;
-  font-size: 0.76rem;
+  padding: 3px 10px;
+  font-size: 0.74rem;
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--card-bg);
@@ -439,12 +471,29 @@ mark {
   white-space: nowrap;
 }
 .text-actions button:hover { background: var(--accent); }
-.text-actions button.primary {
-  background: var(--primary);
-  color: #fff;
-  border-color: var(--primary);
+.ta-menu-wrap { position: relative; }
+.ta-menu-wrap .ta-more { font-size: 1rem; line-height: 1; padding: 3px 12px; }
+.ta-menu {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  z-index: 60;
+  min-width: 120px;
+  padding: 4px;
 }
-.text-actions button.primary:hover { opacity: .9; background: var(--primary); }
+.ta-menu.show { display: flex; flex-direction: column; gap: 2px; }
+.ta-menu button {
+  border: none;
+  text-align: left;
+  background: transparent;
+  width: 100%;
+}
+.ta-menu button:hover { background: var(--accent); }
 
 /* 轻量 toast */
 .toast {
@@ -464,31 +513,37 @@ mark {
 }
 .toast.show { opacity: 1; }
 
-/* 图片缩放工具栏 */
+/* 图片工具栏: 悬浮在图上方 (半透明, hover 加深), 负 margin 使图片从其下方穿过 */
 .img-toolbar {
   position: sticky;
-  top: 0;
+  top: 8px;
   z-index: 50;
   display: flex;
   align-items: center;
   gap: 4px;
-  background: rgba(255,255,255,0.94);
+  background: rgba(255,255,255,0.82);
+  backdrop-filter: blur(4px);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 5px 8px;
+  padding: 4px 8px;
   box-shadow: var(--shadow);
-  margin-bottom: 12px;
+  margin-bottom: -46px;
+  margin-top: 2px;
   font-size: 0.8rem;
   width: fit-content;
+  max-width: 100%;
   flex-wrap: wrap;
+  opacity: 0.6;
+  transition: opacity .15s;
 }
+.img-toolbar:hover, .img-toolbar:focus-within { opacity: 1; }
 .img-toolbar button {
-  padding: 4px 10px;
+  padding: 3px 9px;
   border: 1px solid var(--border);
   background: white;
   border-radius: 5px;
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   line-height: 1.2;
 }
 .img-toolbar button:hover { background: var(--accent); }
@@ -586,7 +641,7 @@ mark {
 .reocr-actions {
   display: none;
   position: sticky;
-  top: 0;
+  top: 52px;
   z-index: 60;
   gap: 8px;
   background: #fff5f5;
@@ -615,7 +670,7 @@ mark {
 .mobile-tabs { display: none; }
 
 @media (max-width: 900px) {
-  .main { flex-direction: column; height: calc(100vh - 100px); }
+  .main { flex-direction: column; height: calc(100vh - 128px); }
   .mobile-tabs {
     display: flex;
     gap: 0;
@@ -656,19 +711,20 @@ mark {
   }
   .main[data-tab="img"] .left { display: flex; }
   .main[data-tab="txt"] .right { display: block; }
-  header { padding: 8px 10px; gap: 6px; flex-wrap: wrap; height: auto; }
-  header h1 { max-width: 100%; font-size: 0.82rem; }
-  .nav { flex-wrap: wrap; gap: 6px; }
-  .nav select, .nav button, .nav a { font-size: 0.8rem; padding: 6px 8px; }
-  .in-page-search input { font-size: 16px; width: 100px; }
-  .img-toolbar { flex-wrap: wrap; }
+  .proof-header { padding: 5px 8px; gap: 6px; flex-wrap: wrap; height: auto; }
+  .proof-header h1 { max-width: 100%; font-size: 0.8rem; }
+  .doc-tags { display: none; }
+  .nav { flex-wrap: wrap; gap: 4px; }
+  .nav select, .nav button, .nav a { font-size: 0.78rem; padding: 5px 7px; }
+  .in-page-search input { font-size: 16px; width: 96px; }
+  .divider { display: none; }
+  .img-toolbar { position: static; margin-bottom: 8px; opacity: 1; flex-wrap: wrap; }
   .img-toolbar .hint { display: none; }
+  .right { padding: 8px; }
 }
 </style>
 </head>
 <body data-page="proofread">
-{% include '_nav.html' %}
-
 {% if error %}
 <div class="error-box">{{ error }}</div>
 {% else %}
@@ -676,9 +732,11 @@ mark {
 {% set has_pdf = is_md and linked_pdf %}
 
 <div class="proof-header">
+  <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 文献列表</a>
   <h1 title="{{ doc.title or doc.filename }}">{{ doc.title or doc.filename }}</h1>
   {% if doc.cite_key %}<span class="proof-ck">{{ doc.cite_key }}</span>{% endif %}
   <div class="doc-tags" id="docTags"></div>
+  <button class="bib-toggle-btn" id="bibToggleBtn" onclick="toggleBibPanel()">书目 ▾</button>
   <div class="nav">
     <button onclick="goPage({{ page_num - 1 }})" {% if page_num <= 1 %}disabled{% endif %}>上一页</button>
     <select id="pageSelect" onchange="goPage(this.value)">
@@ -694,11 +752,6 @@ mark {
   </div>
 </div>
 
-<div class="bib-bar" id="proofBibBar" onclick="toggleBibPanel()">
-  <span class="bib-bar-label">书目元数据</span>
-  <span class="bib-bar-summary" id="proofBibSummary"></span>
-  <span class="bib-bar-toggle" id="proofBibToggle">▾</span>
-</div>
 <div class="bib-panel" id="proofBibPanel"></div>
 
 <div class="main" id="main" data-tab="img">
@@ -718,8 +771,8 @@ mark {
         <button class="reocr-btn" id="reocrToggle" onclick="toggleReocrMode()">框选重OCR</button>
         <button id="showAllBoxes" onclick="toggleShowAllBoxes()">显示全部框</button>
         <span class="hint">滚轮缩放 · 拖拽平移</span>
+        <div class="type-legend" id="typeLegend"></div>
       </div>
-      <div class="type-legend" id="typeLegend"></div>
       <div class="reocr-actions" id="reocrActions">
         <span id="reocrHint" class="reocr-hint">在图上拖拽画框（可多个）→ 执行重OCR</span>
         <span id="reocrCount">已选 0 个区域</span>
@@ -766,12 +819,19 @@ mark {
   </div>
   {% endif %}
 
+  <div class="divider" id="panelDivider" title="拖拽调整宽度"></div>
+
   <div class="right{% if is_md and not has_pdf %} md-mode{% endif %}" id="textPanel">
     <div class="text-actions">
       <span class="ta-title">识别文本</span>
-      <button onclick="copyAllText()">复制全文</button>
-      <button onclick="exportPage()">导出本页</button>
-      <button class="primary" onclick="exportDocMd()">导出全篇</button>
+      <div class="ta-menu-wrap">
+        <button class="ta-more" onclick="toggleTaMenu(event)">⋯</button>
+        <div class="ta-menu" id="taMenu">
+          <button onclick="copyAllText()">复制全文</button>
+          <button onclick="exportPage()">导出本页</button>
+          <button onclick="exportDocMd()">导出全篇</button>
+        </div>
+      </div>
     </div>
     {% for b in blocks %}
     <div class="block-group{% if is_md %} md-flat{% endif %}" id="block-{{ b.block_num }}" data-block-num="{{ b.block_num }}" data-type="{{ b.block_label }}">
@@ -806,7 +866,6 @@ mark {
 {% endif %}
 
 {% if not error %}
-<script src="/static/nav.js"></script>
 <script src="/static/bib.js"></script>
 <script>
 const collection = {{ collection | tojson }};
@@ -915,14 +974,13 @@ window.BIB_FIELD_LABELS = {{ bib_field_labels | default({}) | tojson }};
     citeKey: citeKey,
     readOnlyCiteKey: true
   });
-  document.getElementById('proofBibSummary').textContent = citeKey || '点击编辑';
 })();
 
 function toggleBibPanel() {
   const p = document.getElementById('proofBibPanel');
-  const t = document.getElementById('proofBibToggle');
+  const t = document.getElementById('bibToggleBtn');
   p.classList.toggle('show');
-  t.textContent = p.classList.contains('show') ? '▴' : '▾';
+  t.textContent = p.classList.contains('show') ? '书目 ▴' : '书目 ▾';
 }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -1512,6 +1570,67 @@ function toggleShowAllBoxes() {
 // 初始化（模板已渲染 bbox / block-group，可直接着色）
 applyTypeColors();
 renderLegend();
+
+// ── 右栏「⋯」下拉 ──
+function toggleTaMenu(e) {
+  e.stopPropagation();
+  document.getElementById('taMenu').classList.toggle('show');
+}
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('taMenu');
+  if (menu && !e.target.closest('.ta-menu-wrap')) menu.classList.remove('show');
+});
+
+// ── 右栏拖拽分割条 (localStorage 记住宽度, 桌面端) ──
+(function initDivider() {
+  const divider = document.getElementById('panelDivider');
+  const right = document.getElementById('textPanel');
+  if (!divider || !right) return;
+  if (right.classList.contains('md-mode')) return;   // 纯文模式无图面板
+  const KEY = 'xsf-proof-right-w';
+  const saved = parseFloat(localStorage.getItem(KEY));
+  if (saved >= 280) right.style.width = Math.min(saved, Math.round(window.innerWidth * 0.7)) + 'px';
+  let dragging = false;
+  divider.addEventListener('mousedown', (e) => {
+    dragging = true;
+    divider.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const w = clamp(window.innerWidth - e.clientX, 280, Math.round(window.innerWidth * 0.7));
+    right.style.width = w + 'px';
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    const w = parseFloat(right.style.width);
+    if (w >= 280) localStorage.setItem(KEY, String(Math.round(w)));
+    setTimeout(applyScale, 60);
+  });
+})();
+
+// ── 专注模式: F11 进入 / Esc 退出 (仅桌面端) ──
+(function initFocusMode() {
+  document.addEventListener('keydown', (e) => {
+    const desktop = window.matchMedia('(min-width: 901px)').matches;
+    if (e.key === 'F11' && desktop) {
+      e.preventDefault();
+      document.body.classList.toggle('focus-mode');
+      showToast(document.body.classList.contains('focus-mode')
+        ? '专注模式 (Esc 退出)' : '已退出专注模式');
+      setTimeout(applyScale, 60);
+    } else if (e.key === 'Escape' && document.body.classList.contains('focus-mode')) {
+      document.body.classList.remove('focus-mode');
+      setTimeout(applyScale, 60);
+    }
+  });
+})();
 
 // ── md 关联 PDF 上传 ──
 async function uploadLinkedPdf(input) {
