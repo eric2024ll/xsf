@@ -1943,6 +1943,79 @@ async def edit_line(
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.post("/collections/{collection}/doc/{doc_id}/page/{page_num}/edit")
+async def edit_page(
+    collection: str,
+    doc_id: int,
+    page_num: int,
+    text: str = Form(...),
+):
+    """更新整页文本，按行逐条更新，并重聚 FTS。"""
+    try:
+        conn = get_conn(collection)
+        try:
+            rows = conn.execute(
+                """SELECT id, block_num, line_num FROM lines
+                   WHERE doc_id = ? AND page_num = ?
+                   ORDER BY block_num, line_num""",
+                (doc_id, page_num),
+            ).fetchall()
+
+            block_nums = set(r["block_num"] for r in rows)
+            new_lines = text.split("\n")
+            old_count = len(rows)
+            new_count = len(new_lines)
+
+            for i, r in enumerate(rows):
+                if i < new_count:
+                    conn.execute(
+                        "UPDATE lines SET text = ? WHERE id = ?",
+                        (new_lines[i], r["id"]),
+                    )
+
+            if new_count < old_count:
+                ids = [rows[i]["id"] for i in range(new_count, old_count)]
+                for lid in ids:
+                    conn.execute("DELETE FROM lines WHERE id = ?", (lid,))
+
+            if new_count > old_count:
+                last_block = rows[-1]["block_num"] if rows else 0
+                last_line = rows[-1]["line_num"] if rows else 0
+                for i in range(old_count, new_count):
+                    conn.execute(
+                        """INSERT INTO lines(doc_id, page_num, block_num, line_num, text)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (doc_id, page_num, last_block, last_line + i - old_count + 1, new_lines[i]),
+                    )
+
+            all_blocks = block_nums | ({last_block} if new_count > old_count else set())
+            for bn in all_blocks:
+                block_rows = conn.execute(
+                    """SELECT text FROM lines
+                       WHERE doc_id = ? AND page_num = ? AND block_num = ?
+                       ORDER BY line_num""",
+                    (doc_id, page_num, bn),
+                ).fetchall()
+                block_text = "\n".join(r["text"] for r in block_rows)
+                conn.execute(
+                    """DELETE FROM blocks_fts
+                       WHERE doc_id = ? AND page_num = ? AND block_num = ?""",
+                    (doc_id, page_num, bn),
+                )
+                conn.execute(
+                    """INSERT INTO blocks_fts(doc_id, page_num, block_num, text)
+                       VALUES (?, ?, ?, ?)""",
+                    (doc_id, page_num, bn, _tokenize(block_text)),
+                )
+
+            conn.commit()
+            return {"ok": True, "line_count": new_count}
+        finally:
+            conn.close()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 # ── 手工分栏重新 OCR ────────────────────────────────────
 
 @app.post("/collections/{collection}/doc/{doc_id}/page/{page_num}/reocr")

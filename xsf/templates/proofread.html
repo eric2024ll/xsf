@@ -249,29 +249,21 @@ body.focus-mode .proof-header,
 body.focus-mode .bib-panel { display: none; }
 body.focus-mode .main { height: 100vh; }
 
-.block-group {
-  margin-bottom: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
-  transition: all 0.15s ease;
+#pageText {
+  padding: 12px 16px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.9rem;
+  min-height: 200px;
+  outline: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  transition: border-color 0.15s;
 }
-.block-group:hover {
-  border-color: #b8d0ff;
-  background: #f8fafc;
+#pageText:focus {
+  border-color: var(--primary);
 }
-.block-group.md-flat {
-  border: none;
-  background: transparent;
-  padding: 0;
-  margin-bottom: 0;
-}
-.block-group.md-flat:hover,
-.block-group.md-flat.active {
-  border-color: transparent;
-  background: transparent;
-}
-.block-group.md-flat .line-num { display: none; }
 
 .link-pdf-bar {
   display: flex;
@@ -300,87 +292,22 @@ body.focus-mode .main { height: 100vh; }
   color: var(--text-muted);
 }
 
-.block-header {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin-bottom: 8px;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-.badge {
-  font-size: 0.7rem;
-  padding: 2px 6px;
-  background: var(--accent);
-  color: var(--primary);
-  border-radius: 4px;
-}
-
-.line-item {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  padding: 4px;
-  border-radius: 6px;
-  transition: background 0.15s ease;
-  cursor: pointer;
-}
-.line-item:hover,
-.line-item.active {
-  background: var(--accent);
-}
-
-.line-num {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  min-width: 34px;
-  padding-top: 6px;
-  text-align: right;
-  flex-shrink: 0;
-}
-
-.line-text {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: white;
-  line-height: 1.6;
-  min-height: 1.6em;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 0.9rem;
-}
-.line-text:focus {
-  outline: 2px solid var(--primary);
-  border-color: var(--primary);
-}
-.line-text.edited {
-  background: #fff3a0;
-}
-
-.save-btn {
-  font-size: 0.72rem;
-  padding: 5px 10px;
-  background: var(--primary);
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-.save-btn:hover:not(:disabled) { background: var(--primary-hover); }
-.save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.save-btn.saved { background: var(--success); }
-
+/* mark 高亮 */
 mark {
   background: #fff3a0;
   padding: 0 1px;
   border-radius: 2px;
 }
+
+.save-status {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-left: 6px;
+  min-width: 50px;
+}
+.save-status.saving { color: var(--primary); }
+.save-status.saved { color: #2d8a2d; }
+.save-status.error { color: var(--danger); }
 
 .empty-tip {
   padding: 40px;
@@ -431,16 +358,6 @@ mark {
 .legend-chip:hover { background: var(--accent); }
 .legend-chip.off { opacity: .35; }
 .legend-chip.off .swatch { opacity: .4; }
-
-/* 文本块按类型着色（左侧色条 + 徽章） */
-.block-group[data-type] {
-  border-left: 3px solid color-mix(in srgb, var(--tc, var(--border)) 65%, transparent);
-}
-.block-group.md-flat[data-type] { border-left: none; }
-.badge {
-  background: color-mix(in srgb, var(--tc, var(--primary)) 15%, transparent);
-  color: var(--tc, var(--primary));
-}
 
 /* 右栏动作栏 (单行 + 「⋯」下拉) */
 .text-actions {
@@ -824,6 +741,7 @@ mark {
   <div class="right{% if is_md and not has_pdf %} md-mode{% endif %}" id="textPanel">
     <div class="text-actions">
       <span class="ta-title">识别文本</span>
+      <span class="save-status" id="saveStatus"></span>
       <div class="ta-menu-wrap">
         <button class="ta-more" onclick="toggleTaMenu(event)">⋯</button>
         <div class="ta-menu" id="taMenu">
@@ -833,33 +751,14 @@ mark {
         </div>
       </div>
     </div>
-    {% for b in blocks %}
-    <div class="block-group{% if is_md %} md-flat{% endif %}" id="block-{{ b.block_num }}" data-block-num="{{ b.block_num }}" data-type="{{ b.block_label }}">
-      {% if not is_md %}
-      <div class="block-header">
-        <span>段 {{ b.block_num }}</span>
-        {% if b.block_label %}<span class="badge" data-type="{{ b.block_label }}">{{ b.block_label }}</span>{% endif %}
-      </div>
-      {% endif %}
-      {% for ln in b.lines %}
-      <div class="line-item"
-           id="line-{{ ln.id }}"
-           data-line-id="{{ ln.id }}"
-           data-block-num="{{ b.block_num }}"
-           data-original-text="{{ ln.text }}">
-        <span class="line-num">{{ ln.line_num }}</span>
-        <div class="line-text"
-             contenteditable="true"
-             id="text-{{ ln.id }}"
-             data-line-id="{{ ln.id }}"
-             oninput="onLineEdit({{ ln.id }})">{{ highlight(ln.text, keyword) | safe }}</div>
-        <button class="save-btn"
-                id="save-{{ ln.id }}"
-                onclick="event.stopPropagation(); saveLine({{ ln.id }})">保存</button>
-      </div>
-      {% endfor %}
+    <div id="pageText" class="page-text" contenteditable="true" oninput="onPageEdit()">
+{%- for b in blocks %}
+{%- for ln in b.lines %}
+{{- highlight(ln.text, keyword) | safe }}{% if not loop.last %}<br>{% endif -%}
+{%- endfor %}
+{%- if not loop.last %}<br>{% endif -%}
+{%- endfor %}
     </div>
-    {% endfor %}
   </div>
 </div>
 
@@ -874,8 +773,6 @@ const doc = {{ doc | tojson }};
 const page = {{ page_num | default(1) }};
 const origWidth = {{ orig_width | default(0) }};
 const origHeight = {{ orig_height | default(0) }};
-const targetLineId = {{ target_line or 'null' }};
-const targetBlockNum = {{ target_block or 'null' }};
 const keyword = {{ keyword | tojson }};
 
 // ── 类型色板（按 block_label 着色，仿 PaddleOCR 展示界面） ──
@@ -1017,18 +914,6 @@ function zoomSetPct(p) { zoomLevel = p; _zoomInited = true; applyZoom(); }
 function onImageLoad() {
   applyZoom();
 
-  if (targetLineId) {
-    setTimeout(() => highlightLine(targetLineId), 120);
-  } else if (targetBlockNum) {
-    setTimeout(() => {
-      const el = document.getElementById('block-' + targetBlockNum);
-      if (el) {
-        el.classList.add('active');
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }, 120);
-  }
-
   if (keyword) {
     setTimeout(scrollToFirstHit, 200);
   }
@@ -1052,38 +937,25 @@ function applyScale() {
   renderRegions();
 }
 
-function onLineEdit(lineId) {
-  const textEl = document.getElementById('text-' + lineId);
-  const saveBtn = document.getElementById('save-' + lineId);
-  const lineEl = document.getElementById('line-' + lineId);
-  const original = lineEl.dataset.originalText || '';
-  const current = textEl.textContent || '';
-  if (current !== original) {
-    textEl.classList.add('edited');
-    saveBtn.textContent = '保存';
-    saveBtn.classList.remove('saved');
-    saveBtn.disabled = false;
-  } else {
-    textEl.classList.remove('edited');
-    saveBtn.textContent = '保存';
-    saveBtn.classList.remove('saved');
-  }
+// ── 整页自动保存 (debounce 1s) ──
+let _saveTimer = null;
+function onPageEdit() {
+  clearTimeout(_saveTimer);
+  const el = document.getElementById('saveStatus');
+  if (el) { el.textContent = '未保存'; el.className = 'save-status'; }
+  _saveTimer = setTimeout(autoSavePage, 1000);
 }
-
-async function saveLine(lineId) {
-  const textEl = document.getElementById('text-' + lineId);
-  const saveBtn = document.getElementById('save-' + lineId);
-  const lineEl = document.getElementById('line-' + lineId);
-  const text = textEl.textContent || '';
-
-  saveBtn.disabled = true;
-  saveBtn.textContent = '保存中...';
-
+async function autoSavePage() {
+  const el = document.getElementById('pageText');
+  const status = document.getElementById('saveStatus');
+  if (!el) return;
+  const text = el.textContent || '';
+  if (status) { status.textContent = '保存中…'; status.className = 'save-status saving'; }
   try {
     const params = new URLSearchParams();
     params.append('text', text);
     const res = await fetch(
-      `/collections/${encodeURIComponent(collection)}/doc/${docId}/line/${lineId}/edit`,
+      `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/edit`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -1092,21 +964,29 @@ async function saveLine(lineId) {
     );
     const data = await res.json();
     if (res.ok && data.ok) {
-      lineEl.dataset.originalText = text;
-      textEl.classList.remove('edited');
-      saveBtn.textContent = '已保存';
-      saveBtn.classList.add('saved');
+      if (status) { status.textContent = '已保存 ✓'; status.className = 'save-status saved'; }
     } else {
-      saveBtn.textContent = '失败';
-      alert('保存失败: ' + (data.error || '未知错误'));
-      saveBtn.disabled = false;
+      if (status) { status.textContent = '保存失败'; status.className = 'save-status error'; }
+      setTimeout(() => autoSavePage(), 3000);
     }
   } catch (e) {
-    saveBtn.textContent = '失败';
-    alert('保存出错: ' + e.message);
-    saveBtn.disabled = false;
+    if (status) { status.textContent = '保存失败'; status.className = 'save-status error'; }
+    setTimeout(() => autoSavePage(), 3000);
   }
 }
+// 离开页面前保存
+window.addEventListener('beforeunload', () => {
+  clearTimeout(_saveTimer);
+  const el = document.getElementById('pageText');
+  if (el) {
+    const params = new URLSearchParams();
+    params.append('text', el.textContent || '');
+    navigator.sendBeacon(
+      `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/edit`,
+      params
+    );
+  }
+});
 
 function goPage(page) {
   const url = new URL(window.location.href);
@@ -1115,24 +995,15 @@ function goPage(page) {
 }
 
 function highlightLine(lineId) {
-  document.querySelectorAll('.line-item.active').forEach(e => e.classList.remove('active'));
-  const lineEl = document.getElementById('line-' + lineId);
-  if (lineEl) {
-    lineEl.classList.add('active');
-    lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }
+  const firstMark = document.getElementById('textPanel').querySelector('mark');
+  if (firstMark) firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function scrollToFirstHit() {
   const textPanel = document.getElementById('textPanel');
   const firstMark = textPanel.querySelector('mark');
   if (!firstMark) return;
-
-  const lineEl = firstMark.closest('.line-item');
-  if (lineEl) {
-    lineEl.classList.add('active');
-    lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }
+  firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function doInPageSearch() {
@@ -1436,13 +1307,6 @@ function applyTypeColors() {
       el.appendChild(tag);
     }
   });
-  document.querySelectorAll('.block-group[data-type]').forEach(el => {
-    el.style.setProperty('--tc', typeColor(el.dataset.type));
-  });
-  document.querySelectorAll('.badge[data-type]').forEach(el => {
-    el.style.setProperty('--tc', typeColor(el.dataset.type));
-    el.textContent = typeLabel(el.dataset.type);
-  });
 }
 
 function renderLegend() {
@@ -1465,7 +1329,7 @@ const _hiddenTypes = new Set();
 function toggleTypeFilter(t) {
   if (_hiddenTypes.has(t)) _hiddenTypes.delete(t);
   else _hiddenTypes.add(t);
-  document.querySelectorAll('.bbox-overlay[data-type], .block-group[data-type]').forEach(el => {
+  document.querySelectorAll('.bbox-overlay[data-type]').forEach(el => {
     const et = el.dataset.type;
     el.style.display = _hiddenTypes.has(et) ? 'none' : '';
   });
@@ -1487,13 +1351,9 @@ function showToast(msg) {
 
 // ── F2 复制全文 / F3 导出本页 / F5 导出全篇 ──
 function collectPageText() {
-  const parts = [];
-  document.querySelectorAll('.block-group').forEach(g => {
-    if (g.style.display === 'none') return;
-    g.querySelectorAll('.line-text').forEach(t => parts.push(t.textContent));
-    parts.push('');
-  });
-  return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  const el = document.getElementById('pageText');
+  if (!el) return '';
+  return el.textContent.trim();
 }
 
 async function copyAllText() {
@@ -1567,7 +1427,7 @@ function toggleShowAllBoxes() {
   b.textContent = _showAllBoxes ? '隐藏全部框' : '显示全部框';
 }
 
-// 初始化（模板已渲染 bbox / block-group，可直接着色）
+// 初始化（模板已渲染 bbox 和 pageText，可直接着色）
 applyTypeColors();
 renderLegend();
 
