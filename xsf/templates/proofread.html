@@ -178,10 +178,8 @@
   border-radius: 2px;
   transition: border-width .12s ease, background .12s ease;
 }
-.bbox-overlay.active { display: block; }
 .image-wrap.show-all .bbox-overlay { display: block; }
-.bbox-overlay:hover,
-.bbox-overlay.active {
+.bbox-overlay:hover {
   border-color: var(--tc, #4361ee);
   background: color-mix(in srgb, var(--tc, #4361ee) 22%, transparent);
   border-width: 2.5px;
@@ -227,8 +225,7 @@
   padding: 10px 12px;
   transition: all 0.15s ease;
 }
-.block-group:hover,
-.block-group.active {
+.block-group:hover {
   border-color: #b8d0ff;
   background: #f8fafc;
 }
@@ -743,10 +740,7 @@ mark {
                data-x0="{{ ln.bbox[0] }}"
                data-y0="{{ ln.bbox[1] }}"
                data-x1="{{ ln.bbox[2] }}"
-               data-y1="{{ ln.bbox[3] }}"
-               onclick="onOverlayClick(event, this)"
-               onmouseenter="onOverlayHover(this)"
-               onmouseleave="onOverlayLeave(this)"></div>
+               data-y1="{{ ln.bbox[3] }}"></div>
           {% endif %}
         {% endfor %}
       {% endfor %}
@@ -792,17 +786,13 @@ mark {
            id="line-{{ ln.id }}"
            data-line-id="{{ ln.id }}"
            data-block-num="{{ b.block_num }}"
-           data-original-text="{{ ln.text }}"
-           onmouseenter="onLineHover(this)"
-           onmouseleave="onLineLeave(this)"
-           onclick="onLineClick(this)">
+           data-original-text="{{ ln.text }}">
         <span class="line-num">{{ ln.line_num }}</span>
         <div class="line-text"
              contenteditable="true"
              id="text-{{ ln.id }}"
              data-line-id="{{ ln.id }}"
-             oninput="onLineEdit({{ ln.id }})"
-             onclick="event.stopPropagation(); onLineClick(this.closest('.line-item'))">{{ highlight(ln.text, keyword) | safe }}</div>
+             oninput="onLineEdit({{ ln.id }})">{{ highlight(ln.text, keyword) | safe }}</div>
         <button class="save-btn"
                 id="save-{{ ln.id }}"
                 onclick="event.stopPropagation(); saveLine({{ ln.id }})">保存</button>
@@ -935,8 +925,6 @@ function toggleBibPanel() {
   t.textContent = p.classList.contains('show') ? '▴' : '▾';
 }
 
-let _persistLineId = null;
-
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 // ── 缩放 ──
@@ -1006,48 +994,6 @@ function applyScale() {
   renderRegions();
 }
 
-function onLineHover(el) { /* 悬停仅靠 CSS :hover 高亮文本行，不显示框 */ }
-function onLineLeave(el) { }
-function onLineClick(el) {
-  _persistLineId = el.dataset.lineId;
-  activate(_persistLineId, true);
-}
-
-function onOverlayHover(el) {
-  activate(el.dataset.lineId, false);
-}
-function onOverlayLeave(el) {
-  if (!_persistLineId) deactivate();
-}
-function onOverlayClick(event, el) {
-  event.stopPropagation();
-  _persistLineId = el.dataset.lineId;
-  activate(_persistLineId, true);
-  const lineEl = document.getElementById('line-' + el.dataset.lineId);
-  if (lineEl) lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  if (window.matchMedia('(max-width: 900px)').matches) switchTab('txt');
-}
-
-function activate(lineId, persist) {
-  deactivate();
-
-  const lineEl = document.getElementById('line-' + lineId);
-  const overlayEl = document.getElementById('bbox-' + lineId);
-  if (lineEl) {
-    lineEl.classList.add('active');
-    const blockEl = lineEl.closest('.block-group');
-    if (blockEl) blockEl.classList.add('active');
-  }
-  if (overlayEl) overlayEl.classList.add('active');
-}
-
-function deactivate() {
-  document.querySelectorAll('.line-item.active').forEach(e => e.classList.remove('active'));
-  document.querySelectorAll('.bbox-overlay.active').forEach(e => e.classList.remove('active'));
-  document.querySelectorAll('.block-group.active').forEach(e => e.classList.remove('active'));
-  _persistLineId = null;
-}
-
 function onLineEdit(lineId) {
   const textEl = document.getElementById('text-' + lineId);
   const saveBtn = document.getElementById('save-' + lineId);
@@ -1111,13 +1057,11 @@ function goPage(page) {
 }
 
 function highlightLine(lineId) {
-  deactivate();
+  document.querySelectorAll('.line-item.active').forEach(e => e.classList.remove('active'));
   const lineEl = document.getElementById('line-' + lineId);
   if (lineEl) {
     lineEl.classList.add('active');
     lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    const overlay = document.getElementById('bbox-' + lineId);
-    if (overlay) overlay.classList.add('active');
   }
 }
 
@@ -1130,9 +1074,6 @@ function scrollToFirstHit() {
   if (lineEl) {
     lineEl.classList.add('active');
     lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    const lineId = lineEl.dataset.lineId;
-    const overlay = document.getElementById('bbox-' + lineId);
-    if (overlay) overlay.classList.add('active');
   }
 }
 
