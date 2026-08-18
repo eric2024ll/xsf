@@ -1970,7 +1970,7 @@ async def edit_page(
             ).fetchall()
 
             block_nums = set(r["block_num"] for r in rows)
-            new_lines = text.split("\n")
+            new_lines = [l for l in text.split("\n") if l]
             old_count = len(rows)
             new_count = len(new_lines)
 

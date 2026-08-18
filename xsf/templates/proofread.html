@@ -949,7 +949,7 @@ async function autoSavePage() {
   const el = document.getElementById('pageText');
   const status = document.getElementById('saveStatus');
   if (!el) return;
-  const text = el.textContent || '';
+  const text = el.innerText || '';
   if (status) { status.textContent = '保存中…'; status.className = 'save-status saving'; }
   try {
     const params = new URLSearchParams();
@@ -980,7 +980,7 @@ window.addEventListener('beforeunload', () => {
   const el = document.getElementById('pageText');
   if (el) {
     const params = new URLSearchParams();
-    params.append('text', el.textContent || '');
+    params.append('text', el.innerText || '');
     navigator.sendBeacon(
       `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/edit`,
       params
