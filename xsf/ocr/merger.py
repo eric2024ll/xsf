@@ -1,7 +1,7 @@
 """本地合并 OCR 通道: 并发调用 PP-OCRv6 + PP-StructureV3, 合并结果.
 
-适用范围: 横排文档. 竖排文字 (v6 det 为横排行模型, 竖排列被横切) 不可用,
-竖排文档请走 PaddleOCR-VL 通道 (见 2026-08-17 实测, 校闻_台湾生番标本).
+竖排支持 (2026-08-18): 行框朝向投票判页, 竖排页行/块均按列自右向左排序
+(繁体竖排传统阅读顺序); v6 det 检出的竖列细长框可被 sv3 大块覆盖归属。
 
 策略 (行覆盖率归属, 2026-08-17 v2):
   - v6 行是细长小框, sv3 块是大框; 归属判据 = area(行 ∩ 块) / area(行) > 0.6
@@ -53,6 +53,27 @@ def _bbox_iou(a, b):
     if inter <= 0:
         return 0.0
     return inter / (_area(a) + _area(b) - inter)
+
+
+def _is_vertical_page(blocks: list[dict]) -> bool:
+    """用细长框投票判断页面朝向: 竖排页 (竖列框 h > w*1.5 占多数) 返回 True。"""
+    if not blocks:
+        return False
+    n_vertical = sum(
+        1 for b in blocks
+        if (b.get("block_bbox", [0, 0, 0, 0])[3] - b["block_bbox"][1])
+        > (b["block_bbox"][2] - b["block_bbox"][0]) * 1.5
+    )
+    return n_vertical * 2 > len(blocks)
+
+
+def _sort_key(blocks: list[dict]):
+    """返回排序 key 函数: 竖排 → 列自右向左 (x 降序, y 升序); 横排 → (y, x)。"""
+    if _is_vertical_page(blocks):
+        return lambda b: (-b.get("block_bbox", [0, 0, 0, 0])[0],
+                          b.get("block_bbox", [0, 0, 0, 0])[1])
+    return lambda b: (b.get("block_bbox", [0, 0, 0, 0])[1],
+                      b.get("block_bbox", [0, 0, 0, 0])[0])
 
 
 def merge_pages(pages_v66: list[dict], pages_sv3: list[dict]) -> list[dict]:
@@ -132,8 +153,7 @@ def _merge_single_page(p_v66: dict, p_sv3: dict) -> dict:
         lines = [blocks_v66[j] for j in range(len(blocks_v66))
                  if owner[j] == k]
         if lines:
-            lines.sort(key=lambda b: (
-                b["block_bbox"][1], b["block_bbox"][0]))
+            lines.sort(key=_sort_key(blocks_v66))
             content = _join_lines(
                 [str(b.get("block_content", "")) for b in lines])
         else:
@@ -160,10 +180,7 @@ def _merge_single_page(p_v66: dict, p_sv3: dict) -> dict:
                 "block_order": len(merged_blocks) + 1,
             })
 
-    merged_blocks.sort(key=lambda b: (
-        b.get("block_bbox", [0, 0, 0, 0])[1],
-        b.get("block_bbox", [0, 0, 0, 0])[0],
-    ))
+    merged_blocks.sort(key=_sort_key(blocks_v66))
 
     return {
         "page_index": p_sv3.get("page_index", 0),
