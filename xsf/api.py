@@ -218,7 +218,7 @@ async def bookshelf(request: Request):
     return templates.TemplateResponse(
         request,
         "bookshelf.html",
-        _nav_ctx("bookshelf", "", version=_VERSION,
+        _nav_ctx("bookshelf", last, version=_VERSION,
                  last_collection=last),
     )
 
