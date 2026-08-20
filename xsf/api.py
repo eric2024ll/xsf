@@ -215,10 +215,6 @@ def _nav_ctx(active: str = "", collection: str = "", **kw):
 @app.get("/")
 async def bookshelf(request: Request):
     last = _urlunquote(request.cookies.get('last_collection', ''))
-    if last and last not in list_collections():
-        last = ''
-    if last:
-        return RedirectResponse(f'/collections/{_urlquote(last, safe="")}/docs/list', status_code=302)
     return templates.TemplateResponse(
         request,
         "bookshelf.html",
