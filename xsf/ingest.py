@@ -106,6 +106,8 @@ def ingest_pdf(pdf_path: str | Path, collection: str,
         conn.close()
         doc.close()
 
+    _sync_sag(doc_id, collection)
+
     return {
         'doc_id': doc_id,
         'pages': page_count,
@@ -209,6 +211,8 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
     finally:
         conn.close()
 
+    _sync_sag(doc_id, collection)
+
     return {
         'doc_id': doc_id,
         'pages': page_count,
@@ -274,6 +278,8 @@ def ingest_markdown(md_path: str | Path, collection: str,
     finally:
         conn.close()
 
+    _sync_sag(doc_id, collection)
+
     return {
         'doc_id': doc_id,
         'pages': 1,
@@ -337,6 +343,15 @@ def ingest_image(img_path: str | Path, collection: str,
     return result
 
 
+def _sync_sag(doc_id: int, collection: str) -> None:
+    """入库后同步文档到 SAG (best effort, 失败静默降级 FTS5-only)."""
+    try:
+        from . import sag_integration
+        sag_integration.sync_doc(doc_id, collection)
+    except Exception:
+        pass
+
+
 def remove_doc(doc_id: int, collection: str):
     """删除文献及其所有行和 FTS 条目"""
     conn = get_conn(collection)
@@ -349,3 +364,9 @@ def remove_doc(doc_id: int, collection: str):
         conn.commit()
     finally:
         conn.close()
+
+    try:
+        from . import sag_integration
+        sag_integration.remove_doc(doc_id, collection)
+    except Exception:
+        pass

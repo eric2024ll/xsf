@@ -481,6 +481,79 @@ async def api_search(collection: str, q: str, limit: int = 20,
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# ── SAG 语义搜索 ───────────────────────────────────────
+
+@app.get("/collections/{collection}/sag-search")
+async def api_sag_search(collection: str, q: str, limit: int = 10,
+                         mode: str = "vector"):
+    """SAG 语义搜索 (mode: vector|multi). SAG 不可用自动降级 FTS5.
+
+    响应带 engine 字段 ("sag" | "fts5") 供前端区分.
+    """
+    from . import sag_integration
+    from .search import get_highlight_terms
+
+    if mode not in ("vector", "multi"):
+        mode = "vector"
+
+    try:
+        try:
+            results = sag_integration.search(q, collection,
+                                             mode=mode, top_k=limit)
+            out = []
+            for r in results:
+                out.append({
+                    "doc_id": r["doc_id"],
+                    "page_num": None,
+                    "block_num": None,
+                    "line_id": None,
+                    "filename": r.get("filename"),
+                    "title": r.get("title"),
+                    "cite_key": r.get("cite_key"),
+                    "score": r.get("score"),
+                    "text": _highlight_keyword(r["text"], q),
+                })
+            return {"query": q, "collection": collection, "engine": "sag",
+                    "mode": mode, "count": len(out), "results": out}
+        except sag_integration.SagUnavailable:
+            pass  # 降级 FTS5
+
+        # ── 降级: FTS5 ──
+        fts_results = search(q, collection=collection, limit=limit)
+        out = []
+        for r in fts_results:
+            lines_list = get_block_lines(
+                r["doc_id"], r["page_num"], r["block_num"], collection
+            )
+            text = " ".join(lines_list)
+            line_id = _first_line_id_for_block(
+                r["doc_id"], r["page_num"], r["block_num"], collection
+            )
+            out.append({
+                "doc_id": r["doc_id"],
+                "page_num": r["page_num"],
+                "block_num": r["block_num"],
+                "line_id": line_id,
+                "filename": r.get("filename"),
+                "title": r.get("title") or r.get("filename"),
+                "cite_key": r.get("cite_key"),
+                "score": None,
+                "text": _highlight_keyword(text, q),
+            })
+        return {"query": q, "collection": collection, "engine": "fts5",
+                "mode": mode, "count": len(out), "results": out}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/sag-status")
+async def api_sag_status():
+    """SAG 可用性探测 (前端切换搜索模式用)."""
+    from . import sag_integration
+    enabled = sag_integration.sag_base_url() is not None
+    return {"enabled": enabled, "healthy": sag_integration.health() if enabled else False}
+
+
 # ── 单 collection 统计 ─────────────────────────────────
 
 @app.get("/collections/{collection}/stats")

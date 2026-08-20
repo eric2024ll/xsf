@@ -17,6 +17,10 @@ dependencies = [
 
 [project.scripts]
 xsf = "xsf.cli:main"
+xsf-mcp = "xsf.mcp_adapter:main"
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
 
 [tool.setuptools.packages.find]
 include = ["xsf*"]

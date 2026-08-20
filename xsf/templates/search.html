@@ -21,6 +21,15 @@
 }
 .search-bar button:hover { background: var(--primary-hover); }
 .search-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+.search-bar select {
+  padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 0.9rem; background: var(--card-bg); color: var(--text); cursor: pointer;
+}
+.engine-badge {
+  font-size: 0.72rem; padding: 1px 7px; border-radius: 4px; margin-left: 4px;
+  background: var(--accent); color: var(--primary);
+}
+.engine-badge.fts5 { background: #e8e8e8; color: #666; }
 .main { max-width: 900px; margin: 0 auto; padding: 20px; }
 .result-count { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px; }
 .result-item {
@@ -46,6 +55,10 @@
 {% include '_nav.html' %}
 <div class="search-bar">
   <input type="text" id="searchInput" placeholder="输入搜索词..." autocomplete="off" value="{{ q }}">
+  <select id="searchMode" title="搜索模式">
+    <option value="fts5">关键词 (FTS5)</option>
+    <option value="sag">语义 (SAG)</option>
+  </select>
   <button type="button" id="searchBtn" onclick="doSearch()" {% if not collection %}disabled{% endif %}>搜索</button>
 </div>
 <div class="main">
@@ -73,13 +86,16 @@ async function doSearch(){
   var q=document.getElementById('searchInput').value.trim();
   if(!q||!currentCollection) return;
   currentQuery=q;
+  var mode=document.getElementById('searchMode').value;
   var btn=document.getElementById('searchBtn');
   btn.disabled=true;btn.textContent='搜索中...';
-  var params=new URLSearchParams({q:q,limit:30});
+  var base='/collections/'+encodeURIComponent(currentCollection)+'/';
+  var ep=(mode==='sag')?'sag-search?mode=vector&':'search?';
+  var params=new URLSearchParams({q:q,limit:(mode==='sag')?10:30});
   try{
-    var res=await fetch('/collections/'+encodeURIComponent(currentCollection)+'/search?'+params);
+    var res=await fetch(base+ep+params);
     var data=await res.json();
-    renderResults(data);
+    renderResults(data,mode);
   }catch(e){
     document.getElementById('results').innerHTML='<div class="no-results">搜索出错: '+escapeHtml(e.message)+'</div>';
   }finally{
@@ -87,7 +103,7 @@ async function doSearch(){
   }
 }
 
-function renderResults(data){
+function renderResults(data,requestedMode){
   var countEl=document.getElementById('resultCount');
   var container=document.getElementById('results');
   if(!data.results||data.results.length===0){
@@ -95,7 +111,9 @@ function renderResults(data){
     container.innerHTML='<div class="no-results">未找到匹配结果</div>';
     return;
   }
-  countEl.textContent='找到 '+data.count+' 条结果';
+  var engine=data.engine||'fts5';
+  var engineLabel=(engine==='sag')?'SAG 语义':'FTS5'+((requestedMode==='sag'&&engine==='fts5')?' (降级)':'');
+  countEl.innerHTML='找到 '+data.count+' 条结果 <span class="engine-badge '+engine+'">'+engineLabel+'</span>';
   container.innerHTML='';
   for(var i=0;i<data.results.length;i++){
     var r=data.results[i];
@@ -103,20 +121,24 @@ function renderResults(data){
     div.className='result-item';
     var preview=r.text.length>300?r.text.slice(0,300)+'...':r.text;
     var collEnc=encodeURIComponent(currentCollection);
-    var proofUrl='/collections/'+collEnc+'/doc/'+r.doc_id+'/proofread?page='+r.page_num+'&keyword='+encodeURIComponent(currentQuery)+'&block='+r.block_num;
-    if(r.line_id)proofUrl+='&line='+r.line_id;
-    div.innerHTML=
-      '<div class="result-meta">'+
+    var meta='<div class="result-meta">'+
         '<span class="badge">'+escapeHtml(currentCollection)+'</span>'+
-        '<span>第 '+r.page_num+' 页 / 段 '+r.block_num+'</span>'+
+        (r.page_num?'<span>第 '+r.page_num+' 页 / 段 '+r.block_num+'</span>':'')+
         (r.cite_key?'<span>['+escapeHtml(r.cite_key)+']</span>':'')+
-      '</div>'+
+        (r.score!=null?'<span>score '+Number(r.score).toFixed(3)+'</span>':'')+
+      '</div>';
+    var actions='<div class="result-actions">';
+    if(r.page_num){
+      var proofUrl='/collections/'+collEnc+'/doc/'+r.doc_id+'/proofread?page='+r.page_num+'&keyword='+encodeURIComponent(currentQuery)+'&block='+r.block_num;
+      if(r.line_id)proofUrl+='&line='+r.line_id;
+      actions+='<a href="'+proofUrl+'" target="_blank">校对</a>';
+    }
+    actions+='<button type="button" onclick="pmOpen('+attrEsc(JSON.stringify(currentCollection))+','+r.doc_id+','+(r.page_num?('{pageNum:'+r.page_num+',blockNum:'+r.block_num+',highlightTerms:highlightTerms}'):'{highlightTerms:highlightTerms}')+',title:'+attrEsc(JSON.stringify(r.title||''))+'})">预览</button></div>';
+    div.innerHTML=
+      meta+
       '<div class="result-title">'+escapeHtml(r.title)+'</div>'+
       '<div class="result-text">'+preview+'</div>'+
-      '<div class="result-actions">'+
-        '<a href="'+proofUrl+'" target="_blank">校对</a>'+
-        '<button type="button" onclick="pmOpen('+attrEsc(JSON.stringify(currentCollection))+','+r.doc_id+',{pageNum:'+r.page_num+',blockNum:'+r.block_num+',highlightTerms:highlightTerms,title:'+attrEsc(JSON.stringify(r.title||''))+'})">预览</button>'+
-      '</div>';
+      actions;
     container.appendChild(div);
   }
 }
@@ -128,6 +150,17 @@ document.getElementById('searchInput').addEventListener('keydown',function(e){
 if(currentQuery&&currentCollection){
   doSearch();
 }
+
+// SAG 可用性: 不可用则禁用语义选项 (提示降级)
+(function(){
+  fetch('/api/sag-status').then(function(r){return r.json();}).then(function(s){
+    var opt=document.querySelector('#searchMode option[value="sag"]');
+    if(s&&!s.healthy){
+      opt.disabled=true;
+      opt.textContent='语义 (SAG 不可用)';
+    }
+  }).catch(function(){});
+})();
 </script>
 </body>
 </html>
