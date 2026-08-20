@@ -217,6 +217,8 @@ async def bookshelf(request: Request):
     last = _urlunquote(request.cookies.get('last_collection', ''))
     if last and last not in list_collections():
         last = ''
+    if last:
+        return RedirectResponse(f'/search?c={_urlquote(last, safe="")}', status_code=302)
     return templates.TemplateResponse(
         request,
         "bookshelf.html",
