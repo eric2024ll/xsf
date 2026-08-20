@@ -23,32 +23,73 @@
   border:1px dashed var(--border); border-radius:10px; outline:none;
 }
 
-/* ── 校对页 header (单行, 无全局导航) ── */
-.proof-header {
-  background:var(--card-bg); border-bottom:1px solid var(--border);
-  padding:5px 12px; display:flex; align-items:center; gap:10px;
+/* ── 伸缩左栏 (文献信息 + 书目编辑) ── */
+.proof-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--card-bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.18s ease;
+  position: relative;
 }
+.proof-sidebar.collapsed { width: 32px; }
+.proof-sidebar.collapsed .sidebar-content { display: none; }
+.sidebar-toggle {
+  position: absolute;
+  right: 4px; top: 6px;
+  width: 24px; height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--card-bg);
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 5;
+}
+.sidebar-toggle:hover { background: var(--accent); color: var(--primary); }
+.sb-toggle-label { display: inline-block; transition: transform 0.18s; line-height: 1; }
+.proof-sidebar.collapsed .sb-toggle-label { transform: rotate(180deg); }
+.sb-rail-label { display: none; }
+.proof-sidebar.collapsed .sb-rail-label {
+  display: block;
+  writing-mode: vertical-rl;
+  letter-spacing: 0.35em;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin: 40px auto 0;
+  text-align: center;
+  user-select: none;
+}
+.proof-sidebar.collapsed .sidebar-toggle { position: static; margin: 8px auto; width: 26px; height: 26px; }
+.sidebar-content { overflow-y: auto; padding: 10px 12px 16px; }
+.sb-doc-title {
+  font-size: 0.95rem; font-weight: 700; line-height: 1.45;
+  margin: 2px 0 8px; padding-right: 24px; word-break: break-word;
+}
+.sb-ck-row { margin-bottom: 10px; }
+.proof-ck { font-size:0.72rem; color:var(--primary); font-family:monospace;
+  background:var(--accent); padding:2px 7px; border-radius:4px; white-space:nowrap; }
+.sb-meta { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 0.76rem; margin-bottom: 10px; }
+.sb-meta dt { color: var(--text-muted); white-space: nowrap; }
+.sb-meta dd { word-break: break-all; margin: 0; }
+.sb-section-title {
+  font-size: 0.72rem; font-weight: 700; color: var(--text-muted);
+  letter-spacing: 0.08em; margin: 14px 0 6px; padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
 .back-link {
   font-size:0.78rem; color:var(--primary); text-decoration:none;
   white-space:nowrap; padding:3px 8px; border-radius:4px; flex-shrink:0;
 }
 .back-link:hover { background:var(--accent); }
-.proof-header h1 { font-size:0.92rem; font-weight:700; white-space:nowrap; overflow:hidden;
-  text-overflow:ellipsis; max-width:22vw; min-width:60px; }
-.proof-ck { font-size:0.72rem; color:var(--primary); font-family:monospace;
-  background:var(--accent); padding:2px 7px; border-radius:4px; white-space:nowrap; }
-.doc-tags { flex-shrink:1; overflow:hidden; }
-.bib-toggle-btn {
-  font-size:0.72rem; color:var(--primary); background:var(--accent);
-  border:1px solid var(--border); border-radius:4px; padding:3px 10px;
-  cursor:pointer; white-space:nowrap; flex-shrink:0;
-}
-.bib-toggle-btn:hover { background:var(--bg-secondary); }
+.doc-tags { display:flex; gap:4px; flex-wrap:wrap; align-items:center; margin-bottom: 4px; }
 
-/* ── 书目元数据 ── */
-.bib-panel { display:none; padding:10px 16px; border-bottom:1px solid var(--border);
-  background:var(--card-bg); max-height:400px; overflow-y:auto; }
-.bib-panel.show { display:block; }
+/* ── 书目元数据 (bib.js 挂载渲染, 样式沿用) ── */
 .bib-row { display:flex; align-items:center; gap:8px; margin-bottom:5px; }
 .bib-row label { width:90px; font-size:0.72rem; color:var(--text-muted); text-align:right; flex-shrink:0; }
 .bib-row input, .bib-row select {
@@ -86,40 +127,37 @@
 .bib-saved-msg { font-size:0.72rem; color:#2d8a2d; }
 .bib-field-del { color:var(--danger); cursor:pointer; font-size:0.82rem; padding:0 4px; }
 
-.nav {
+/* ── 文本栏顶部工具行 (行1: 翻页/页内搜索) ── */
+.page-nav {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  padding: 5px 0 7px;
+  margin-bottom: 4px;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
 }
-.nav select {
+.page-nav select {
+  flex: 1; min-width: 0;
   padding: 4px 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: white;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   cursor: pointer;
 }
-.nav button {
+.page-nav button {
   padding: 4px 9px;
   background: white;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
 }
-.nav button:hover:not(:disabled) { background: var(--accent); }
-.nav button:disabled { opacity: 0.5; cursor: not-allowed; }
-.nav a {
-  text-decoration: none;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-.nav a:hover { background: var(--accent); }
+.page-nav button:hover:not(:disabled) { background: var(--accent); }
+.page-nav button:disabled { opacity: 0.5; cursor: not-allowed; }
+.page-nav .in-page-search input { font-size: 0.76rem; width: 88px; padding: 4px 6px; }
 
 .in-page-search {
   display: flex;
@@ -146,7 +184,7 @@
 
 .main {
   display: flex;
-  height: calc(100vh - 40px);
+  height: calc(100vh - var(--nav-h, 52px));
   overflow: hidden;
 }
 
@@ -245,8 +283,10 @@
 .divider:hover, .divider.dragging { background: var(--primary); }
 
 /* ── 专注模式 (F11 进入 / Esc 退出) ── */
-body.focus-mode .proof-header,
-body.focus-mode .bib-panel { display: none; }
+body.focus-mode .top-nav,
+body.focus-mode .proof-sidebar,
+body.focus-mode .page-nav { display: none; }
+body.focus-mode { padding-top: 0; }
 body.focus-mode .main { height: 100vh; }
 
 #pageText {
@@ -587,7 +627,8 @@ mark {
 .mobile-tabs { display: none; }
 
 @media (max-width: 900px) {
-  .main { flex-direction: column; height: calc(100vh - 128px); }
+  .main { flex-direction: column; height: calc(100vh - var(--nav-h, 52px) - 46px); }
+  .proof-sidebar { display: none; }
   .mobile-tabs {
     display: flex;
     gap: 0;
@@ -628,12 +669,9 @@ mark {
   }
   .main[data-tab="img"] .left { display: flex; }
   .main[data-tab="txt"] .right { display: block; }
-  .proof-header { padding: 5px 8px; gap: 6px; flex-wrap: wrap; height: auto; }
-  .proof-header h1 { max-width: 100%; font-size: 0.8rem; }
-  .doc-tags { display: none; }
-  .nav { flex-wrap: wrap; gap: 4px; }
-  .nav select, .nav button, .nav a { font-size: 0.78rem; padding: 5px 7px; }
-  .in-page-search input { font-size: 16px; width: 96px; }
+  .page-nav { gap: 4px; }
+  .page-nav select, .page-nav button { font-size: 0.76rem; padding: 4px 6px; }
+  .in-page-search input { font-size: 16px; width: 92px; }
   .divider { display: none; }
   .img-toolbar { position: static; margin-bottom: 8px; opacity: 1; flex-wrap: wrap; }
   .img-toolbar .hint { display: none; }
@@ -648,30 +686,26 @@ mark {
 {% set is_md = doc.doc_type == 'markdown' %}
 {% set has_pdf = is_md and linked_pdf %}
 
-<div class="proof-header">
-  <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 文献列表</a>
-  <h1 title="{{ doc.title or doc.filename }}">{{ doc.title or doc.filename }}</h1>
-  {% if doc.cite_key %}<span class="proof-ck">{{ doc.cite_key }}</span>{% endif %}
-  <div class="doc-tags" id="docTags"></div>
-  <button class="bib-toggle-btn" id="bibToggleBtn" onclick="toggleBibPanel()">书目 ▾</button>
-  <div class="nav">
-    <button onclick="goPage({{ page_num - 1 }})" {% if page_num <= 1 %}disabled{% endif %}>上一页</button>
-    <select id="pageSelect" onchange="goPage(this.value)">
-      {% for p in range(1, page_count + 1) %}
-      <option value="{{ p }}" {% if p == page_num %}selected{% endif %}>第 {{ p }} / {{ page_count }} 页</option>
-      {% endfor %}
-    </select>
-    <button onclick="goPage({{ page_num + 1 }})" {% if page_num >= page_count %}disabled{% endif %}>下一页</button>
-    <div class="in-page-search">
-      <input type="text" id="inPageSearch" placeholder="页内搜索..." value="{{ keyword }}" onkeydown="if(event.key==='Enter')doInPageSearch()">
-      <button onclick="doInPageSearch()">查找</button>
-    </div>
-  </div>
-</div>
-
-<div class="bib-panel" id="proofBibPanel"></div>
+{% include '_nav.html' %}
 
 <div class="main" id="main" data-tab="img">
+  <aside class="proof-sidebar" id="proofSidebar">
+    <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" title="收起/展开文献信息"><span class="sb-toggle-label">‹</span></button>
+    <span class="sb-rail-label">文献信息</span>
+    <div class="sidebar-content">
+      <h2 class="sb-doc-title" title="{{ doc.title or doc.filename }}">{{ doc.title or doc.filename }}</h2>
+      {% if doc.cite_key %}<div class="sb-ck-row"><span class="proof-ck">{{ doc.cite_key }}</span></div>{% endif %}
+      <dl class="sb-meta">
+        {% if doc.author %}<dt>作者</dt><dd>{{ doc.author }}</dd>{% endif %}
+        <dt>文件</dt><dd>{{ doc.filename }}</dd>
+        {% if doc.page_count %}<dt>页数</dt><dd>{{ doc.page_count }}</dd>{% endif %}
+        {% if doc.doc_type %}<dt>类型</dt><dd>{{ doc.doc_type }}</dd>{% endif %}
+      </dl>
+      <div class="doc-tags" id="docTags"></div>
+      <div class="sb-section-title">书目信息</div>
+      <div id="proofBibPanel"></div>
+    </div>
+  </aside>
   {% if not is_md %}
   <div class="mobile-tabs">
     <button id="tabImg" class="active" onclick="switchTab('img')">圖</button>
@@ -739,6 +773,20 @@ mark {
   <div class="divider" id="panelDivider" title="拖拽调整宽度"></div>
 
   <div class="right{% if is_md and not has_pdf %} md-mode{% endif %}" id="textPanel">
+    <div class="page-nav">
+      <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 列表</a>
+      <button onclick="goPage({{ page_num - 1 }})" {% if page_num <= 1 %}disabled{% endif %} title="上一页">‹</button>
+      <select id="pageSelect" onchange="goPage(this.value)" title="跳转页码">
+        {% for p in range(1, page_count + 1) %}
+        <option value="{{ p }}" {% if p == page_num %}selected{% endif %}>第 {{ p }} / {{ page_count }} 页</option>
+        {% endfor %}
+      </select>
+      <button onclick="goPage({{ page_num + 1 }})" {% if page_num >= page_count %}disabled{% endif %} title="下一页">›</button>
+      <div class="in-page-search">
+        <input type="text" id="inPageSearch" placeholder="页内搜索..." value="{{ keyword }}" onkeydown="if(event.key==='Enter')doInPageSearch()">
+        <button onclick="doInPageSearch()">查找</button>
+      </div>
+    </div>
     <div class="text-actions">
       <span class="ta-title">识别文本</span>
       <span class="save-status" id="saveStatus"></span>
@@ -873,12 +921,22 @@ window.BIB_FIELD_LABELS = {{ bib_field_labels | default({}) | tojson }};
   });
 })();
 
-function toggleBibPanel() {
-  const p = document.getElementById('proofBibPanel');
-  const t = document.getElementById('bibToggleBtn');
-  p.classList.toggle('show');
-  t.textContent = p.classList.contains('show') ? '书目 ▴' : '书目 ▾';
+// ── 伸缩左栏 ──
+function toggleSidebar() {
+  const sb = document.getElementById('proofSidebar');
+  if (!sb) return;
+  sb.classList.toggle('collapsed');
+  try {
+    localStorage.setItem('proofSidebar', sb.classList.contains('collapsed') ? '1' : '');
+  } catch (e) {}
 }
+(function initSidebar() {
+  const sb = document.getElementById('proofSidebar');
+  if (!sb) return;
+  try {
+    if (localStorage.getItem('proofSidebar') === '1') sb.classList.add('collapsed');
+  } catch (e) {}
+})();
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 

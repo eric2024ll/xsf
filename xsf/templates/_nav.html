@@ -1,28 +1,45 @@
-{# 统一导航栏 — 在各页面 {% include '_nav.html' %} 使用
-   需传入 context: active_nav, collection (可空), collections (列表)
-#}
 <nav class="top-nav">
   <a class="brand" href="/">小書房</a>
   <div class="nav-tabs">
-    <a href="/" class="{% if active_nav == 'bookshelf' %}active{% endif %}">书架</a>
+    <a href="/" class="{{ 'active' if active_nav == 'bookshelf' else '' }}">书架</a>
+    <a href="{{ '/search?c=' + collection if collection else '/search' }}"
+       class="{{ 'active' if active_nav == 'search' else '' }}">搜索</a>
     {% if collection %}
-    <a href="/search?c={{ collection | urlencode }}" class="{% if active_nav == 'search' %}active{% endif %}">搜索</a>
+    <a href="/collections/{{ collection }}/docs/list"
+       class="{{ 'active' if active_nav == 'docs' else '' }}">文献列表</a>
+    <a href="/collections/{{ collection }}/upload"
+       class="{{ 'active' if active_nav == 'upload' else '' }}">资料上传</a>
     {% else %}
-    <a href="/search" class="{% if active_nav == 'search' %}active{% endif %}">搜索</a>
-    {% endif %}
-    {% if collection %}
-    <a href="/collections/{{ collection | urlencode }}/docs/list" class="{% if active_nav == 'docs' %}active{% endif %}">文献列表</a>
-    <a href="/collections/{{ collection | urlencode }}/upload" class="{% if active_nav == 'upload' %}active{% endif %}">资料上传</a>
-    {% else %}
-    <a class="disabled" title="请先选择书架">文献列表</a>
-    <a class="disabled" title="请先选择书架">资料上传</a>
+    <a class="disabled" title="先选择书架">文献列表</a>
+    <a class="disabled" title="先选择书架">资料上传</a>
     {% endif %}
   </div>
+  <input type="text" class="nav-search" id="navSearch"
+         placeholder="搜索文献…" autocomplete="off"
+         aria-label="搜索文献">
   <div class="nav-right">
-    <a href="/logout" class="nav-logout">退出</a>
+    <a class="nav-logout" href="/logout">退出</a>
   </div>
 </nav>
 <script>
 window.NAV_COLLECTION = {{ collection | tojson }};
 window.NAV_COLLECTIONS = {{ collections | tojson }};
+(function () {
+  var input = document.getElementById('navSearch');
+  if (input) {
+    input.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      var q = input.value.trim();
+      if (!q) return;
+      var c = window.NAV_COLLECTION || '';
+      location.href = '/search?c=' + encodeURIComponent(c) + '&q=' + encodeURIComponent(q);
+    });
+  }
+  function syncNavH() {
+    var nav = document.querySelector('.top-nav');
+    if (nav) document.documentElement.style.setProperty('--nav-h', nav.offsetHeight + 'px');
+  }
+  window.addEventListener('resize', syncNavH);
+  syncNavH();
+})();
 </script>

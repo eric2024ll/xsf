@@ -12,6 +12,7 @@
   --success: #2a9d8f;
   --radius: 8px;
   --shadow: 0 1px 3px rgba(0,0,0,0.08);
+  --nav-h: 52px;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -23,10 +24,17 @@ body {
 a { color: var(--primary); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* ── 统一导航栏 ── */
+/* 含浮层导航的页面顶部留白 (login 无导航不匹配) */
+body:has(.top-nav) { padding-top: var(--nav-h); }
+
+/* ── 统一导航栏 (浮层) ── */
 .top-nav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 1000;
   background: var(--card-bg);
   border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow);
   padding: 0 20px;
   display: flex;
   align-items: center;
@@ -110,6 +118,24 @@ a:hover { text-decoration: underline; }
   white-space: nowrap;
 }
 .top-nav .nav-logout:hover { text-decoration: none; background: var(--accent); }
+.top-nav .nav-search {
+  width: 220px;
+  max-width: 28vw;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg);
+  font-size: 0.85rem;
+  color: var(--text);
+  outline: none;
+  flex-shrink: 0;
+  transition: border-color 0.15s, background 0.15s;
+}
+.top-nav .nav-search:focus {
+  border-color: var(--primary);
+  background: var(--card-bg);
+}
+.top-nav .nav-search::placeholder { color: var(--text-muted); }
 
 /* ── 通用组件 ── */
 .btn {
@@ -149,7 +175,7 @@ mark { background: #fff3a0; padding: 0 2px; border-radius: 2px; }
 
 .msg {
   position: fixed;
-  top: 14px;
+  top: calc(var(--nav-h, 52px) + 14px);
   right: 14px;
   background: var(--card-bg);
   border: 1px solid var(--border);
@@ -351,6 +377,7 @@ mark { background: #fff3a0; padding: 0 2px; border-radius: 2px; }
   .top-nav { padding: 0 10px; gap: 8px; flex-wrap: wrap; height: auto; padding-bottom: 6px; }
   .top-nav .nav-tabs { order: 3; width: 100%; overflow-x: auto; }
   .top-nav .nav-tabs a { padding: 6px 10px; font-size: 0.82rem; }
+  .top-nav .nav-search { order: 2; flex: 1; width: auto; max-width: none; min-width: 90px; padding: 5px 12px; }
   .top-nav .nav-right select { min-width: 0; max-width: 130px; }
   .pm-overlay { padding: 16px 8px; }
   .pm-modal { max-width: 100%; }
