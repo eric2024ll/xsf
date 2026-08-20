@@ -77,6 +77,15 @@ body:has(.top-nav) { padding-top: var(--nav-h); }
 .top-nav .nav-hamburger.open .ham-line:nth-child(2) { opacity: 0; }
 .top-nav .nav-hamburger.open .ham-line:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
 
+/* ── 当前书架标签 ── */
+.top-nav .nav-current-coll {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
 /* ── 下拉菜单 ── */
 .top-nav .nav-dropdown {
   display: none;
@@ -386,6 +395,7 @@ mark { background: #fff3a0; padding: 0 2px; border-radius: 2px; }
   .top-nav { padding: 0 10px; gap: 8px; flex-wrap: wrap; height: auto; padding-bottom: 6px; }
   .top-nav .nav-hamburger { order: 0; }
   .top-nav .brand { order: 1; }
+  .top-nav .nav-current-coll { display: none; }
   .top-nav .nav-search { order: 2; flex: 1; width: auto; max-width: none; min-width: 90px; padding: 5px 12px; }
   .pm-overlay { padding: 16px 8px; }
   .pm-modal { max-width: 100%; }
