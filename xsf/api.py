@@ -218,7 +218,7 @@ async def bookshelf(request: Request):
     if last and last not in list_collections():
         last = ''
     if last:
-        return RedirectResponse(f'/search?c={_urlquote(last, safe="")}', status_code=302)
+        return RedirectResponse(f'/collections/{_urlquote(last, safe="")}/docs/list', status_code=302)
     return templates.TemplateResponse(
         request,
         "bookshelf.html",
