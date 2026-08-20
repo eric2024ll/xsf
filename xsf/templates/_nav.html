@@ -1,38 +1,40 @@
 <nav class="top-nav">
   <a class="brand" href="/">小書房</a>
-  <button class="nav-hamburger" id="hamburgerBtn" aria-label="菜单">
-    <span class="ham-line"></span>
-    <span class="ham-line"></span>
-    <span class="ham-line"></span>
-  </button>
-  <span class="nav-current-coll" id="navCurrentColl">{% if collection %}当前书架：{{ collection }}{% endif %}</span>
+  <div class="nav-menu-ctnr">
+    <button class="nav-hamburger" id="hamburgerBtn" aria-label="菜单">
+      <span class="ham-line"></span>
+      <span class="ham-line"></span>
+      <span class="ham-line"></span>
+    </button>
+    <div class="nav-dropdown" id="navDropdown">
+      <div class="nd-section">
+        <select id="ndCollection" onchange="switchCollection(this.value)" title="切换书架">
+          {% for c in collections %}
+          <option value="{{ c }}" {% if c == collection %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="nd-divider"></div>
+      <div class="nd-section">
+        <a href="/" class="nd-item {{ 'active' if active_nav == 'bookshelf' else '' }}">书架</a>
+        <a href="{{ '/search?c=' + collection if collection else '/search' }}"
+           class="nd-item {{ 'active' if active_nav == 'search' else '' }}">搜索</a>
+        {% if collection %}
+        <a href="/collections/{{ collection }}/docs/list"
+           class="nd-item {{ 'active' if active_nav == 'docs' else '' }}">文献列表</a>
+        <a href="/collections/{{ collection }}/upload"
+           class="nd-item {{ 'active' if active_nav == 'upload' else '' }}">资料上传</a>
+        {% else %}
+        <span class="nd-item disabled">文献列表</span>
+        <span class="nd-item disabled">资料上传</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
   <input type="text" class="nav-search" id="navSearch"
          placeholder="搜索文献…" autocomplete="off"
          aria-label="搜索文献">
-  <div class="nav-dropdown" id="navDropdown">
-    <div class="nd-section">
-      <select id="ndCollection" onchange="switchCollection(this.value)" title="切换书架">
-        {% for c in collections %}
-        <option value="{{ c }}" {% if c == collection %}selected{% endif %}>{{ c }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="nd-divider"></div>
-    <div class="nd-section">
-      <a href="/" class="nd-item {{ 'active' if active_nav == 'bookshelf' else '' }}">书架</a>
-      <a href="{{ '/search?c=' + collection if collection else '/search' }}"
-         class="nd-item {{ 'active' if active_nav == 'search' else '' }}">搜索</a>
-      {% if collection %}
-      <a href="/collections/{{ collection }}/docs/list"
-         class="nd-item {{ 'active' if active_nav == 'docs' else '' }}">文献列表</a>
-      <a href="/collections/{{ collection }}/upload"
-         class="nd-item {{ 'active' if active_nav == 'upload' else '' }}">资料上传</a>
-      {% else %}
-      <span class="nd-item disabled">文献列表</span>
-      <span class="nd-item disabled">资料上传</span>
-      {% endif %}
-    </div>
-  </div>
+  <span class="nav-current-coll" id="navCurrentColl">{% if collection %}当前书架：{{ collection }}{% endif %}</span>
 </nav>
 <script>
 window.NAV_COLLECTION = {{ collection | tojson }};

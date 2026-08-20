@@ -53,6 +53,11 @@ body:has(.top-nav) { padding-top: var(--nav-h); }
 .top-nav .brand:hover { text-decoration: none; }
 
 /* ── 汉堡菜单按钮 ── */
+.top-nav .nav-menu-ctnr {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
 .top-nav .nav-hamburger {
   display: flex;
   flex-direction: column;
@@ -86,27 +91,32 @@ body:has(.top-nav) { padding-top: var(--nav-h); }
   margin-right: 4px;
 }
 
-/* ── 下拉菜单 ── */
+/* ── 下拉菜单 (悬浮于汉堡按钮下方) ── */
 .top-nav .nav-dropdown {
   display: none;
-  position: fixed;
-  top: var(--nav-h, 52px);
+  position: absolute;
+  top: 100%;
   left: 0;
-  right: 0;
   z-index: 999;
   background: var(--card-bg);
-  border-bottom: 1px solid var(--border);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-  max-height: calc(100vh - 52px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  width: max-content;
+  min-width: 220px;
+  max-width: 90vw;
   overflow-y: auto;
+  margin-top: 6px;
 }
 .top-nav .nav-dropdown.show { display: block; }
-.nav-dropdown .nd-section { padding: 8px 16px; }
-.nav-dropdown .nd-divider { height: 1px; background: var(--border); margin: 0 12px; }
+.nav-dropdown .nd-section { padding: 6px 10px; }
+.nav-dropdown .nd-section:first-child { padding-top: 10px; }
+.nav-dropdown .nd-section:last-child { padding-bottom: 10px; }
+.nav-dropdown .nd-divider { height: 1px; background: var(--border); margin: 4px 10px; }
 .nav-dropdown .nd-item {
   display: block;
-  padding: 10px 14px;
-  font-size: 0.9rem;
+  padding: 8px 12px;
+  font-size: 0.88rem;
   color: var(--text);
   text-decoration: none;
   border-radius: 6px;
@@ -393,7 +403,7 @@ mark { background: #fff3a0; padding: 0 2px; border-radius: 2px; }
 
 @media (max-width: 768px) {
   .top-nav { padding: 0 10px; gap: 8px; flex-wrap: wrap; height: auto; padding-bottom: 6px; }
-  .top-nav .nav-hamburger { order: 0; }
+  .top-nav .nav-menu-ctnr { order: 0; }
   .top-nav .brand { order: 1; }
   .top-nav .nav-current-coll { display: none; }
   .top-nav .nav-search { order: 2; flex: 1; width: auto; max-width: none; min-width: 90px; padding: 5px 12px; }
