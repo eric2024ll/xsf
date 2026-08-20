@@ -8,18 +8,27 @@
 <link rel="stylesheet" href="/static/app.css">
 <style>
 .search-toolbar {
-  display: flex; gap: 10px; align-items: center; justify-content: space-between;
-  padding: 10px 14px; margin-bottom: 12px;
+  display: block; padding: 10px 14px; margin-bottom: 12px;
   background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
 }
-.search-toolbar .st-query {
-  font-size: 0.95rem; font-weight: 600; word-break: break-all;
+.st-search-row {
+  display: flex; gap: 8px; align-items: center;
 }
-.search-toolbar .st-query .st-label { font-size: 0.75rem; font-weight: 400; color: var(--text-muted); margin-right: 6px; }
-.search-toolbar select {
-  padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+.st-search-row input[type="text"] {
+  flex: 1; min-width: 120px; padding: 7px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius); font-size: 0.9rem; outline: none;
+}
+.st-search-row input[type="text"]:focus { border-color: var(--primary); }
+.st-search-row select {
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius);
   font-size: 0.85rem; background: var(--card-bg); color: var(--text); cursor: pointer; flex-shrink: 0;
 }
+.st-search-row button {
+  padding: 7px 20px; background: var(--primary); color: #fff; border: none;
+  border-radius: var(--radius); cursor: pointer; font-size: 0.9rem; font-weight: 600; flex-shrink: 0;
+}
+.st-search-row button:hover { background: var(--primary-hover); }
+.st-search-row button:disabled { opacity: 0.5; cursor: not-allowed; }
 .engine-badge {
   font-size: 0.72rem; padding: 1px 7px; border-radius: 4px; margin-left: 4px;
   background: var(--accent); color: var(--primary);
@@ -50,11 +59,14 @@
 {% include '_nav.html' %}
 <div class="main">
   <div class="search-toolbar">
-    <span class="st-query"><span class="st-label">搜索词</span>{{ q or '（在顶部导航输入搜索词）' }}</span>
-    <select id="searchMode" title="搜索模式" onchange="doSearch()">
-      <option value="fts5">关键词 (FTS5)</option>
-      <option value="sag">语义 (SAG)</option>
-    </select>
+    <div class="st-search-row">
+      <input type="text" id="searchInput" placeholder="输入搜索词..." autocomplete="off" value="{{ q }}">
+      <select id="searchMode" title="搜索模式">
+        <option value="fts5">关键词 (FTS5)</option>
+        <option value="sag">语义 (SAG)</option>
+      </select>
+      <button type="button" id="searchBtn" onclick="doSearch()">搜索</button>
+    </div>
   </div>
   <div id="resultCount" class="result-count"></div>
   <div id="results">
@@ -77,10 +89,13 @@ function escapeHtml(s){var d=document.createElement('div');d.textContent=s||'';r
 function attrEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');}
 
 async function doSearch(){
-  var q=currentQuery;
+  var q=document.getElementById('searchInput').value.trim();
   if(!q||!currentCollection) return;
+  currentQuery=q;
   var mode=document.getElementById('searchMode').value;
-  document.getElementById('resultCount').textContent='搜索中...';
+  var btn=document.getElementById('searchBtn');
+  btn.disabled=true;btn.textContent='搜索中...';
+  document.getElementById('resultCount').textContent='';
   var base='/collections/'+encodeURIComponent(currentCollection)+'/';
   var ep=(mode==='sag')?'sag-search?mode=vector&':'search?';
   var params=new URLSearchParams({q:q,limit:(mode==='sag')?10:30});
@@ -91,6 +106,8 @@ async function doSearch(){
   }catch(e){
     document.getElementById('resultCount').textContent='';
     document.getElementById('results').innerHTML='<div class="no-results">搜索出错: '+escapeHtml(e.message)+'</div>';
+  }finally{
+    btn.disabled=false;btn.textContent='搜索';
   }
 }
 
@@ -134,7 +151,12 @@ function renderResults(data,requestedMode){
   }
 }
 
+document.getElementById('searchInput').addEventListener('keydown',function(e){
+  if(e.key==='Enter')doSearch();
+});
+
 if(currentQuery&&currentCollection){
+  document.getElementById('searchInput').value=currentQuery;
   doSearch();
 }
 

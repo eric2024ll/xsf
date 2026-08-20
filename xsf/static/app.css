@@ -51,73 +51,82 @@ body:has(.top-nav) { padding-top: var(--nav-h); }
   letter-spacing: 0.05em;
 }
 .top-nav .brand:hover { text-decoration: none; }
-.top-nav .nav-tabs {
+
+/* ── 汉堡菜单按钮 ── */
+.top-nav .nav-hamburger {
   display: flex;
-  gap: 0;
-  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
 }
-.top-nav .nav-tabs a {
-  display: inline-block;
-  padding: 8px 16px;
-  font-size: 0.88rem;
-  color: var(--text-muted);
-  border-bottom: 2px solid transparent;
+.top-nav .nav-hamburger:hover { background: var(--accent); }
+.top-nav .nav-hamburger .ham-line {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--text-muted);
+  border-radius: 1px;
+  transition: transform 0.15s, opacity 0.15s;
+}
+.top-nav .nav-hamburger.open .ham-line:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+.top-nav .nav-hamburger.open .ham-line:nth-child(2) { opacity: 0; }
+.top-nav .nav-hamburger.open .ham-line:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+/* ── 下拉菜单 ── */
+.top-nav .nav-dropdown {
+  display: none;
+  position: fixed;
+  top: var(--nav-h, 52px);
+  left: 0;
+  right: 0;
+  z-index: 999;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  max-height: calc(100vh - 52px);
+  overflow-y: auto;
+}
+.top-nav .nav-dropdown.show { display: block; }
+.nav-dropdown .nd-section { padding: 8px 16px; }
+.nav-dropdown .nd-divider { height: 1px; background: var(--border); margin: 0 12px; }
+.nav-dropdown .nd-item {
+  display: block;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  color: var(--text);
   text-decoration: none;
-  white-space: nowrap;
+  border-radius: 6px;
+  margin-bottom: 2px;
 }
-.top-nav .nav-tabs a.active {
+.nav-dropdown .nd-item:hover { background: var(--accent); text-decoration: none; }
+.nav-dropdown .nd-item.active {
   color: var(--primary);
-  border-bottom-color: var(--primary);
   font-weight: 600;
+  background: var(--accent);
 }
-.top-nav .nav-tabs a:hover:not(.active) {
-  background: rgba(67,97,238,0.05);
-  text-decoration: none;
-}
-.top-nav .nav-tabs a.disabled {
+.nav-dropdown .nd-item.disabled {
   color: var(--text-muted);
   opacity: 0.4;
   cursor: default;
   pointer-events: none;
 }
-.top-nav .nav-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.top-nav .nav-right select {
-  padding: 5px 10px;
+.nav-dropdown #ndCollection {
+  width: 100%;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: white;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
+  background: var(--card-bg);
+  color: var(--text);
   cursor: pointer;
-  min-width: 120px;
-  max-width: 200px;
+  outline: none;
 }
-.top-nav .nav-coll-btn {
-  padding: 5px 10px;
-  background: var(--accent);
-  color: var(--primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.top-nav .nav-coll-btn:hover { background: #d4e2fd; }
-.top-nav .nav-logout {
-  font-size: 0.82rem;
-  color: var(--text-muted);
-  text-decoration: none;
-  padding: 4px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  white-space: nowrap;
-}
-.top-nav .nav-logout:hover { text-decoration: none; background: var(--accent); }
+.nav-dropdown #ndCollection:focus { border-color: var(--primary); }
 .top-nav .nav-search {
   width: 220px;
   max-width: 28vw;
@@ -375,10 +384,9 @@ mark { background: #fff3a0; padding: 0 2px; border-radius: 2px; }
 
 @media (max-width: 768px) {
   .top-nav { padding: 0 10px; gap: 8px; flex-wrap: wrap; height: auto; padding-bottom: 6px; }
-  .top-nav .nav-tabs { order: 3; width: 100%; overflow-x: auto; }
-  .top-nav .nav-tabs a { padding: 6px 10px; font-size: 0.82rem; }
+  .top-nav .nav-hamburger { order: 0; }
+  .top-nav .brand { order: 1; }
   .top-nav .nav-search { order: 2; flex: 1; width: auto; max-width: none; min-width: 90px; padding: 5px 12px; }
-  .top-nav .nav-right select { min-width: 0; max-width: 130px; }
   .pm-overlay { padding: 16px 8px; }
   .pm-modal { max-width: 100%; }
 }
