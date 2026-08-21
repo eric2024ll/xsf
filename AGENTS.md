@@ -1,6 +1,6 @@
 # AGENTS.md — xsf
 
-> histflow-plan 设计的代码落地仓库. 本文件定义**本地开发 + 服务器部署实测**的标准流程.
+> histflow-plan 设计的代码落地仓库. 本文件定义**本机 GPU 机开发 + 部署一体**的标准流程 (WSL / 阿里云为备用).
 > 设计依据: histflow-plan `system/tools/14-ocr-pipeline.md`
 
 ## 项目定位
@@ -15,45 +15,61 @@ xsf 是史学研究工具链的**感知层上游**——把 PDF 变成可检索�
 
 | 角色 | 位置 | 用途 |
 |------|------|------|
-| **开发机 (WSL)** | `~/projects/xsf/` | 写代码、git commit/push |
+| **本机 GPU 机 (标准)** | `~/xsf/` | **开发 + 部署一体**: 写代码、git commit/push、systemd 常驻 Web (:8090) + 本地 OCR (:8091) |
 | **GitHub** | `git@github.com:eric2024ll/xsf.git` (私有, SSH) | 版本控制中转 |
-| **本机 GPU 机** | `~/xsf/` | systemd 常驻 Web (:8090) + 本地 OCR (:8091) |
-| **阿里云服务器** | `root@47.93.199.96:~/xsf/` | 实测、OCR 跑批 |
+| **WSL 开发机 (备用)** | `~/projects/xsf/` | 备用开发环境, 改动经 GitHub 同步 |
+| **阿里云服务器 (可选)** | `root@47.93.199.96:~/xsf/` | 实测、OCR 跑批 |
 
 > 2026-08-15 由 `jiage` 全面改名 `xsf`. GitHub 旧 URL 自动 redirect;
 > WSL `~/projects/jiage/` 与阿里云 `~/jiage/` 尚待各自迁移 (见 §改名记录).
 
-## 本机 GPU 机部署 (当前实际运行)
+## 本机标准流程 (开发 + 部署一体)
 
-- **代码**: `~/xsf/` (git clone, venv 同目录)
+> **2026-08-21 用户裁定**: 本机 GPU 机 (`~/xsf/`) 为标准开发部署环境,
+> 写代码、commit、push、重启服务全在本机完成; WSL 与阿里云降为辅助.
+
+- **代码**: `~/xsf/` (git clone, venv 同目录, 标准 pip venv)
 - **Web**: systemd `xsf.service` — `uvicorn xsf.api:app --host 0.0.0.0 --port 8090`, `EnvironmentFile=/home/eric/xsf/.env`
 - **数据**: `~/xsf-data/` (`.env` 里 `XSF_DATA` 指定; db/collections/ocr-config.json 都在此)
 - **本地 OCR**: systemd `paddleocr-vl.service` (:8091, `~/paddleocr-vl/server.py`), Web「OCR 设置」里以 generic_http provider 接入
 - **认证**: `.env` 里 `XSF_AUTH_TOKEN` 设密码, 所有页面需登录
 
-```bash
-systemctl restart xsf            # 更新代码/配置后重启
-journalctl -u xsf -f             # 实时日志
-cd ~/xsf && git pull origin main && .venv/bin/pip install -e .   # 更新代码
-```
-
-## 本地开发规范 (WSL)
-
-### 环境
-- venv: `.venv/` (**uv 管理, 无 pip**, 用 `uv pip install`)
-- Python 3.11+
-- 依赖: PyMuPDF + jieba + requests
-
-### git 流程
+### git 流程 (标准)
 
 ```bash
-cd ~/projects/xsf
+cd ~/xsf
 git add -A
 git commit -m "<type>: <描述>"    # type = feat / fix / docs / refactor
-git push origin main
+git push origin main              # agent 不自行 push, 报 hash 由用户手动 push
 ```
 
-> commit message 描述中英皆可 (参考历史), type 用英文: feat / fix / docs / refactor
+### 改代码后的部署
+
+```bash
+cd ~/xsf
+.venv/bin/pip install -e .        # 仅依赖变更 (pyproject.toml 改了) 才需要
+sudo systemctl restart xsf
+journalctl -u xsf -f              # 实时日志
+```
+
+### CLI 测试
+
+```bash
+cd ~/xsf
+.venv/bin/xsf init                                 # 首次初始化 DB
+.venv/bin/xsf add <pdf> -c <collection> --ocr      # OCR 入库 (默认 provider)
+.venv/bin/xsf add <pdf> -c <collection> --ocr --provider p1   # 指定 provider
+.venv/bin/xsf search "<query>"                     # FTS 搜索
+.venv/bin/xsf stats                                # 统计
+```
+
+## 备用: WSL 开发机 (`~/projects/xsf/`)
+
+### 环境
+- venv: `.venv/` (**uv 管理, 无 pip**, 用 `uv pip install`), 与本机的 pip venv 不同
+- Python 3.11+
+- 依赖: PyMuPDF + jieba + requests
+- git 流程同本机标准流程; 改动经 GitHub 同步到本机 (`git pull`)
 
 ### 本地测试
 
@@ -70,11 +86,11 @@ cd ~/projects/xsf
 ### Web 界面 (FastAPI)
 
 ```bash
-# 本地 (开发模式, auto-reload)
-cd ~/projects/xsf
+# 本机开发模式 (auto-reload, 停 systemd 后用)
+cd ~/xsf
 .venv/bin/uvicorn xsf.api:app --reload --port 8090
 
-# 服务器 (绑外网)
+# 阿里云服务器 (绑外网)
 cd ~/xsf
 source .venv/bin/activate
 uvicorn xsf.api:app --host 0.0.0.0 --port 8090
@@ -116,7 +132,7 @@ uvicorn xsf.api:app --host 0.0.0.0 --port 8090
 - `POST .../docs/export-bib` `/export-md` `/export-archive` 导出　`.../docs/import-archive` 导入
 - `POST .../docs/match-bib` 自动书目匹配　`.../docs/batch-patch` 批量改元数据
 
-## 服务器部署与实测流程 (标准)
+## 阿里云服务器部署 (可选: 实测/OCR 跑批)
 
 > **服务器**: `47.93.199.96` (阿里云轻量 2核4G)
 > **Python**: 3.12.3 (`/usr/bin/python3`, **仅 python3 无 python**), pip 24.0
@@ -270,9 +286,10 @@ curl -s -b /tmp/xsf_cookie http://localhost:8090/ -o /dev/null -w '%{http_code}\
 ## 常用命令速查
 
 ```bash
-# === 本地 (WSL, uv venv) ===
-cd ~/projects/xsf
-uv pip install -e .                                  # 安装/更新依赖
+# === 本机 GPU 机 (标准) ===
+cd ~/xsf
+git add -A && git commit -m "<type>: <描述>"          # git 流程
+.venv/bin/pip install -e .                            # 依赖变更时
 .venv/bin/xsf init                                   # 初始化 DB
 .venv/bin/xsf add <pdf> -c <col>                     # born-digital PDF
 .venv/bin/xsf add <pdf> -c <col> --ocr               # 扫描件 OCR (PaddleOCR-VL)
@@ -280,11 +297,18 @@ uv pip install -e .                                  # 安装/更新依赖
 .venv/bin/xsf context <doc_id> <page> <block>        # 查看上下文
 .venv/bin/xsf remove <doc_id>                        # 删除文献
 .venv/bin/xsf stats                                  # 统计
+sudo systemctl restart xsf                           # 部署重启
+journalctl -u xsf -f                                 # 实时日志
 
-# === 本机 GPU 机 / 服务器 (标准 venv) ===
-cd ~/xsf && git pull origin main                     # 更新代码
-source .venv/bin/activate
-xsf <command>                                        # 同上
+# === WSL 备用机 (uv venv) ===
+cd ~/projects/xsf
+uv pip install -e .                                  # 安装/更新依赖
+# 其余命令同上 (先 .venv/bin/activate 或用全路径)
+
+# === 阿里云服务器 (可选) ===
+ssh root@47.93.199.96
+cd ~/xsf && git pull origin main && .venv/bin/pip install -e .
+systemctl restart xsf
 ```
 
 ## 改名记录 (2026-08-15)
