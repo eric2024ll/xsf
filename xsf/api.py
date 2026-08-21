@@ -2323,77 +2323,92 @@ def reocr_doc(collection: str, doc_id: int):
         src.close()
 
         provider = get_provider()
+        total_lines = 0
+        total_blocks = 0
+        src = pymupdf.open(pdf_path)
         conn = get_conn(collection)
         try:
-            conn.execute("DELETE FROM lines WHERE doc_id = ?", (doc_id,))
-            conn.execute("DELETE FROM blocks_fts WHERE doc_id = ?", (doc_id,))
+            # 每页一个短事务: OCR 期间不持写锁 (云端每页可达分钟级,
+            # 长事务会把 SQLite 写锁占数小时, 阻塞所有并发写请求).
+            # 副作用: 中途失败时已完成页为新文本, 未完成页保留旧文本.
+            for page_idx in range(total_pages):
+                page_obj = src[page_idx]
+                pix = page_obj.get_pixmap(dpi=300)
 
-            total_lines = 0
-            total_blocks = 0
-            src = pymupdf.open(pdf_path)
-            try:
-                for page_idx in range(total_pages):
-                    page_obj = src[page_idx]
-                    pix = page_obj.get_pixmap(dpi=300)
+                cpdf = pymupdf.open()
+                cpage = cpdf.new_page(width=pix.width, height=pix.height)
+                cpage.insert_image(cpage.rect, pixmap=pix)
+                fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
+                os.close(fd)
+                cpdf.save(tmp_pdf)
+                cpdf.close()
 
-                    cpdf = pymupdf.open()
-                    cpage = cpdf.new_page(width=pix.width, height=pix.height)
-                    cpage.insert_image(cpage.rect, pixmap=pix)
-                    fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
-                    os.close(fd)
-                    cpdf.save(tmp_pdf)
-                    cpdf.close()
+                try:
+                    result = provider.ocr(tmp_pdf)
+                finally:
+                    os.unlink(tmp_pdf)
 
-                    try:
-                        result = provider.ocr(tmp_pdf)
-                    finally:
-                        os.unlink(tmp_pdf)
+                conn.execute(
+                    "DELETE FROM lines WHERE doc_id = ? AND page_num = ?",
+                    (doc_id, page_idx + 1),
+                )
+                conn.execute(
+                    "DELETE FROM blocks_fts WHERE doc_id = ? AND page_num = ?",
+                    (doc_id, page_idx + 1),
+                )
+                page_num = page_idx + 1
+                block_num = 0
+                for p in result:
+                    for block in p.get('parsing_res_list', []):
+                        label = block.get('block_label', '')
+                        if label == 'header':
+                            continue
+                        content = block.get('block_content', '')
+                        if isinstance(content, dict):
+                            text = content.get('html') or content.get('markdown') or ''
+                        else:
+                            text = str(content) if content else ''
+                        text = text.strip()
+                        if not text:
+                            continue
+                        lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+                        if not lines:
+                            continue
 
-                    page_num = page_idx + 1
-                    block_num = 0
-                    for p in result:
-                        for block in p.get('parsing_res_list', []):
-                            label = block.get('block_label', '')
-                            if label == 'header':
-                                continue
-                            content = block.get('block_content', '')
-                            if isinstance(content, dict):
-                                text = content.get('html') or content.get('markdown') or ''
-                            else:
-                                text = str(content) if content else ''
-                            text = text.strip()
-                            if not text:
-                                continue
-                            lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
-                            if not lines:
-                                continue
+                        block_num += 1
+                        bbox = block.get('block_bbox')
+                        bbox_json = json.dumps(bbox) if bbox else None
+                        page_w = p.get('width') or pix.width
+                        page_h = p.get('height') or pix.height
 
-                            block_num += 1
-                            bbox = block.get('block_bbox')
-                            bbox_json = json.dumps(bbox) if bbox else None
-                            page_w = p.get('width') or pix.width
-                            page_h = p.get('height') or pix.height
-
-                            for ln_num, ln_text in enumerate(lines, 1):
-                                conn.execute(
-                                    """INSERT INTO lines
-                                       (doc_id, page_num, block_num, line_num, text,
-                                        bbox, block_label, page_w, page_h)
-                                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                                    (doc_id, page_num, block_num, ln_num, ln_text,
-                                     bbox_json, label, page_w, page_h),
-                                )
-                                total_lines += 1
+                        for ln_num, ln_text in enumerate(lines, 1):
                             conn.execute(
-                                """INSERT INTO blocks_fts
-                                   (doc_id, page_num, block_num, text)
-                                   VALUES (?, ?, ?, ?)""",
-                                (doc_id, page_num, block_num, _tokenize(text)),
+                                """INSERT INTO lines
+                                   (doc_id, page_num, block_num, line_num, text,
+                                    bbox, block_label, page_w, page_h)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (doc_id, page_num, block_num, ln_num, ln_text,
+                                 bbox_json, label, page_w, page_h),
                             )
-                            total_blocks += 1
-            finally:
-                src.close()
+                            total_lines += 1
+                        conn.execute(
+                            """INSERT INTO blocks_fts
+                               (doc_id, page_num, block_num, text)
+                               VALUES (?, ?, ?, ?)""",
+                            (doc_id, page_num, block_num, _tokenize(text)),
+                        )
+                        total_blocks += 1
+                conn.commit()  # 每页提交, 释放写锁
 
+            # 清理超出新页数残留 + 收尾
+            conn.execute(
+                "DELETE FROM lines WHERE doc_id = ? AND page_num > ?",
+                (doc_id, total_pages),
+            )
+            conn.execute(
+                "DELETE FROM blocks_fts WHERE doc_id = ? AND page_num > ?",
+                (doc_id, total_pages),
+            )
             conn.execute(
                 "UPDATE documents SET doc_type = 'ocr' WHERE id = ?",
                 (doc_id,),
@@ -2401,6 +2416,7 @@ def reocr_doc(collection: str, doc_id: int):
             conn.commit()
         finally:
             conn.close()
+            src.close()
 
         return {
             "status": "ok",

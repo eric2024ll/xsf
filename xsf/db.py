@@ -52,7 +52,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
 def get_conn(collection: str) -> sqlite3.Connection:
     path = get_db_path(collection)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30)
     conn.execute('PRAGMA foreign_keys = ON')
     conn.row_factory = sqlite3.Row
     return conn
