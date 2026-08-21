@@ -2381,17 +2381,173 @@ def reocr_page(
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# ── 整本重 OCR: 后台任务 + 进度注册表 ─────────────────────
+
+_reocr_lock = threading.Lock()
+# {(collection, doc_id): {"total", "done", "status", "error", "cancel"}}
+_reocr_jobs: dict = {}
+
+
+def _reocr_get(collection: str, doc_id: int) -> dict | None:
+    with _reocr_lock:
+        job = _reocr_jobs.get((collection, doc_id))
+        return dict(job) if job else None
+
+
+def _reocr_set(collection: str, doc_id: int, **kw) -> None:
+    with _reocr_lock:
+        _reocr_jobs[(collection, doc_id)].update(kw)
+
+
+def _run_reocr_doc(collection: str, doc_id: int, provider, pdf_path: Path,
+                   total_pages: int) -> None:
+    """后台线程: 逐页 OCR → 每页短事务写入 (进度 = 已提交页数)."""
+    logger = logging.getLogger("xsf.reocr")
+    import tempfile
+
+    total_lines = 0
+    total_blocks = 0
+    src = pymupdf.open(pdf_path)
+    conn = get_conn(collection)
+    try:
+        for page_idx in range(total_pages):
+            with _reocr_lock:
+                job = _reocr_jobs[(collection, doc_id)]
+                if job.get("cancel"):
+                    # 注意: 不能在持锁块内调 _reocr_set (非重入锁, 会死锁)
+                    job.update(status="cancelled", error="用户取消")
+                    cancelled = True
+                else:
+                    cancelled = False
+            if cancelled:
+                logger.info("reocr 取消 coll=%s doc=%s 完成 %s/%s",
+                            collection, doc_id, page_idx, total_pages)
+                return
+            page_obj = src[page_idx]
+            pix = page_obj.get_pixmap(dpi=300)
+
+            cpdf = pymupdf.open()
+            cpage = cpdf.new_page(width=pix.width, height=pix.height)
+            cpage.insert_image(cpage.rect, pixmap=pix)
+            fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
+            os.close(fd)
+            cpdf.save(tmp_pdf)
+            cpdf.close()
+
+            try:
+                result = provider.ocr(tmp_pdf)
+            finally:
+                os.unlink(tmp_pdf)
+
+            conn.execute(
+                "DELETE FROM lines WHERE doc_id = ? AND page_num = ?",
+                (doc_id, page_idx + 1),
+            )
+            conn.execute(
+                "DELETE FROM blocks_fts WHERE doc_id = ? AND page_num = ?",
+                (doc_id, page_idx + 1),
+            )
+            page_num = page_idx + 1
+            block_num = 0
+            for p in result:
+                for block in p.get('parsing_res_list', []):
+                    label = block.get('block_label', '')
+                    if label == 'header':
+                        continue
+                    content = block.get('block_content', '')
+                    if isinstance(content, dict):
+                        text = content.get('html') or content.get('markdown') or ''
+                    else:
+                        text = str(content) if content else ''
+                    text = text.strip()
+                    if not text:
+                        continue
+                    lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+                    if not lines:
+                        continue
+
+                    block_num += 1
+                    bbox = block.get('block_bbox')
+                    bbox_json = json.dumps(bbox) if bbox else None
+                    page_w = p.get('width') or pix.width
+                    page_h = p.get('height') or pix.height
+
+                    for ln_num, ln_text in enumerate(lines, 1):
+                        conn.execute(
+                            """INSERT INTO lines
+                               (doc_id, page_num, block_num, line_num, text,
+                                bbox, block_label, page_w, page_h)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (doc_id, page_num, block_num, ln_num, ln_text,
+                             bbox_json, label, page_w, page_h),
+                        )
+                        total_lines += 1
+                    conn.execute(
+                        """INSERT INTO blocks_fts
+                           (doc_id, page_num, block_num, text)
+                           VALUES (?, ?, ?, ?)""",
+                        (doc_id, page_num, block_num, _tokenize(text)),
+                    )
+                    total_blocks += 1
+            conn.commit()  # 每页提交, 释放写锁
+            _reocr_set(collection, doc_id, done=page_idx + 1)
+
+        # 清理超出新页数残留 + 收尾
+        conn.execute(
+            "DELETE FROM lines WHERE doc_id = ? AND page_num > ?",
+            (doc_id, total_pages),
+        )
+        conn.execute(
+            "DELETE FROM blocks_fts WHERE doc_id = ? AND page_num > ?",
+            (doc_id, total_pages),
+        )
+        conn.execute(
+            "UPDATE documents SET doc_type = 'ocr', sag_dirty = 1 WHERE id = ?",
+            (doc_id,),
+        )
+        conn.commit()
+        _reocr_set(collection, doc_id, status="done", done=total_pages)
+        logger.info("reocr 完成 coll=%s doc=%s: %s 页 %s 块 %s 行",
+                    collection, doc_id, total_pages, total_blocks, total_lines)
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        done = (_reocr_get(collection, doc_id) or {}).get("done", 0)
+        _reocr_set(collection, doc_id, status="error", error=str(e))
+        logger.warning("reocr 失败 coll=%s doc=%s @页%s/%s: %s",
+                       collection, doc_id, done, total_pages, e)
+    finally:
+        conn.close()
+        src.close()
+        # 终态 (done/error/cancelled) 保留 10 分钟供前端查询, 之后回收
+        def _cleanup():
+            import time
+            time.sleep(600)
+            with _reocr_lock:
+                job = _reocr_jobs.get((collection, doc_id))
+                if job and job.get("status") != "running":
+                    _reocr_jobs.pop((collection, doc_id), None)
+        threading.Thread(target=_cleanup, daemon=True).start()
+
+
 @app.post("/collections/{collection}/doc/{doc_id}/reocr")
 def reocr_doc(collection: str, doc_id: int):
-    """对整个文献重新 OCR（逐页渲染 → OCR → 写入 DB）。
+    """对整个文献重新 OCR（后台线程逐页渲染 → OCR → 写入 DB）。
 
-    sync 端点: Starlette 自动放线程池执行, 不阻塞事件循环
-    (渲染 + 同步 OCR 的 requests/time.sleep 重试若跑在事件循环会卡死整个服务,
-    2026-08-21 事故根因, 见 histflow-plan 过程日志).
+    fire-and-forget: 立即返回, 进度经 /reocr/status 轮询, 关浏览器不中断.
+    原同步阻塞版是 2026-08-21 假死/锁库事故源, 见 histflow-plan 过程日志.
     """
-    import os
-    import tempfile
     from .ocr import get_provider
+
+    with _reocr_lock:
+        job = _reocr_jobs.get((collection, doc_id))
+        if job and job.get("status") == "running":
+            return JSONResponse(
+                status_code=409,
+                content={"error": "该文献正在重 OCR 中"},
+            )
 
     try:
         conn = get_conn(collection)
@@ -2416,115 +2572,54 @@ def reocr_doc(collection: str, doc_id: int):
         src.close()
 
         provider = get_provider()
-        total_lines = 0
-        total_blocks = 0
-        src = pymupdf.open(pdf_path)
+        with _reocr_lock:
+            _reocr_jobs[(collection, doc_id)] = {
+                "total": total_pages, "done": 0, "status": "running",
+                "error": None, "cancel": False,
+            }
+        # 先置脏: 逐页提交中途崩溃也能在 SAG 同步 tab 看到待重同步
         conn = get_conn(collection)
         try:
-            # 先置脏: 逐页提交中途崩溃也能在 SAG 同步 tab 看到待重同步
             conn.execute(
                 "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
             )
             conn.commit()
-            # 每页一个短事务: OCR 期间不持写锁 (云端每页可达分钟级,
-            # 长事务会把 SQLite 写锁占数小时, 阻塞所有并发写请求).
-            # 副作用: 中途失败时已完成页为新文本, 未完成页保留旧文本.
-            for page_idx in range(total_pages):
-                page_obj = src[page_idx]
-                pix = page_obj.get_pixmap(dpi=300)
-
-                cpdf = pymupdf.open()
-                cpage = cpdf.new_page(width=pix.width, height=pix.height)
-                cpage.insert_image(cpage.rect, pixmap=pix)
-                fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
-                os.close(fd)
-                cpdf.save(tmp_pdf)
-                cpdf.close()
-
-                try:
-                    result = provider.ocr(tmp_pdf)
-                finally:
-                    os.unlink(tmp_pdf)
-
-                conn.execute(
-                    "DELETE FROM lines WHERE doc_id = ? AND page_num = ?",
-                    (doc_id, page_idx + 1),
-                )
-                conn.execute(
-                    "DELETE FROM blocks_fts WHERE doc_id = ? AND page_num = ?",
-                    (doc_id, page_idx + 1),
-                )
-                page_num = page_idx + 1
-                block_num = 0
-                for p in result:
-                    for block in p.get('parsing_res_list', []):
-                        label = block.get('block_label', '')
-                        if label == 'header':
-                            continue
-                        content = block.get('block_content', '')
-                        if isinstance(content, dict):
-                            text = content.get('html') or content.get('markdown') or ''
-                        else:
-                            text = str(content) if content else ''
-                        text = text.strip()
-                        if not text:
-                            continue
-                        lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
-                        if not lines:
-                            continue
-
-                        block_num += 1
-                        bbox = block.get('block_bbox')
-                        bbox_json = json.dumps(bbox) if bbox else None
-                        page_w = p.get('width') or pix.width
-                        page_h = p.get('height') or pix.height
-
-                        for ln_num, ln_text in enumerate(lines, 1):
-                            conn.execute(
-                                """INSERT INTO lines
-                                   (doc_id, page_num, block_num, line_num, text,
-                                    bbox, block_label, page_w, page_h)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                                (doc_id, page_num, block_num, ln_num, ln_text,
-                                 bbox_json, label, page_w, page_h),
-                            )
-                            total_lines += 1
-                        conn.execute(
-                            """INSERT INTO blocks_fts
-                               (doc_id, page_num, block_num, text)
-                               VALUES (?, ?, ?, ?)""",
-                            (doc_id, page_num, block_num, _tokenize(text)),
-                        )
-                        total_blocks += 1
-                conn.commit()  # 每页提交, 释放写锁
-
-            # 清理超出新页数残留 + 收尾
-            conn.execute(
-                "DELETE FROM lines WHERE doc_id = ? AND page_num > ?",
-                (doc_id, total_pages),
-            )
-            conn.execute(
-                "DELETE FROM blocks_fts WHERE doc_id = ? AND page_num > ?",
-                (doc_id, total_pages),
-            )
-            conn.execute(
-                "UPDATE documents SET doc_type = 'ocr', sag_dirty = 1 WHERE id = ?",
-                (doc_id,),
-            )
-            conn.commit()
         finally:
             conn.close()
-            src.close()
-
-        return {
-            "status": "ok",
-            "doc_id": doc_id,
-            "pages": total_pages,
-            "blocks": total_blocks,
-            "lines": total_lines,
-        }
+        threading.Thread(
+            target=_run_reocr_doc,
+            args=(collection, doc_id, provider, pdf_path, total_pages),
+            daemon=True, name=f"reocr-{collection}-{doc_id}",
+        ).start()
+        return {"started": True, "doc_id": doc_id, "total": total_pages}
     except Exception as e:
+        with _reocr_lock:
+            _reocr_jobs.pop((collection, doc_id), None)
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/collections/{collection}/reocr/status")
+async def reocr_status(collection: str):
+    """本书架所有重 OCR 任务进度快照 (纯内存读, 不打 DB)."""
+    with _reocr_lock:
+        jobs = [
+            {"doc_id": k[1], **{kk: vv for kk, vv in v.items() if kk != "cancel"}}
+            for k, v in _reocr_jobs.items() if k[0] == collection
+        ]
+    return {"jobs": jobs}
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/reocr/cancel")
+async def reocr_cancel(collection: str, doc_id: int):
+    """请求取消: 每页循环开头检查 cancel 标志, 当前页 OCR 完成后停止."""
+    with _reocr_lock:
+        job = _reocr_jobs.get((collection, doc_id))
+        if not job or job.get("status") != "running":
+            return JSONResponse(
+                status_code=404, content={"error": "无进行中的任务"},
+            )
+        job["cancel"] = True
+    return {"ok": True, "doc_id": doc_id}
 
 
 # ── 命中文档检索（校对页内搜索）─────────────────────────

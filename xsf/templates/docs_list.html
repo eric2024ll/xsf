@@ -245,6 +245,7 @@ async function loadPage(page){
     renderPager();
     updateSelectAllState();
     document.getElementById('statsSummary').textContent = '共 ' + data.total + ' 篇';
+    ensureReocrPolling();  // 刷新/翻页后恢复进行中的进度显示
   }catch(e){
     tbody.innerHTML = '<tr><td colspan="7" class="empty">加载失败</td></tr>';
     showMsg('加载失败: '+e.message,'err');
@@ -265,21 +266,95 @@ function typeBadge(bibType){
 }
 
 async function reocrDoc(docId, btn){
-  if(!confirm('确定对整个文献重新 OCR（逐页处理，耗时较长）？将覆盖现有识别文本。')) return;
+  if(!confirm('确定对整个文献重新 OCR（逐页处理，耗时较长）？将覆盖现有识别文本。\n任务在后台运行，可随时取消，关浏览器不中断。')) return;
   btn.disabled = true;
-  btn.textContent = '处理中…';
-  showMsg('重 OCR 进行中，请耐心等待（每页约几秒，共约数百页）…','ok');
+  btn.textContent = '启动中…';
   try{
     const r = await fetch('/collections/'+encodeURIComponent(collection)+'/doc/'+docId+'/reocr', {method:'POST'});
     const data = await r.json();
-    if(data.error){showMsg('重 OCR 失败: '+data.error,'err'); btn.textContent='重OCR'; btn.disabled=false; return;}
-    showMsg('重 OCR 完成: '+data.pages+' 页, '+data.blocks+' 块, '+data.lines+' 行','ok');
-    loadPage(state.page);
+    if(data.error){showMsg('重 OCR 启动失败: '+data.error,'err'); btn.textContent='重OCR'; btn.disabled=false; return;}
+    showMsg('重 OCR 已启动: 共 '+data.total+' 页, 后台处理中','ok');
+    ensureReocrPolling();
   }catch(e){
     showMsg('重 OCR 请求失败: '+e.message,'err');
     btn.textContent='重OCR';
     btn.disabled=false;
   }
+}
+
+/* ── 重 OCR 进度轮询 ── */
+let _reocrTimer = null;
+
+function ensureReocrPolling(){
+  if(_reocrTimer) return;
+  _reocrTimer = setInterval(pollReocrStatus, 3000);
+  pollReocrStatus();
+}
+
+async function pollReocrStatus(){
+  let jobs;
+  try{
+    const r = await fetch('/collections/'+encodeURIComponent(collection)+'/reocr/status');
+    jobs = (await r.json()).jobs || [];
+  }catch(e){ return; }
+  const byId = {};
+  jobs.forEach(j => { byId[j.doc_id] = j; });
+  // 更新/注入进度单元
+  jobs.forEach(j => updateReocrCell(j));
+  // 恢复非运行行的按钮 (done/error/cancelled 或任务消失)
+  document.querySelectorAll('td.reocr-cell[data-doc]').forEach(td => {
+    const id = parseInt(td.dataset.doc, 10);
+    const j = byId[id];
+    if(!j || j.status !== 'running') restoreReocrCell(td, j);
+  });
+  const running = jobs.filter(j => j.status === 'running').length;
+  if(running === 0){
+    clearInterval(_reocrTimer); _reocrTimer = null;
+  }
+}
+
+function updateReocrCell(j){
+  let td = document.querySelector('td.reocr-cell[data-doc="'+j.doc_id+'"]');
+  if(!td){
+    // 找到该行 actions 单元格, 在其后插入进度列
+    const row = document.getElementById('row-'+j.doc_id);
+    if(!row) return;
+    td = document.createElement('td');
+    td.className = 'reocr-cell';
+    td.dataset.doc = j.doc_id;
+    row.appendChild(td);
+  }
+  const pct = j.total ? Math.floor(j.done / j.total * 100) : 0;
+  if(j.status === 'running'){
+    td.innerHTML = '<div style="min-width:130px;">' +
+      '<div style="font-size:0.75rem;color:var(--text-muted);">OCR '+j.done+'/'+j.total+' ('+pct+'%)</div>' +
+      '<div style="height:5px;background:var(--border);border-radius:3px;margin-top:2px;">' +
+      '<div style="height:5px;width:'+pct+'%;background:var(--success);border-radius:3px;"></div></div>' +
+      '<button class="btn" style="padding:1px 8px;font-size:0.7rem;margin-top:2px;color:var(--danger);" onclick="reocrCancel('+j.doc_id+')">取消</button>' +
+      '</div>';
+  } else if(j.status === 'done'){
+    td.innerHTML = '<div style="min-width:130px;font-size:0.78rem;color:var(--success);font-weight:600;">100% 完成 ✓</div>';
+  } else {
+    const label = j.status === 'cancelled' ? '已取消' : '失败';
+    const err = j.error ? escapeHtml(String(j.error).slice(0, 120)) : '';
+    td.innerHTML = '<div style="min-width:130px;font-size:0.75rem;color:var(--danger);">'+label+' '+err+'</div>';
+  }
+}
+
+function restoreReocrCell(td, j){
+  // 终态显示 2.5s 后刷新列表恢复原按钮列
+  setTimeout(() => { loadPage(state.page); }, 2500);
+  td.removeAttribute('data-doc'); // 防重复调度刷新
+}
+
+async function reocrCancel(docId){
+  if(!confirm('确定取消？当前页完成后停止，已完成页保留新文本。')) return;
+  try{
+    const r = await fetch('/collections/'+encodeURIComponent(collection)+'/doc/'+docId+'/reocr/cancel', {method:'POST'});
+    const d = await r.json();
+    if(d.error){showMsg('取消失败: '+d.error,'err'); return;}
+    showMsg('已请求取消','ok');
+  }catch(e){ showMsg('取消请求失败: '+e.message,'err'); }
 }
 
 async function deleteDoc(docId, btn){
