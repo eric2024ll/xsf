@@ -264,6 +264,41 @@ function typeBadge(bibType){
   return '<span class="badge ' + cls + '">' + label + '</span>';
 }
 
+async function reocrDoc(docId, btn){
+  if(!confirm('确定对整个文献重新 OCR（逐页处理，耗时较长）？将覆盖现有识别文本。')) return;
+  btn.disabled = true;
+  btn.textContent = '处理中…';
+  showMsg('重 OCR 进行中，请耐心等待（每页约几秒，共约数百页）…','ok');
+  try{
+    const r = await fetch('/collections/'+encodeURIComponent(collection)+'/doc/'+docId+'/reocr', {method:'POST'});
+    const data = await r.json();
+    if(data.error){showMsg('重 OCR 失败: '+data.error,'err'); btn.textContent='重OCR'; btn.disabled=false; return;}
+    showMsg('重 OCR 完成: '+data.pages+' 页, '+data.blocks+' 块, '+data.lines+' 行','ok');
+    loadPage(state.page);
+  }catch(e){
+    showMsg('重 OCR 请求失败: '+e.message,'err');
+    btn.textContent='重OCR';
+    btn.disabled=false;
+  }
+}
+
+async function deleteDoc(docId, btn){
+  if(!confirm('确定永久删除此文献？将同时删除 PDF 文件和识别文本，不可恢复。')) return;
+  btn.disabled = true;
+  btn.textContent = '删除中…';
+  try{
+    const r = await fetch('/collections/'+encodeURIComponent(collection)+'/doc/'+docId, {method:'DELETE'});
+    const data = await r.json();
+    if(data.error){showMsg('删除失败: '+data.error,'err'); btn.textContent='删除'; btn.disabled=false; return;}
+    showMsg('已删除','ok');
+    loadPage(state.page);
+  }catch(e){
+    showMsg('删除请求失败: '+e.message,'err');
+    btn.textContent='删除';
+    btn.disabled=false;
+  }
+}
+
 function escapeHtml(s){
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
@@ -292,6 +327,8 @@ function renderTable(docs){
       '<td class="actions">' +
         '<a href="/collections/' + collEnc + '/doc/' + d.id + '/proofread">校对</a>' +
         '<button class="btn" style="padding:2px 10px;font-size:0.8rem;" onclick="pmOpen('+attrEsc(JSON.stringify(collection))+','+d.id+',{title:'+attrEsc(JSON.stringify(d.title||''))+'})">预览</button>' +
+        '<button class="btn" style="padding:2px 10px;font-size:0.8rem;" onclick="reocrDoc('+d.id+',this)">重OCR</button>' +
+        '<button class="btn" style="padding:2px 10px;font-size:0.8rem;color:var(--danger);" onclick="deleteDoc('+d.id+',this)">删除</button>' +
       '</td></tr>';
   });
   tbody.innerHTML = html;

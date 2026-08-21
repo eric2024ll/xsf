@@ -2276,6 +2276,126 @@ async def reocr_page(
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.post("/collections/{collection}/doc/{doc_id}/reocr")
+async def reocr_doc(collection: str, doc_id: int):
+    """对整个文献重新 OCR（逐页渲染 → OCR → 写入 DB）。"""
+    import os
+    import tempfile
+    from .ocr import get_provider
+
+    try:
+        conn = get_conn(collection)
+        try:
+            doc = conn.execute(
+                "SELECT filename FROM documents WHERE id = ?",
+                (doc_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if doc is None:
+            return JSONResponse(status_code=404, content={"error": "文献不存在"})
+
+        pdf_path = get_collections_dir() / "uploads" / doc["filename"]
+        if not pdf_path.exists():
+            return JSONResponse(
+                status_code=404, content={"error": f"源文件不存在: {doc['filename']}"}
+            )
+
+        src = pymupdf.open(pdf_path)
+        total_pages = len(src)
+        src.close()
+
+        provider = get_provider()
+        conn = get_conn(collection)
+        try:
+            conn.execute("DELETE FROM lines WHERE doc_id = ?", (doc_id,))
+            conn.execute("DELETE FROM blocks_fts WHERE doc_id = ?", (doc_id,))
+
+            total_lines = 0
+            total_blocks = 0
+            src = pymupdf.open(pdf_path)
+            try:
+                for page_idx in range(total_pages):
+                    page_obj = src[page_idx]
+                    pix = page_obj.get_pixmap(dpi=300)
+
+                    cpdf = pymupdf.open()
+                    cpage = cpdf.new_page(width=pix.width, height=pix.height)
+                    cpage.insert_image(cpage.rect, pixmap=pix)
+                    fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
+                    os.close(fd)
+                    cpdf.save(tmp_pdf)
+                    cpdf.close()
+
+                    try:
+                        result = provider.ocr(tmp_pdf)
+                    finally:
+                        os.unlink(tmp_pdf)
+
+                    page_num = page_idx + 1
+                    block_num = 0
+                    for p in result:
+                        for block in p.get('parsing_res_list', []):
+                            label = block.get('block_label', '')
+                            if label == 'header':
+                                continue
+                            content = block.get('block_content', '')
+                            if isinstance(content, dict):
+                                text = content.get('html') or content.get('markdown') or ''
+                            else:
+                                text = str(content) if content else ''
+                            text = text.strip()
+                            if not text:
+                                continue
+                            lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+                            if not lines:
+                                continue
+
+                            block_num += 1
+                            bbox = block.get('block_bbox')
+                            bbox_json = json.dumps(bbox) if bbox else None
+                            page_w = p.get('width') or pix.width
+                            page_h = p.get('height') or pix.height
+
+                            for ln_num, ln_text in enumerate(lines, 1):
+                                conn.execute(
+                                    """INSERT INTO lines
+                                       (doc_id, page_num, block_num, line_num, text,
+                                        bbox, block_label, page_w, page_h)
+                                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                    (doc_id, page_num, block_num, ln_num, ln_text,
+                                     bbox_json, label, page_w, page_h),
+                                )
+                                total_lines += 1
+                            conn.execute(
+                                """INSERT INTO blocks_fts
+                                   (doc_id, page_num, block_num, text)
+                                   VALUES (?, ?, ?, ?)""",
+                                (doc_id, page_num, block_num, _tokenize(text)),
+                            )
+                            total_blocks += 1
+            finally:
+                src.close()
+
+            conn.execute(
+                "UPDATE documents SET doc_type = 'ocr' WHERE id = ?",
+                (doc_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {
+            "status": "ok",
+            "doc_id": doc_id,
+            "pages": total_pages,
+            "blocks": total_blocks,
+            "lines": total_lines,
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 # ── 命中文档检索（校对页内搜索）─────────────────────────
 
 @app.get("/collections/{collection}/doc/{doc_id}/hits")

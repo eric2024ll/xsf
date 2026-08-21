@@ -353,9 +353,17 @@ def _sync_sag(doc_id: int, collection: str) -> None:
 
 
 def remove_doc(doc_id: int, collection: str):
-    """删除文献及其所有行和 FTS 条目"""
+    """删除文献（数据库 + PDF 文件）"""
+    from .config import get_collections_dir
+
+    filename = None
     conn = get_conn(collection)
     try:
+        row = conn.execute(
+            "SELECT filename FROM documents WHERE id = ?", (doc_id,)
+        ).fetchone()
+        if row:
+            filename = row["filename"]
         conn.execute('DELETE FROM lines WHERE doc_id = ?', (doc_id,))
         conn.execute(
             'DELETE FROM blocks_fts WHERE doc_id = ?', (doc_id,)
@@ -364,6 +372,11 @@ def remove_doc(doc_id: int, collection: str):
         conn.commit()
     finally:
         conn.close()
+
+    if filename:
+        fp = get_collections_dir() / "uploads" / filename
+        if fp.exists():
+            fp.unlink()
 
     try:
         from . import sag_integration
