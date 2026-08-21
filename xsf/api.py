@@ -922,7 +922,7 @@ async def api_update_doc(collection: str, doc_id: int,
 
     可选字段（至少传一个）:
     - source_tags: JSON 数组字符串（来源标签）
-    - bib_type: 文献类型（@book/@article/@online/@manuscript/@incollection）
+    - bib_type: 文献类型（任意标准 BibTeX 类型, 如 @book/@article/@phdthesis 等 15 类）
     - bib_data: JSON 对象字符串（biblatex 字段）
     """
     try:

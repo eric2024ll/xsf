@@ -21,17 +21,63 @@ BIB_TYPE_FIELDS = {
     "@article": ["author", "title", "journal", "year", "volume", "number", "pages"],
     "@book": ["author", "title", "publisher", "year", "address", "edition"],
     "@incollection": ["author", "title", "booktitle", "editor", "publisher", "year", "address", "pages"],
+    "@inbook": ["author", "title", "chapter", "pages", "publisher", "year", "address"],
+    "@inproceedings": ["author", "title", "booktitle", "editor", "publisher", "year", "address", "pages"],
+    "@proceedings": ["editor", "title", "publisher", "year", "address", "volume"],
+    "@phdthesis": ["author", "title", "school", "year", "address"],
+    "@mastersthesis": ["author", "title", "school", "year", "address"],
+    "@techreport": ["author", "title", "institution", "year", "number", "address"],
+    "@manual": ["author", "title", "organization", "address", "edition", "year"],
+    "@booklet": ["author", "title", "howpublished", "address", "month", "year"],
+    "@unpublished": ["author", "title", "note", "month", "year"],
     "@manuscript": ["author", "title", "year", "institution"],
+    "@misc": ["author", "title", "howpublished", "month", "year", "note"],
     "@online": ["author", "title", "year", "url"],
 }
 
 BIB_TYPE_LABELS = {
     "@book": "图书",
     "@article": "期刊/报纸",
+    "@incollection": "析出文献",
+    "@inbook": "书中章节",
+    "@inproceedings": "会议论文",
+    "@proceedings": "会议录",
+    "@phdthesis": "博士论文",
+    "@mastersthesis": "硕士论文",
+    "@techreport": "科技报告",
+    "@manual": "技术手册",
+    "@booklet": "小册子",
+    "@unpublished": "未刊文献",
     "@manuscript": "手稿/档案",
     "@online": "电子出版物",
-    "@incollection": "析出文献",
+    "@misc": "其他",
 }
+
+BIB_TYPE_ALIASES = {
+    "@conference": "@inproceedings",
+    "@electronic": "@online",
+    "@www": "@online",
+}
+
+
+def normalize_bib_type(bib_type: str, fields: dict | None = None) -> str:
+    """归一化 BibTeX 类型: 别名表 + @thesis 嗅探.
+
+    @thesis 按 type 字段判断: 含 master/mathesis → @mastersthesis;
+    含 phd/dissertation 或缺省 → @phdthesis. 其余别名走
+    BIB_TYPE_ALIASES; 未知类型原样返回.
+    """
+    t = (bib_type or "").strip().lower()
+    if not t:
+        return t
+    if not t.startswith("@"):
+        t = "@" + t
+    if t == "@thesis":
+        tv = str((fields or {}).get("type", "") or "").lower()
+        if "master" in tv or "mathesis" in tv:
+            return "@mastersthesis"
+        return "@phdthesis"
+    return BIB_TYPE_ALIASES.get(t, t)
 
 BIB_FIELD_LABELS = {
     "author": "作者",
@@ -47,6 +93,7 @@ BIB_FIELD_LABELS = {
     "editor": "编者",
     "institution": "机构",
     "booktitle": "所在文献标题",
+    "chapter": "章节",
     "url": "URL",
     "doi": "DOI",
     "note": "备注",
@@ -302,7 +349,7 @@ def parse_bib_entries(text: str) -> list[dict]:
             cite_key, fields_text = body[:comma].strip(), body[comma + 1:]
         fields = _parse_bib_fields(fields_text)
         entries.append({
-            'type': '@' + entry_type,
+            'type': normalize_bib_type('@' + entry_type, fields),
             'cite_key': cite_key,
             'fields': fields,
         })

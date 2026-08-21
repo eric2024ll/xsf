@@ -75,6 +75,9 @@ var bibEditor = (function() {
     for (var t in labels) {
       html += '<option value="' + t + '"' + (t === _state.type ? ' selected' : '') + '>' + _escape(labels[t]) + '</option>';
     }
+    if (_state.type && !labels[_state.type]) {
+      html += '<option value="' + _escape(_state.type) + '" selected>' + _escape(_state.type.replace(/^@/, '') + ' (自定义)') + '</option>';
+    }
     html += '</select></div>';
 
     // 导入区
@@ -197,6 +200,21 @@ var bibEditor = (function() {
 
   /* ── BibTeX 解析 + 导入 ── */
 
+  var _TYPE_ALIASES = {
+    '@conference': '@inproceedings',
+    '@electronic': '@online',
+    '@www': '@online'
+  };
+
+  function _normalizeType(type, data) {
+    if (type === '@thesis') {
+      var tv = ((data && data.type) || '').toLowerCase();
+      if (tv.indexOf('master') >= 0 || tv.indexOf('mathesis') >= 0) return '@mastersthesis';
+      return '@phdthesis';
+    }
+    return _TYPE_ALIASES[type] || type;
+  }
+
   function parseBibtex(text) {
     var atIdx = text.indexOf('@');
     if (atIdx < 0) return null;
@@ -226,7 +244,7 @@ var bibEditor = (function() {
       var val = (fm[2] !== undefined ? fm[2] : fm[3]).trim();
       if (val) data[key] = val;
     }
-    return { bib_type: '@' + type, cite_key: citeKey, bib_data: data };
+    return { bib_type: _normalizeType('@' + type, data), cite_key: citeKey, bib_data: data };
   }
 
   function _applyResult(result) {

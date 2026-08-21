@@ -37,6 +37,8 @@ td .badge.article{background:#e8f4e8;color:#27ae60;}
 td .badge.manuscript{background:#f9f2e6;color:#b38b00;}
 td .badge.online{background:#f4e8f4;color:#8e44ad;}
 td .badge.incollection{background:#f0e8e6;color:#8e44ad;}
+td .badge.phdthesis{background:#f9e8e8;color:#a03030;}
+td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
 .actions a{font-size:0.8rem;margin-right:8px;}
 .bm-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1500;align-items:center;justify-content:center;}
 .bm-modal{background:var(--card-bg);border-radius:var(--radius);width:90%;max-width:800px;max-height:85vh;display:flex;flex-direction:column;}
@@ -167,13 +169,6 @@ td .badge.incollection{background:#f0e8e6;color:#8e44ad;}
 const collection = {{ collection | tojson }};
 const sourceTags = {{ source_tags | tojson }};
 const bibTypeLabels = {{ bib_type_labels | tojson }};
-const BIB_TYPES = [
-  {key:'@book', label:'图书'},
-  {key:'@article', label:'期刊/报纸'},
-  {key:'@manuscript', label:'手稿/档案'},
-  {key:'@online', label:'电子出版物'},
-  {key:'@incollection', label:'析出文献'}
-];
 let state = {page:1, total:0, pages:0, docs:[]};
 let selectedIds = new Set();
 
@@ -198,9 +193,9 @@ function fillTagFilter(){
 
 function fillBibTypeFilter(){
   const sel = document.getElementById('bibTypeFilter');
-  BIB_TYPES.forEach(t => {
+  Object.entries(bibTypeLabels).forEach(([key, label]) => {
     const opt = document.createElement('option');
-    opt.value = t.key; opt.textContent = t.label;
+    opt.value = key; opt.textContent = label;
     sel.appendChild(opt);
   });
 }
