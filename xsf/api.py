@@ -1,5 +1,6 @@
 """xsf FastAPI Web 界面"""
 
+import asyncio
 import html
 import io
 import json
@@ -363,11 +364,12 @@ async def api_set_ocr_default(id: str = Form(...)):
 
 
 @app.post("/api/ocr-config/test")
-async def api_test_ocr_config(id: str = Form(None), url: str = Form(None),
-                              api_key: str = Form(None),
-                              model: str = Form(None)):
+def api_test_ocr_config(id: str = Form(None), url: str = Form(None),
+                        api_key: str = Form(None),
+                        model: str = Form(None)):
     """测试 provider 连通: 发 1 页空白 PDF, 校验 200 + pages 结构。
 
+    sync 端点 (线程池执行): 内部 requests.post/aistudio 轮询为阻塞调用.
     id 非空 → 用已保存配置 (url/api_key 参数可覆盖);
     无 id → 用表单传入的 url/api_key (添加前预检)。
     """
@@ -795,8 +797,9 @@ async def api_add(
                 else:  # 图片：强制 OCR
                     ingest_func = ingest_image
 
-                r = ingest_func(
-                    dst,
+                # OCR/解析为分钟级阻塞调用, 放线程池避免卡死事件循环
+                r = await asyncio.to_thread(
+                    ingest_func, dst,
                     collection=collection,
                     cite_key=cite_key or None,
                     title=title or None,
@@ -2069,7 +2072,7 @@ async def edit_page(
 # ── 手工分栏重新 OCR ────────────────────────────────────
 
 @app.post("/collections/{collection}/doc/{doc_id}/page/{page_num}/reocr")
-async def reocr_page(
+def reocr_page(
     collection: str,
     doc_id: int,
     page_num: int,
@@ -2277,8 +2280,13 @@ async def reocr_page(
 
 
 @app.post("/collections/{collection}/doc/{doc_id}/reocr")
-async def reocr_doc(collection: str, doc_id: int):
-    """对整个文献重新 OCR（逐页渲染 → OCR → 写入 DB）。"""
+def reocr_doc(collection: str, doc_id: int):
+    """对整个文献重新 OCR（逐页渲染 → OCR → 写入 DB）。
+
+    sync 端点: Starlette 自动放线程池执行, 不阻塞事件循环
+    (渲染 + 同步 OCR 的 requests/time.sleep 重试若跑在事件循环会卡死整个服务,
+    2026-08-21 事故根因, 见 histflow-plan 过程日志).
+    """
     import os
     import tempfile
     from .ocr import get_provider
