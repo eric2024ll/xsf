@@ -2170,6 +2170,149 @@ async def edit_page(
 
 # ── 手工分栏重新 OCR ────────────────────────────────────
 
+def _reocr_regions_for_page(provider, src, page_num: int, region_list: list):
+    """分栏重 OCR 共享逻辑: 按 region 裁切页面 → 拼临时 PDF 一次 OCR → 收集 blocks.
+
+    region 坐标在 150dpi 页面像素空间 (与 page_image/bbox overlay 一致)。
+    返回 (new_blocks, page_w, page_h, n_crops), block bbox 已偏移回页面坐标。
+    无有效裁切区域时抛 ValueError; 调用方保证 page_num 在 1..len(src) 内。
+    """
+    import tempfile
+
+    PT_PER_PX = 72.0 / 150.0  # 150dpi 像素 → PDF 点
+    OCR_DPI = 300              # 裁切渲染精度（高清→paddle 取清晰像素）
+
+    page_obj = src[page_num - 1]
+
+    # 150 DPI 页面尺寸（REOCR bbox 坐标系，与 page_image 一致）
+    page_w = int(round(page_obj.rect.width * 150 / 72.0))
+    page_h = int(round(page_obj.rect.height * 150 / 72.0))
+
+    # 每个 region 裁切为一张图，按顺序拼成多页 PDF
+    out_pdf = pymupdf.open()
+    crop_meta = []  # (x0, y0, log_w, log_h)
+    for reg in region_list:
+        try:
+            x0, y0, x1, y1 = reg
+        except (TypeError, ValueError):
+            continue
+        if x1 <= x0 or y1 <= y0:
+            continue
+        clip = pymupdf.Rect(x0 * PT_PER_PX, y0 * PT_PER_PX,
+                            x1 * PT_PER_PX, y1 * PT_PER_PX)
+        cpix = page_obj.get_pixmap(dpi=OCR_DPI, clip=clip)
+        if cpix.width <= 0 or cpix.height <= 0:
+            continue
+        # 逻辑页面尺寸 = 150dpi 空间像素数（paddle bbox 空间不变），
+        # 但 image object 是 OCR_DPI 高清 → 精度提升
+        log_w = max(1, int(round(x1 - x0)))
+        log_h = max(1, int(round(y1 - y0)))
+        cpage = out_pdf.new_page(width=log_w, height=log_h)
+        cpage.insert_image(cpage.rect, pixmap=cpix)
+        crop_meta.append((float(x0), float(y0), log_w, log_h))
+
+    if not crop_meta:
+        out_pdf.close()
+        raise ValueError("没有有效的裁切区域")
+
+    fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
+    os.close(fd)
+    try:
+        out_pdf.save(tmp_pdf)
+    finally:
+        out_pdf.close()
+    try:
+        pages = provider.ocr(tmp_pdf)
+    finally:
+        os.unlink(tmp_pdf)
+
+    # 收集 OCR 结果，按 region 顺序，bbox 偏移回原页面坐标
+    new_blocks = []  # {block_label, bbox, lines:[str,...]}
+    for i, page in enumerate(pages):
+        if i >= len(crop_meta):
+            break
+        ox, oy, _, _ = crop_meta[i]
+        parsing_res_list = page.get('parsing_res_list', [])
+        for block in parsing_res_list:
+            label = block.get('block_label', '')
+            if label == 'header':
+                continue
+            content = block.get('block_content', '')
+            if isinstance(content, dict):
+                text = content.get('html') or content.get('markdown') or ''
+            else:
+                text = str(content) if content else ''
+            text = text.strip()
+            if not text:
+                continue
+            # paddle-VL 整段识别 → 按 \n 切行（无独立行框，bbox 用 block 近似）
+            lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+            if not lines:
+                continue
+            bbox = block.get('block_bbox')
+            # bbox 偏移：crop 内坐标 + region 左上角偏移
+            shifted = None
+            if bbox and len(bbox) >= 4:
+                shifted = [bbox[0] + ox, bbox[1] + oy,
+                           bbox[2] + ox, bbox[3] + oy]
+            new_blocks.append({
+                "block_label": label,
+                "bbox": shifted,
+                "lines": lines,
+            })
+    return new_blocks, page_w, page_h, len(crop_meta)
+
+
+def _write_reocr_page(conn, doc_id: int, page_num: int, new_blocks: list,
+                      page_w: int, page_h: int, replace: bool = True) -> int:
+    """分栏重 OCR 结果写回 DB (短事务: DELETE→INSERT→commit), 返回写入行数."""
+    if replace:
+        conn.execute(
+            "DELETE FROM lines WHERE doc_id = ? AND page_num = ?",
+            (doc_id, page_num),
+        )
+        conn.execute(
+            "DELETE FROM blocks_fts WHERE doc_id = ? AND page_num = ?",
+            (doc_id, page_num),
+        )
+        block_num = 0
+    else:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(block_num), 0) FROM lines "
+            "WHERE doc_id = ? AND page_num = ?",
+            (doc_id, page_num),
+        ).fetchone()
+        block_num = row[0]
+
+    total_lines = 0
+    for b in new_blocks:
+        block_num += 1
+        bbox_json = json.dumps(b["bbox"]) if b["bbox"] else None
+        full_text = '\n'.join(b["lines"])
+        for ln_num, ln_text in enumerate(b["lines"], 1):
+            conn.execute(
+                """INSERT INTO lines
+                   (doc_id, page_num, block_num, line_num, text,
+                    bbox, block_label, page_w, page_h)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (doc_id, page_num, block_num, ln_num, ln_text,
+                 bbox_json, b["block_label"], page_w, page_h),
+            )
+            total_lines += 1
+        conn.execute(
+            """INSERT INTO blocks_fts
+               (doc_id, page_num, block_num, text)
+               VALUES (?, ?, ?, ?)""",
+            (doc_id, page_num, block_num,
+             _tokenize(full_text)),
+        )
+    conn.execute(
+        "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
+    )
+    conn.commit()
+    return total_lines
+
+
 @app.post("/collections/{collection}/doc/{doc_id}/page/{page_num}/reocr")
 def reocr_page(
     collection: str,
@@ -2218,100 +2361,22 @@ def reocr_page(
                 content={"error": f"源文件不存在: {doc['filename']}"},
             )
 
-        import os
-        import tempfile
         from .ocr import get_provider
 
-        PT_PER_PX = 72.0 / 150.0  # 150dpi 像素 → PDF 点
-        OCR_DPI = 300              # 裁切渲染精度（高清→paddle 取清晰像素）
-
+        provider = get_provider()
         src = pymupdf.open(pdf_path)
         try:
             if page_num < 1 or page_num > len(src):
                 return JSONResponse(
                     status_code=404, content={"error": "页码超出范围"})
-            page_obj = src[page_num - 1]
-
-            # 150 DPI 页面尺寸（REOCR bbox 坐标系，与 page_image 一致）
-            reocr_page_w = int(round(page_obj.rect.width * 150 / 72.0))
-            reocr_page_h = int(round(page_obj.rect.height * 150 / 72.0))
-
-            # 每个 region 裁切为一张图，按顺序拼成多页 PDF
-            out_pdf = pymupdf.open()
-            crop_meta = []  # (x0, y0, pix_w, pix_h)
-            for reg in region_list:
-                try:
-                    x0, y0, x1, y1 = reg
-                except (TypeError, ValueError):
-                    continue
-                if x1 <= x0 or y1 <= y0:
-                    continue
-                clip = pymupdf.Rect(x0 * PT_PER_PX, y0 * PT_PER_PX,
-                                    x1 * PT_PER_PX, y1 * PT_PER_PX)
-                cpix = page_obj.get_pixmap(dpi=OCR_DPI, clip=clip)
-                if cpix.width <= 0 or cpix.height <= 0:
-                    continue
-                # 逻辑页面尺寸 = 150dpi 空间像素数（paddle bbox 空间不变），
-                # 但 image object 是 OCR_DPI 高清 → 精度提升
-                log_w = max(1, int(round(x1 - x0)))
-                log_h = max(1, int(round(y1 - y0)))
-                cpage = out_pdf.new_page(width=log_w, height=log_h)
-                cpage.insert_image(cpage.rect, pixmap=cpix)
-                crop_meta.append((float(x0), float(y0), log_w, log_h))
-
-            if not crop_meta:
+            try:
+                new_blocks, reocr_page_w, reocr_page_h, n_crops = \
+                    _reocr_regions_for_page(provider, src, page_num, region_list)
+            except ValueError as ve:
                 return JSONResponse(
-                    status_code=400,
-                    content={"error": "没有有效的裁切区域"},
-                )
-
-            fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
-            os.close(fd)
-            out_pdf.save(tmp_pdf)
-            out_pdf.close()
+                    status_code=400, content={"error": str(ve)})
         finally:
             src.close()
-
-        try:
-            provider = get_provider()
-            pages = provider.ocr(tmp_pdf)
-        finally:
-            os.unlink(tmp_pdf)
-
-        # 收集 OCR 结果，按 region 顺序，bbox 偏移回原页面坐标
-        new_blocks = []  # {block_label, bbox, lines:[str,...]}
-        for i, page in enumerate(pages):
-            if i >= len(crop_meta):
-                break
-            ox, oy, _, _ = crop_meta[i]
-            parsing_res_list = page.get('parsing_res_list', [])
-            for block in parsing_res_list:
-                label = block.get('block_label', '')
-                if label == 'header':
-                    continue
-                content = block.get('block_content', '')
-                if isinstance(content, dict):
-                    text = content.get('html') or content.get('markdown') or ''
-                else:
-                    text = str(content) if content else ''
-                text = text.strip()
-                if not text:
-                    continue
-                # paddle-VL 整段识别 → 按 \n 切行（无独立行框，bbox 用 block 近似）
-                lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
-                if not lines:
-                    continue
-                bbox = block.get('block_bbox')
-                # bbox 偏移：crop 内坐标 + region 左上角偏移
-                shifted = None
-                if bbox and len(bbox) >= 4:
-                    shifted = [bbox[0] + ox, bbox[1] + oy,
-                               bbox[2] + ox, bbox[3] + oy]
-                new_blocks.append({
-                    "block_label": label,
-                    "bbox": shifted,
-                    "lines": lines,
-                })
 
         if not new_blocks:
             return JSONResponse(
@@ -2322,50 +2387,8 @@ def reocr_page(
         # 写回 DB
         conn = get_conn(collection)
         try:
-            if replace:
-                conn.execute(
-                    "DELETE FROM lines WHERE doc_id = ? AND page_num = ?",
-                    (doc_id, page_num),
-                )
-                conn.execute(
-                    "DELETE FROM blocks_fts WHERE doc_id = ? AND page_num = ?",
-                    (doc_id, page_num),
-                )
-                block_num = 0
-            else:
-                row = conn.execute(
-                    "SELECT COALESCE(MAX(block_num), 0) FROM lines "
-                    "WHERE doc_id = ? AND page_num = ?",
-                    (doc_id, page_num),
-                ).fetchone()
-                block_num = row[0]
-
-            total_lines = 0
-            for b in new_blocks:
-                block_num += 1
-                bbox_json = json.dumps(b["bbox"]) if b["bbox"] else None
-                full_text = '\n'.join(b["lines"])
-                for ln_num, ln_text in enumerate(b["lines"], 1):
-                    conn.execute(
-                        """INSERT INTO lines
-                           (doc_id, page_num, block_num, line_num, text,
-                            bbox, block_label, page_w, page_h)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (doc_id, page_num, block_num, ln_num, ln_text,
-                         bbox_json, b["block_label"], reocr_page_w, reocr_page_h),
-                    )
-                    total_lines += 1
-                conn.execute(
-                    """INSERT INTO blocks_fts
-                       (doc_id, page_num, block_num, text)
-                       VALUES (?, ?, ?, ?)""",
-                    (doc_id, page_num, block_num,
-                     _tokenize(full_text)),
-                )
-            conn.execute(
-                "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
-            )
-            conn.commit()
+            _write_reocr_page(conn, doc_id, page_num, new_blocks,
+                              reocr_page_w, reocr_page_h, replace=replace)
         finally:
             conn.close()
 
@@ -2373,7 +2396,7 @@ def reocr_page(
             "status": "ok",
             "doc_id": doc_id,
             "page_num": page_num,
-            "regions": len(crop_meta),
+            "regions": n_crops,
             "new_blocks": len(new_blocks),
             "replaced": replace,
         }
@@ -2576,6 +2599,7 @@ def reocr_doc(collection: str, doc_id: int):
             _reocr_jobs[(collection, doc_id)] = {
                 "total": total_pages, "done": 0, "status": "running",
                 "error": None, "cancel": False,
+                "mode": "full", "page_from": 1, "page_to": total_pages,
             }
         # 先置脏: 逐页提交中途崩溃也能在 SAG 同步 tab 看到待重同步
         conn = get_conn(collection)
@@ -2592,6 +2616,216 @@ def reocr_doc(collection: str, doc_id: int):
             daemon=True, name=f"reocr-{collection}-{doc_id}",
         ).start()
         return {"started": True, "doc_id": doc_id, "total": total_pages}
+    except Exception as e:
+        with _reocr_lock:
+            _reocr_jobs.pop((collection, doc_id), None)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+def _run_reocr_regions(collection: str, doc_id: int, provider, pdf_path: Path,
+                       page_from: int, page_to: int,
+                       template_w: int, template_h: int,
+                       region_list: list) -> None:
+    """后台线程: 分栏批量重 OCR — region 从模板页等比缩放到每个目标页.
+
+    每页: 查 cancel → 坐标缩放 → _reocr_regions_for_page → 短事务写入。
+    OCR 无结果的页跳过 (保留原文本), 仍计入进度。
+    """
+    logger = logging.getLogger("xsf.reocr")
+
+    total = page_to - page_from + 1
+    total_lines = 0
+    total_blocks = 0
+    skipped = 0
+    src = pymupdf.open(pdf_path)
+    conn = get_conn(collection)
+    try:
+        for idx, page_num in enumerate(range(page_from, page_to + 1), 1):
+            with _reocr_lock:
+                job = _reocr_jobs[(collection, doc_id)]
+                if job.get("cancel"):
+                    # 注意: 不能在持锁块内调 _reocr_set (非重入锁, 会死锁)
+                    job.update(status="cancelled", error="用户取消")
+                    cancelled = True
+                else:
+                    cancelled = False
+            if cancelled:
+                logger.info("reocr-range 取消 coll=%s doc=%s 完成 %s/%s",
+                            collection, doc_id, idx - 1, total)
+                return
+
+            # 150dpi 像素尺寸: 模板页 → 目标页 等比缩放
+            page_obj = src[page_num - 1]
+            tw = page_obj.rect.width * 150 / 72.0
+            th = page_obj.rect.height * 150 / 72.0
+            sx = tw / template_w if template_w > 0 else 1.0
+            sy = th / template_h if template_h > 0 else 1.0
+            itw, ith = max(1, int(tw)), max(1, int(th))
+            scaled = []
+            for reg in region_list:
+                try:
+                    x0, y0, x1, y1 = reg
+                except (TypeError, ValueError):
+                    continue
+                nx0 = max(0, min(int(round(x0 * sx)), itw - 1))
+                ny0 = max(0, min(int(round(y0 * sy)), ith - 1))
+                nx1 = max(1, min(int(round(x1 * sx)), itw))
+                ny1 = max(1, min(int(round(y1 * sy)), ith))
+                if nx1 <= nx0 or ny1 <= ny0:
+                    continue  # 缩放后退化 (如极窄框), 跳过
+                scaled.append([nx0, ny0, nx1, ny1])
+
+            try:
+                new_blocks, pg_w, pg_h, _ = _reocr_regions_for_page(
+                    provider, src, page_num, scaled)
+            except ValueError:
+                new_blocks = []
+
+            if new_blocks:
+                total_lines += _write_reocr_page(
+                    conn, doc_id, page_num, new_blocks, pg_w, pg_h)
+                total_blocks += len(new_blocks)
+            else:
+                skipped += 1
+                logger.warning(
+                    "reocr-range 页 %s 无 OCR 结果, 跳过 (保留原文本)", page_num)
+            _reocr_set(collection, doc_id, done=idx)
+
+        _reocr_set(collection, doc_id, status="done", done=total)
+        logger.info("reocr-range 完成 coll=%s doc=%s: 页 %s-%s, %s 块 %s 行, 跳过 %s 页",
+                    collection, doc_id, page_from, page_to,
+                    total_blocks, total_lines, skipped)
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        done = (_reocr_get(collection, doc_id) or {}).get("done", 0)
+        _reocr_set(collection, doc_id, status="error", error=str(e))
+        logger.warning("reocr-range 失败 coll=%s doc=%s @页%s/%s: %s",
+                       collection, doc_id, done, total, e)
+    finally:
+        conn.close()
+        src.close()
+        # 终态 (done/error/cancelled) 保留 10 分钟供前端查询, 之后回收
+        def _cleanup():
+            import time
+            time.sleep(600)
+            with _reocr_lock:
+                job = _reocr_jobs.get((collection, doc_id))
+                if job and job.get("status") != "running":
+                    _reocr_jobs.pop((collection, doc_id), None)
+        threading.Thread(target=_cleanup, daemon=True).start()
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/reocr-range")
+def reocr_range(
+    collection: str,
+    doc_id: int,
+    regions: str = Form(...),
+    page_from: int = Form(...),
+    page_to: int = Form(...),
+    template_page: int = Form(...),
+):
+    """把手工分栏 region 批量应用到页范围 (后台线程逐页 OCR).
+
+    region 坐标在 template_page (150dpi 页面像素空间) 上框选;
+    每个目标页按页面尺寸等比缩放坐标后裁切 OCR, 总是替换目标页原文本。
+    fire-and-forget: 立即返回, 进度经 /reocr/status 轮询 (mode=regions)。
+    """
+    from .ocr import get_provider
+
+    try:
+        try:
+            region_list = json.loads(regions)
+        except (json.JSONDecodeError, ValueError):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "regions 不是合法 JSON"},
+            )
+        if not isinstance(region_list, list) or not region_list:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "regions 为空或格式错误"},
+            )
+        if len(region_list) > 200:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "regions 过多 (单次 ≤200 个)"},
+            )
+
+        with _reocr_lock:
+            job = _reocr_jobs.get((collection, doc_id))
+            if job and job.get("status") == "running":
+                return JSONResponse(
+                    status_code=409,
+                    content={"error": "该文献已有重 OCR 任务进行中"},
+                )
+
+        conn = get_conn(collection)
+        try:
+            doc = conn.execute(
+                "SELECT filename FROM documents WHERE id = ?",
+                (doc_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if doc is None:
+            return JSONResponse(status_code=404, content={"error": "文献不存在"})
+
+        pdf_path = get_collections_dir() / "uploads" / doc["filename"]
+        if not pdf_path.exists():
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"源文件不存在: {doc['filename']}"},
+            )
+
+        src = pymupdf.open(pdf_path)
+        try:
+            total_pages = len(src)
+            if not (1 <= page_from <= page_to <= total_pages):
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"页码范围无效: 需满足 1 ≤ 起 ≤ 止 ≤ {total_pages}"},
+                )
+            if not (1 <= template_page <= total_pages):
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"template_page 超出范围 (1–{total_pages})"},
+                )
+            t_rect = src[template_page - 1].rect
+            template_w = max(1, int(round(t_rect.width * 150 / 72.0)))
+            template_h = max(1, int(round(t_rect.height * 150 / 72.0)))
+        finally:
+            src.close()
+
+        provider = get_provider()
+        total = page_to - page_from + 1
+        with _reocr_lock:
+            _reocr_jobs[(collection, doc_id)] = {
+                "total": total, "done": 0, "status": "running",
+                "error": None, "cancel": False,
+                "mode": "regions", "page_from": page_from, "page_to": page_to,
+            }
+        # 先置脏: 逐页提交中途崩溃也能在 SAG 同步 tab 看到待重同步
+        conn = get_conn(collection)
+        try:
+            conn.execute(
+                "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        threading.Thread(
+            target=_run_reocr_regions,
+            args=(collection, doc_id, provider, pdf_path,
+                  page_from, page_to, template_w, template_h, region_list),
+            daemon=True, name=f"reocr-range-{collection}-{doc_id}",
+        ).start()
+        return {
+            "started": True, "doc_id": doc_id, "total": total,
+            "page_from": page_from, "page_to": page_to,
+        }
     except Exception as e:
         with _reocr_lock:
             _reocr_jobs.pop((collection, doc_id), None)

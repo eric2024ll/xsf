@@ -622,6 +622,15 @@ mark {
 .reocr-actions .do-reocr:disabled { opacity: 0.6; cursor: wait; }
 .reocr-actions .cancel-reocr { background: white; color: var(--text); border: 1px solid var(--border); }
 .reocr-actions .reocr-hint { color: var(--danger); font-weight: 600; }
+.reocr-actions .range-box { display: inline-flex; align-items: center; gap: 4px; }
+.reocr-actions .range-box input[type=number] {
+  width: 4.2em;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 0.8rem;
+}
+.reocr-actions #reocrRangeStatus { display: inline-flex; align-items: center; gap: 6px; }
 
 /* 移动版 tab */
 .mobile-tabs { display: none; }
@@ -728,6 +737,16 @@ mark {
         <span id="reocrHint" class="reocr-hint">在图上拖拽画框（可多个）→ 执行重OCR</span>
         <span id="reocrCount">已选 0 个区域</span>
         <button class="do-reocr" id="doReocrBtn" onclick="doReocr()">执行重OCR（替换本页）</button>
+        <span class="range-box">
+          应用到第
+          <input type="number" id="reocrFrom" min="1" max="{{ page_count }}" value="{{ page_num }}"> –
+          <input type="number" id="reocrTo" min="1" max="{{ page_count }}" value="{{ page_num }}"> 页
+        </span>
+        <button class="do-reocr" id="doReocrRangeBtn" onclick="doReocrRange()">批量执行</button>
+        <span id="reocrRangeStatus" style="display:none;">
+          <span id="reocrRangeText" class="reocr-hint"></span>
+          <button class="cancel-reocr" onclick="cancelReocrRange()">取消</button>
+        </span>
         <button class="cancel-reocr" onclick="clearReocrRegions()">清空</button>
         <button class="cancel-reocr" onclick="exitReocrMode()">退出</button>
       </div>
@@ -819,6 +838,7 @@ const collection = {{ collection | tojson }};
 const docId = {{ doc.id | default('null') | tojson }};
 const doc = {{ doc | tojson }};
 const page = {{ page_num | default(1) }};
+const pageCount = {{ page_count | default(1) }};
 const origWidth = {{ orig_width | default(0) }};
 const origHeight = {{ orig_height | default(0) }};
 const keyword = {{ keyword | tojson }};
@@ -1340,6 +1360,130 @@ async function doReocr() {
   }
 }
 
+// ── 批量分栏重 OCR（应用到页范围, 后台任务）──
+let _rangeTimer = null;
+
+function setReocrButtonsDisabled(dis) {
+  const b1 = document.getElementById('doReocrBtn');
+  const b2 = document.getElementById('doReocrRangeBtn');
+  if (b1) b1.disabled = dis;
+  if (b2) {
+    b2.disabled = dis;
+    b2.textContent = dis ? '运行中…' : '批量执行';
+  }
+}
+
+async function doReocrRange() {
+  if (!_reocrRegions.length) { alert('请先框选区域'); return; }
+  const from = parseInt(document.getElementById('reocrFrom').value, 10);
+  const to = parseInt(document.getElementById('reocrTo').value, 10);
+  if (!(from >= 1 && to >= from && to <= pageCount)) {
+    alert('页码范围无效（需 1 ≤ 起 ≤ 止 ≤ ' + pageCount + '）');
+    return;
+  }
+  if (from === page && to === page) return doReocr();  // 单页走同步端点
+  const regions = _reocrRegions.map(r => [
+    Math.round(r.x0), Math.round(r.y0), Math.round(r.x1), Math.round(r.y1)
+  ]);
+  if (!confirm('将当前 ' + regions.length + ' 个框按页面尺寸等比缩放应用到第 ' + from +
+    '–' + to + ' 页（共 ' + (to - from + 1) + ' 页）重OCR？\n目标页现有文本将被替换。任务在后台运行，可取消，关浏览器不中断。')) return;
+  setReocrButtonsDisabled(true);
+  try {
+    const body = new URLSearchParams();
+    body.append('regions', JSON.stringify(regions));
+    body.append('page_from', String(from));
+    body.append('page_to', String(to));
+    body.append('template_page', String(page));
+    const res = await fetch(
+      `/collections/${encodeURIComponent(collection)}/doc/${docId}/reocr-range`,
+      { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() }
+    );
+    const data = await res.json();
+    if (res.ok && data.started) {
+      startReocrRangePolling(from, to);
+    } else {
+      alert('批量重OCR启动失败: ' + (data.error || JSON.stringify(data)));
+      setReocrButtonsDisabled(false);
+    }
+  } catch (e) {
+    alert('批量重OCR出错: ' + e.message);
+    setReocrButtonsDisabled(false);
+  }
+}
+
+function startReocrRangePolling(from, to) {
+  const box = document.getElementById('reocrRangeStatus');
+  const txt = document.getElementById('reocrRangeText');
+  if (!box || !txt) return;
+  box.style.display = 'inline-flex';
+  txt.textContent = '分栏OCR 0/' + (to - from + 1);
+  setReocrButtonsDisabled(true);
+  if (_rangeTimer) { clearInterval(_rangeTimer); _rangeTimer = null; }
+  _rangeTimer = setInterval(() => pollReocrRange(from, to), 3000);
+  pollReocrRange(from, to);
+}
+
+async function pollReocrRange(from, to) {
+  let jobs;
+  try {
+    const res = await fetch(`/collections/${encodeURIComponent(collection)}/reocr/status`);
+    jobs = (await res.json()).jobs || [];
+  } catch (e) { return; }  // 网络抖动, 下轮再试
+  const job = jobs.find(j => j.doc_id === docId && j.mode === 'regions');
+  if (!job) return;  // 任务已回收或不存在
+  const txt = document.getElementById('reocrRangeText');
+  const total = job.total || (to - from + 1);
+  const pct = total ? Math.round((job.done || 0) / total * 100) : 0;
+  if (job.status === 'running') {
+    if (txt) txt.textContent = `分栏OCR ${job.done}/${total} (${pct}%)`;
+    return;
+  }
+  // 终态
+  clearInterval(_rangeTimer); _rangeTimer = null;
+  const box = document.getElementById('reocrRangeStatus');
+  const curInRange = page >= from && page <= to;
+  if (job.status === 'done') {
+    if (txt) txt.textContent = `分栏OCR 完成 ✓ (${total} 页)`;
+    setReocrButtonsDisabled(false);
+    if (curInRange) { setTimeout(() => location.reload(), 1500); return; }
+  } else if (job.status === 'cancelled') {
+    if (txt) txt.textContent = `已取消 (${job.done}/${total})`;
+    setReocrButtonsDisabled(false);
+    if (curInRange && (job.done || 0) > 0) { setTimeout(() => location.reload(), 1500); return; }
+  } else {
+    if (txt) txt.textContent = '失败';
+    alert('批量重OCR失败: ' + (job.error || '未知错误'));
+    setReocrButtonsDisabled(false);
+  }
+  setTimeout(() => { if (box) box.style.display = 'none'; }, 3000);
+}
+
+async function cancelReocrRange() {
+  try {
+    const res = await fetch(
+      `/collections/${encodeURIComponent(collection)}/doc/${docId}/reocr/cancel`,
+      { method: 'POST' }
+    );
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      alert('取消失败: ' + (d.error || res.status));
+    }
+  } catch (e) {
+    alert('取消出错: ' + e.message);
+  }
+}
+
+// 刷新/翻页后恢复进行中的分栏任务进度显示
+async function resumeReocrRange() {
+  if (document.getElementById('reocrRangeStatus') === null) return;
+  try {
+    const res = await fetch(`/collections/${encodeURIComponent(collection)}/reocr/status`);
+    const jobs = (await res.json()).jobs || [];
+    const job = jobs.find(j => j.doc_id === docId && j.mode === 'regions' && j.status === 'running');
+    if (job) startReocrRangePolling(job.page_from || 1, job.page_to || 1);
+  } catch (e) { /* 忽略 */ }
+}
+
 // ── 移动版 tab ──
 function switchTab(t) {
   document.getElementById('main').dataset.tab = t;
@@ -1594,6 +1738,9 @@ async function uploadLinkedPdf(input) {
     alert('上传出错: ' + e.message);
   }
 }
+
+// 页面加载: 恢复进行中的分栏批量任务进度 (无元素/无任务时静默)
+resumeReocrRange();
 </script>
 {% endif %}
 
