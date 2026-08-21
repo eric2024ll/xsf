@@ -963,7 +963,7 @@ function applyZoom() {
 
 function zoomDelta(factor) {
   if (!_zoomInited) applyZoom();
-  zoomLevel = clamp(zoomLevel * factor, 0.2, 6);
+  zoomLevel = clamp(zoomLevel * factor, 0.1, 6);
   applyZoom();
 }
 function zoomSetFit() { zoomLevel = getFitScale(); _zoomInited = true; applyZoom(); }
@@ -1112,7 +1112,7 @@ function doInPageSearch() {
     const rect = wrap.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
-    zoomLevel = clamp(zoomLevel * factor, 0.2, 6);
+    zoomLevel = clamp(zoomLevel * factor, 0.1, 6);
     applyZoom();
     const ratio = zoomLevel / oldZoom;
     left.scrollLeft = (left.scrollLeft + mx) * ratio - mx;
