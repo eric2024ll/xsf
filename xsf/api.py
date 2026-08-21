@@ -886,7 +886,8 @@ async def api_update_doc(collection: str, doc_id: int,
             conn = get_conn(collection)
             try:
                 row = conn.execute(
-                    "SELECT cite_key, bib_type, bib_data FROM documents WHERE id = ?",
+                    "SELECT cite_key, bib_type, bib_data, filename"
+                    " FROM documents WHERE id = ?",
                     (doc_id,),
                 ).fetchone()
                 if row is None:
@@ -916,6 +917,7 @@ async def api_update_doc(collection: str, doc_id: int,
                 new_cite_key = generate_cite_key(
                     cur_bib_data, existing_keys,
                     exclude_key=row["cite_key"],
+                    fingerprint=row["filename"],
                 )
                 updates.append("cite_key = ?")
                 params.append(new_cite_key)
@@ -1390,6 +1392,11 @@ async def api_batch_patch(collection: str, request: Request):
                     "SELECT cite_key FROM documents WHERE cite_key IS NOT NULL"
                 ).fetchall()
             }
+            filenames = {
+                r["id"]: r["filename"] for r in conn.execute(
+                    "SELECT id, filename FROM documents"
+                ).fetchall()
+            }
             for u in updates:
                 doc_id = u.get("doc_id")
                 bib_type = u.get("bib_type", "")
@@ -1398,7 +1405,9 @@ async def api_batch_patch(collection: str, request: Request):
                     continue
                 ck = generate_cite_key(
                     bib_data, existing_keys,
-                    exclude_key=u.get("old_cite_key"))
+                    exclude_key=u.get("old_cite_key"),
+                    fingerprint=filenames.get(doc_id),
+                )
                 existing_keys.add(ck)
                 synced = sync_doc_fields(bib_data)
                 conn.execute(

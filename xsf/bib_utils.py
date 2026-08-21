@@ -1,7 +1,13 @@
 """BibTeX 元数据辅助函数。
 
 cite_key 自动生成 + documents 冗余列同步 + biblatex 字段预设。
+
+cite_key 生成 (2026-08-21 起):
+    姓拼音+年+标题前3字拼音 [- v卷次] → 冲突加 b/c/d → 指纹兜底.
+    套书 (书名/作者/年相同) 靠卷次 token 消歧: volume/number 字段优先,
+    否则从 title 挖卷次模式 (第X卷/卷X/X册/上中下/(二)等), 纯数字 v2 式.
 """
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -99,12 +105,77 @@ def _first_author_surname(author_str: str) -> str:
     return re.sub(r"[^a-z]", "", surname.lower()) or "anon"
 
 
+_VOL_MARKS = "卷冊册集辑輯篇函帙"
+_NUM_RE = r"[0-9零一二三四五六七八九十百]+"
+_CN_DIGITS = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100}
+_SHANG_ZHONG_XIA = {"上": 1, "中": 2, "下": 3}
+
+
+def _cn_to_int(s: str):
+    """中文/阿拉伯数字串 → int, 解析失败返回 None. 支持到百位."""
+    s = s.strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    total, num = 0, 0
+    for ch in s:
+        if ch in _CN_DIGITS:
+            num = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            unit = _CN_UNITS[ch]
+            total += (num or 1) * unit
+            num = 0
+        else:
+            return None
+    total += num
+    return total or None
+
+
+def _volume_token(bib_data: dict, title: str) -> str:
+    """提取卷次判别词 → 'v2' 式纯数字 token, 无则 ''。
+
+    优先级: volume/number 字段 > title 卷次模式。
+    title 模式按顺序: 第X卷/X册 → 卷X → (上) → 卷上/上册 → (二)。
+    数值上限 99 (过滤年份等误配, 如 '(1924)')。
+    """
+    for field in ("volume", "number"):
+        raw = str(bib_data.get(field) or "").strip()
+        if not raw:
+            continue
+        m = re.search(_NUM_RE, raw)
+        n = _cn_to_int(m.group(0)) if m else None
+        if n and 0 < n <= 99:
+            return f"v{n}"
+
+    if title:
+        patterns = [
+            rf"第?\s*({_NUM_RE})\s*[{_VOL_MARKS}]",
+            rf"[{_VOL_MARKS}]\s*({_NUM_RE})",
+            r"[（(]\s*([上中下])\s*[)）]",
+            rf"(?:[{_VOL_MARKS}]\s*([上中下])|([上中下])\s*[{_VOL_MARKS}])",
+            rf"[（(]\s*({_NUM_RE})\s*[)）]",
+        ]
+        for p in patterns:
+            m = re.search(p, title)
+            if not m:
+                continue
+            g = next((x for x in m.groups() if x), "")
+            n = _SHANG_ZHONG_XIA.get(g) or _cn_to_int(g)
+            if n and 0 < n <= 99:
+                return f"v{n}"
+    return ""
+
+
 def generate_cite_key(bib_data: dict, existing_keys: set[str],
-                      exclude_key: str = None) -> str:
-    """从 bib_data 生成 cite_key: 姓+年+标题首词。冲突加 b/c/d。
+                      exclude_key: str = None, fingerprint: str = None) -> str:
+    """从 bib_data 生成 cite_key: 姓+年+标题首词[-v卷次]。冲突加 b/c/d, 指纹兜底。
 
     existing_keys: 该 collection 已有的 cite_key 集合。
     exclude_key: 更新时排除自身的 cite_key（避免自己和自己冲突）。
+    fingerprint: 兜底判别源 (通常传 filename), b-z 后缀耗尽时取其 sha1 前 4 位。
     """
     author = bib_data.get("author", "")
     year = ""
@@ -121,6 +192,9 @@ def generate_cite_key(bib_data: dict, existing_keys: set[str],
     title_slug = _title_slug(title)
 
     base = f"{surname}{year}{title_slug}".lower()
+    vol = _volume_token(bib_data, title)
+    if vol:
+        base = f"{base}-{vol}"
 
     if exclude_key and base == exclude_key:
         return base
@@ -134,6 +208,14 @@ def generate_cite_key(bib_data: dict, existing_keys: set[str],
             return candidate
         if exclude_key and candidate == exclude_key:
             return candidate
+
+    if fingerprint:
+        fp = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:4]
+        cand = f"{base}-{fp}"
+        if cand not in existing_keys:
+            return cand
+        if exclude_key and cand == exclude_key:
+            return cand
 
     return base + "x"
 
