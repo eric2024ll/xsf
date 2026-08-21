@@ -110,6 +110,27 @@
 .ocr-status.loading { background: var(--accent); color: var(--primary); }
 .ocr-empty { font-size: 0.82rem; color: var(--text-muted); padding: 10px; text-align: center; }
 .ocr-form .section-title { font-size: 0.88rem; font-weight: 600; margin: 4px 0 10px; }
+
+/* SAG 同步 */
+.sag-status-line { font-size: 0.82rem; margin-bottom: 12px; padding: 8px 12px; border-radius: 5px; background: var(--bg); color: var(--text-muted); }
+.sag-status-line code { background: var(--card-bg); padding: 1px 5px; border-radius: 3px; font-size: 0.78rem; }
+.sag-status-line.ok { color: var(--success); }
+.sag-status-line.warn { color: var(--danger); }
+.sag-actions { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.sag-actions button { padding: 7px 14px; font-size: 0.82rem; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; }
+.sag-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+#sagSyncDirtyBtn { background: var(--success); color: white; }
+#sagForceBtn, #sagRefreshBtn { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+.sag-doc-list table { width: 100%; border-collapse: collapse; font-size: 0.85rem; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.sag-doc-list th { background: var(--accent); color: var(--primary); padding: 8px 12px; text-align: left; font-weight: 600; font-size: 0.78rem; }
+.sag-doc-list td { padding: 8px 12px; border-top: 1px solid var(--border); vertical-align: middle; }
+.sag-doc-list .sdt { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sag-doc-list .sdc { color: var(--text-muted); font-size: 0.78rem; white-space: nowrap; }
+.sd-state { font-size: 0.78rem; color: var(--success); white-space: nowrap; }
+.sd-state.dirty { color: var(--danger); font-weight: 600; }
+.sd-state.run { color: var(--primary); }
+.sag-doc-list button { padding: 4px 12px; font-size: 0.75rem; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); cursor: pointer; white-space: nowrap; }
+.sag-doc-list button:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
 </head>
 <body data-page="upload">
@@ -119,6 +140,7 @@
     <button class="active" onclick="switchTab('upload',this)">上传文件</button>
     <button onclick="switchTab('import',this)">导入数据包</button>
     <button onclick="switchTab('ocr',this)">OCR 设置</button>
+    <button onclick="switchTab('sag',this)">SAG 同步</button>
   </div>
 
   <!-- Tab1: 上传文件 -->
@@ -223,6 +245,18 @@
       <div class="ocr-status" id="ocrStatus"></div>
     </div>
   </div>
+
+  <!-- Tab4: SAG 同步 -->
+  <div class="tab-pane" id="tab-sag">
+    <div class="sag-status-line" id="sagStatusLine">检查 SAG 状态…</div>
+    <div class="sag-actions">
+      <button id="sagSyncDirtyBtn" onclick="sagSyncDirty()">同步全部待同步</button>
+      <button id="sagForceBtn" onclick="sagForceAll()">强制全部重同步</button>
+      <button id="sagRefreshBtn" onclick="loadSagDocs()">刷新</button>
+    </div>
+    <div class="sag-doc-list" id="sagDocList"></div>
+    <div class="ocr-status" id="sagStatus"></div>
+  </div>
 </div>
 
 <div class="msg" id="msg"></div>
@@ -237,11 +271,13 @@ var _ACCEPT_EXT = new Set(['pdf','md','markdown','jpg','jpeg','png','webp','bmp'
 function escapeHtml(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 function tagLabel(t){return _TAG_LABELS[t]||t;}
 
+var _sagLoaded = false;
 function switchTab(name,btn){
   document.querySelectorAll('.tab-pane').forEach(function(p){p.classList.remove('active');});
   document.getElementById('tab-'+name).classList.add('active');
   document.querySelectorAll('.tab-bar button').forEach(function(b){b.classList.remove('active');});
   btn.classList.add('active');
+  if(name==='sag' && !_sagLoaded){ _sagLoaded = true; loadSagStatus(); loadSagDocs(); }
 }
 
 /* ── 来源标签 ── */
@@ -481,6 +517,130 @@ async function saveProvider() {
   btn.disabled = false;
 }
 loadProviders();
+
+/* ── SAG 同步 ── */
+var _sagDocs = [], _sagBusy = false, _lastSagErr = '';
+function sagStatusEl(msg, cls) {
+  var st = document.getElementById('sagStatus');
+  st.className = 'ocr-status show ' + cls;
+  st.textContent = msg;
+}
+async function loadSagStatus() {
+  var el = document.getElementById('sagStatusLine');
+  try {
+    var r = await fetch('/api/sag-status');
+    var d = await r.json();
+    if (!d.enabled) {
+      el.className = 'sag-status-line warn';
+      el.innerHTML = 'SAG 未配置：设置环境变量 <code>XSF_SAG_URL</code> 后重启服务即可启用语义检索同步';
+    } else if (d.healthy) {
+      el.className = 'sag-status-line ok';
+      el.textContent = '● SAG 在线';
+    } else {
+      el.className = 'sag-status-line warn';
+      el.textContent = '● SAG 已配置但不可达（同步会失败；搜索已降级 FTS5）';
+    }
+  } catch (e) {
+    el.className = 'sag-status-line warn';
+    el.textContent = 'SAG 状态探测失败';
+  }
+}
+async function loadSagDocs() {
+  var el = document.getElementById('sagDocList');
+  if (!currentCollection) {
+    el.innerHTML = '<div class="ocr-empty">请先在导航栏选择书架</div>';
+    return;
+  }
+  el.innerHTML = '<div class="ocr-empty">加载中…</div>';
+  try {
+    var r = await fetch('/collections/' + encodeURIComponent(currentCollection) + '/docs?limit=1000');
+    var d = await r.json();
+    _sagDocs = d.docs || [];
+    renderSagDocs();
+  } catch (e) {
+    el.innerHTML = '<div class="ocr-empty">加载失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+function renderSagDocs() {
+  var el = document.getElementById('sagDocList');
+  if (!_sagDocs.length) {
+    el.innerHTML = '<div class="ocr-empty">本书架暂无文献</div>';
+    document.getElementById('sagSyncDirtyBtn').textContent = '同步全部待同步';
+    return;
+  }
+  var dirty = _sagDocs.filter(function(d){return d.sag_dirty;}).length;
+  el.innerHTML = '<table><thead><tr><th>标题</th><th>cite_key</th><th>页数</th><th>SAG 状态</th><th>操作</th></tr></thead><tbody>' +
+    _sagDocs.map(function(d) {
+      return '<tr>' +
+        '<td class="sdt" title="' + escapeHtml(d.title || d.filename) + '">' + escapeHtml(d.title || d.filename) + '</td>' +
+        '<td class="sdc">' + escapeHtml(d.cite_key || '') + '</td>' +
+        '<td class="sdc">' + (d.page_count || 0) + '</td>' +
+        '<td><span class="sd-state' + (d.sag_dirty ? ' dirty' : '') + '" id="sagState' + d.id + '">' + (d.sag_dirty ? '待同步' : '已同步') + '</span></td>' +
+        '<td><button id="sagBtn' + d.id + '" onclick="sagSyncDoc(' + d.id + ')"' + (_sagBusy ? ' disabled' : '') + '>同步</button></td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+  document.getElementById('sagSyncDirtyBtn').textContent =
+    '同步全部待同步' + (dirty ? '（' + dirty + '）' : '');
+}
+async function sagPush(id) {
+  var r = await fetch('/collections/' + encodeURIComponent(currentCollection) + '/doc/' + id + '/sag-sync', { method: 'POST' });
+  var d = {};
+  try { d = await r.json(); } catch (e) { /* 非 JSON 响应 */ }
+  if (r.ok && d.ok) {
+    for (var i = 0; i < _sagDocs.length; i++) {
+      if (_sagDocs[i].id === id) { _sagDocs[i].sag_dirty = 0; break; }
+    }
+    return true;
+  }
+  _lastSagErr = d.error || ('HTTP ' + r.status);
+  return false;
+}
+async function sagSyncDoc(id) {
+  if (_sagBusy) return;
+  var btn = document.getElementById('sagBtn' + id);
+  var st = document.getElementById('sagState' + id);
+  if (btn) btn.disabled = true;
+  if (st) { st.textContent = '同步中…'; st.className = 'sd-state run'; }
+  sagStatusEl('同步中 doc' + id + '（大文档需数分钟，勿关闭页面）…', 'loading');
+  var ok = await sagPush(id);
+  if (ok) {
+    sagStatusEl('✓ 已同步: doc' + id, 'ok');
+  } else {
+    if (st) { st.textContent = '待同步'; st.className = 'sd-state dirty'; }
+    sagStatusEl('✗ 同步失败 doc' + id + ': ' + _lastSagErr, 'err');
+  }
+  renderSagDocs();
+}
+async function sagRunList(list) {
+  if (!list.length) { sagStatusEl('没有需要同步的文档', 'ok'); return; }
+  _sagBusy = true;
+  renderSagDocs();
+  var ok = 0, fail = 0;
+  for (var i = 0; i < list.length; i++) {
+    var d = list[i];
+    var st = document.getElementById('sagState' + d.id);
+    var btn = document.getElementById('sagBtn' + d.id);
+    if (btn) btn.disabled = true;
+    if (st) { st.textContent = '同步中…'; st.className = 'sd-state run'; }
+    sagStatusEl('批量同步 (' + (i + 1) + '/' + list.length + '): ' + (d.title || d.filename), 'loading');
+    if (await sagPush(d.id)) { ok++; } else { fail++; }
+    renderSagDocs();
+  }
+  _sagBusy = false;
+  renderSagDocs();
+  if (fail === 0) sagStatusEl('✓ 批量同步完成: ' + ok + ' 篇', 'ok');
+  else if (ok === 0) sagStatusEl('✗ 批量同步全部失败 (' + fail + ' 篇): ' + _lastSagErr, 'err');
+  else sagStatusEl('批量同步: 成功 ' + ok + ' / 失败 ' + fail + '（' + _lastSagErr + '）', 'err');
+}
+function sagSyncDirty() {
+  if (_sagBusy) return;
+  sagRunList(_sagDocs.filter(function(d) { return d.sag_dirty; }));
+}
+function sagForceAll() {
+  if (_sagBusy) return;
+  if (!confirm('忽略脏标记，整架全部重新推送到 SAG？\n大书架（多篇大部头）耗时可长达数十分钟。')) return;
+  sagRunList(_sagDocs.slice());
+}
 </script>
 </body>
 </html>

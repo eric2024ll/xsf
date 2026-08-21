@@ -4,6 +4,7 @@ import asyncio
 import html
 import io
 import json
+import logging
 import os
 import re
 import secrets
@@ -11,8 +12,9 @@ import shutil
 import sqlite3
 import tarfile
 import tempfile
+import threading
 import zipfile
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import List
 
@@ -554,6 +556,84 @@ async def api_sag_status():
     return {"enabled": enabled, "healthy": sag_integration.health() if enabled else False}
 
 
+# ── SAG 手动同步 (脏标记 + 并发去重) ─────────────────────
+
+_sag_sync_lock = threading.Lock()
+_sag_syncing: set = set()
+
+
+@contextmanager
+def _sag_sync_guard(collection: str, doc_id: int):
+    """(collection, doc_id) 粒度的同步互斥; 已在同步中时 yield True."""
+    key = (collection, doc_id)
+    with _sag_sync_lock:
+        busy = key in _sag_syncing
+        if not busy:
+            _sag_syncing.add(key)
+    try:
+        yield busy
+    finally:
+        if not busy:
+            with _sag_sync_lock:
+                _sag_syncing.discard(key)
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/sag-sync")
+def api_sag_sync(collection: str, doc_id: int):
+    """手动同步单篇文档到 SAG (幂等: 删旧版→重 ingest), 成功清脏标记.
+
+    sync 端点: SAG ingest 大文档需数分钟, 走线程池不阻塞事件循环.
+    """
+    from . import sag_integration
+    logger = logging.getLogger("xsf.sag")
+
+    if not sag_integration.sag_base_url():
+        return JSONResponse(
+            status_code=503,
+            content={"error": "SAG 未配置 (XSF_SAG_URL)"},
+        )
+    # 并发去重: 同一篇正在同步中直接拒绝 (幂等重写若交错会产生 SAG 重复条目)
+    with _sag_sync_guard(collection, doc_id) as busy:
+        if busy:
+            return JSONResponse(
+                status_code=409,
+                content={"error": "该文档正在同步中"},
+            )
+        try:
+            result = sag_integration.sync_doc(doc_id, collection)
+        except Exception as e:
+            logger.warning("SAG sync 失败 coll=%s doc=%s: %s", collection, doc_id, e)
+            try:
+                conn = get_conn(collection)
+                try:
+                    conn.execute(
+                        "UPDATE documents SET sag_dirty = 1 WHERE id = ?",
+                        (doc_id,),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+            return JSONResponse(status_code=502, content={"error": str(e)})
+        if not result.get("synced"):
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"文档不可同步: {result.get('reason')}"},
+            )
+        conn = get_conn(collection)
+        try:
+            conn.execute(
+                "UPDATE documents SET sag_dirty = 0 WHERE id = ?", (doc_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    logger.info("SAG sync 完成 coll=%s doc=%s (%s)",
+                collection, doc_id, result.get("title"))
+    return {"ok": True, "doc_id": doc_id, "title": result.get("title")}
+
+
 # ── 单 collection 统计 ─────────────────────────────────
 
 @app.get("/collections/{collection}/stats")
@@ -935,6 +1015,7 @@ async def api_update_doc(collection: str, doc_id: int,
                 conn.close()
 
         params.append(doc_id)
+        updates.append("sag_dirty = 1")  # 元数据变更 → SAG 待重同步
         sql = f"UPDATE documents SET {', '.join(updates)} WHERE id = ?"
 
         conn = get_conn(collection)
@@ -1022,7 +1103,7 @@ async def api_docs(collection: str, limit: int = 50):
                 """SELECT id, cite_key, title, author,
                           filename, page_count, doc_type,
                           is_primary, is_secondary, is_reference,
-                          created_at
+                          sag_dirty, created_at
                    FROM documents
                    ORDER BY created_at DESC LIMIT ?""",
                 (limit,),
@@ -1413,7 +1494,8 @@ async def api_batch_patch(collection: str, request: Request):
                 conn.execute(
                     """UPDATE documents
                        SET cite_key=?, bib_type=?, bib_data=?,
-                           title=COALESCE(?, title), author=COALESCE(?, author)
+                           title=COALESCE(?, title), author=COALESCE(?, author),
+                           sag_dirty=1
                        WHERE id=?""",
                     (ck, bib_type, json.dumps(bib_data, ensure_ascii=False),
                      synced["title"], synced["author"], doc_id),
@@ -1999,6 +2081,10 @@ async def edit_line(
                 "UPDATE lines SET text = ? WHERE id = ?",
                 (text, line_id),
             )
+            # 校对改动 → SAG 待重同步
+            conn.execute(
+                "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
+            )
 
             # 重新聚合该 block 全文
             block_rows = conn.execute(
@@ -2052,6 +2138,10 @@ async def edit_page(
             conn.execute(
                 "DELETE FROM blocks_fts WHERE doc_id = ? AND page_num = ?",
                 (doc_id, page_num),
+            )
+            # 校对改动 → SAG 待重同步
+            conn.execute(
+                "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
             )
 
             for bn, bt in enumerate(text.split("\n\n"), 1):
@@ -2272,6 +2362,9 @@ def reocr_page(
                     (doc_id, page_num, block_num,
                      _tokenize(full_text)),
                 )
+            conn.execute(
+                "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -2328,6 +2421,11 @@ def reocr_doc(collection: str, doc_id: int):
         src = pymupdf.open(pdf_path)
         conn = get_conn(collection)
         try:
+            # 先置脏: 逐页提交中途崩溃也能在 SAG 同步 tab 看到待重同步
+            conn.execute(
+                "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
+            )
+            conn.commit()
             # 每页一个短事务: OCR 期间不持写锁 (云端每页可达分钟级,
             # 长事务会把 SQLite 写锁占数小时, 阻塞所有并发写请求).
             # 副作用: 中途失败时已完成页为新文本, 未完成页保留旧文本.
@@ -2410,7 +2508,7 @@ def reocr_doc(collection: str, doc_id: int):
                 (doc_id, total_pages),
             )
             conn.execute(
-                "UPDATE documents SET doc_type = 'ocr' WHERE id = ?",
+                "UPDATE documents SET doc_type = 'ocr', sag_dirty = 1 WHERE id = ?",
                 (doc_id,),
             )
             conn.commit()
