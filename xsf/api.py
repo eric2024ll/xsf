@@ -401,8 +401,16 @@ async def api_delete_collection(collection: str):
 
 
 @app.patch("/api/collections/{collection}")
-async def api_rename_collection(collection: str, new_name: str = Body("", embed=True)):
-    """重命名书架: 移动 DB 目录 + 源文件目录."""
+async def api_rename_collection(
+    request: Request,
+    collection: str,
+    new_name: str = Body("", embed=True),
+):
+    """重命名书架: 移动 DB 目录 + 源文件目录.
+
+    若当前 last_collection cookie 就是旧名, 一并更新为新名, 避免导航栏出现
+    已不存在的书架。
+    """
     new_name = (new_name or "").strip()
     if not new_name:
         return JSONResponse({"error": "新名称不能为空"}, status_code=400)
@@ -422,7 +430,18 @@ async def api_rename_collection(collection: str, new_name: str = Body("", embed=
     new_coll = get_collections_dir() / new_name
     if old_coll.exists():
         old_coll.rename(new_coll)
-    return {"ok": True, "new_name": new_name}
+
+    resp = JSONResponse({"ok": True, "new_name": new_name})
+    last = _urlunquote(request.cookies.get("last_collection", ""))
+    if last == collection:
+        resp.set_cookie(
+            "last_collection",
+            _urlquote(new_name, safe=""),
+            httponly=True,
+            samesite="lax",
+            max_age=7 * 24 * 3600,
+        )
+    return resp
 
 
 # ── OCR 配置 (generic_http provider 管理) ───────────────

@@ -130,7 +130,7 @@ async function renameColl(name){
     var r=await fetch('/api/collections/'+encodeURIComponent(name),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({new_name:newName.trim()})});
     var d=await r.json();
     if(!r.ok){alert(d.error||'重命名失败');return;}
-    loadStats();
+    location.reload();
   }catch(e){alert('请求失败');}
 }
 
