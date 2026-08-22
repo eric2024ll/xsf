@@ -1948,6 +1948,12 @@ async def proofread_page(
             except Exception:
                 pass
 
+        # 兜底: 无 OCR 数据的页 (空白/封皮/OCR 失败) 用渲染尺寸当原始尺寸,
+        # 否则前端 orig_width=0 时缩放静默失效; scale=1 自洽
+        if not orig_width and render_width:
+            orig_width = int(render_width)
+            orig_height = int(render_height or orig_height)
+
         # 图片到原始 OCR 坐标系的缩放；前端再乘 clientWidth/naturalWidth
         scale = 1.0
         if render_width and orig_width:
