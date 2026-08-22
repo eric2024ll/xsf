@@ -14,6 +14,8 @@
 .filter-row select,.filter-row input{
   padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;background:var(--card-bg);
 }
+.filter-row .spacer{flex:1;}
+.filter-group-label{font-size:0.85rem;color:var(--text-muted);white-space:nowrap;}
 .tag-chip{
   display:inline-block;padding:3px 10px;border-radius:12px;font-size:0.75rem;
   background:var(--accent);color:var(--primary);margin-right:4px;cursor:pointer;border:1px solid transparent;
@@ -23,6 +25,13 @@
 .toolbar label{font-size:0.85rem;display:flex;align-items:center;gap:4px;cursor:pointer;}
 .toolbar .spacer{flex:1;}
 .toolbar select{padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;background:var(--card-bg);}
+.toolbar .divider{width:1px;align-self:stretch;background:var(--border);margin:0 2px;}
+.toolbar .pager{margin-top:0;}
+.export-menu-wrap{position:relative;display:inline-block;}
+.export-menu{display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow,0 4px 12px rgba(0,0,0,0.12));min-width:170px;z-index:1200;padding:4px 0;}
+.export-menu-wrap.open .export-menu{display:block;}
+.export-menu button{display:block;width:100%;text-align:left;background:none;border:none;padding:8px 14px;font-size:0.85rem;cursor:pointer;color:inherit;}
+.export-menu button:hover{background:var(--accent);}
 table{width:100%;border-collapse:collapse;background:var(--card-bg);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border);font-size:0.85rem;}
 th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top;}
 th{background:var(--accent);color:var(--primary);font-weight:600;}
@@ -55,14 +64,15 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
 .bm-row .bm-type{font-family:monospace;font-size:0.72rem;color:var(--text-muted);}
 .bm-select{max-width:300px;padding:4px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;}
 .empty{padding:40px;text-align:center;color:var(--text-muted);}
-.pager{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:16px;}
+.pager{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:16px;flex-wrap:wrap;}
 .pager button{min-width:28px;padding:4px 8px;border:1px solid var(--border);border-radius:5px;background:var(--card-bg);cursor:pointer;}
 .pager button.active{background:var(--primary);color:#fff;border-color:var(--primary);}
 .pager button:disabled{opacity:0.5;cursor:not-allowed;}
-.pager .info{font-size:0.8rem;color:var(--text-muted);}
+.pager .info{font-size:0.8rem;color:var(--text-muted);margin-left:4px;white-space:nowrap;}
 @media(max-width:768px){
   .filter-row,.toolbar{flex-direction:column;align-items:stretch;}
   .toolbar .spacer{display:none;}
+  .toolbar .divider{display:none;}
   table{font-size:0.75rem;}
   th,td{padding:8px;}
   .actions a{display:inline-block;margin-bottom:4px;}
@@ -77,13 +87,24 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
   </div>
 
   <div class="filter-row">
-    <span style="font-size:0.85rem;color:var(--text-muted);">来源类型:</span>
+    <span class="filter-group-label">筛选:</span>
     <span id="tagFilter"></span>
     <input type="text" id="authorFilter" placeholder="作者" style="width:100px;">
     <select id="bibTypeFilter"><option value="">文献类型</option></select>
     <input type="text" id="titleFilter" placeholder="标题" style="width:140px;">
     <input type="text" id="yearFilter" placeholder="年份" style="width:70px;">
     <button class="btn" onclick="resetFilters()">重置</button>
+    <div class="spacer"></div>
+    <div class="export-menu-wrap" id="exportMenuWrap">
+      <button class="btn" onclick="toggleExportMenu(event)">导出 ▾</button>
+      <div class="export-menu">
+        <button onclick="exportBib()">导出 BibTeX (选中)</button>
+        <button onclick="exportAllBib()">导出全部 BibTeX</button>
+        <button onclick="exportMd()">导出 Markdown</button>
+        <button onclick="exportArchive()">导出数据包</button>
+      </div>
+    </div>
+    <button class="btn" onclick="openBibMatch()" id="btnBibMatch">批量导入 BibTeX</button>
   </div>
 
   <div class="toolbar">
@@ -107,11 +128,8 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
       <option value="50">50</option>
       <option value="100">100</option>
     </select>
-    <button class="btn" onclick="exportBib()">导出 BibTeX</button>
-    <button class="btn" onclick="exportAllBib()">导出全部 BibTeX</button>
-    <button class="btn" onclick="exportMd()">导出 Markdown</button>
-    <button class="btn" onclick="exportArchive()">导出数据包</button>
-    <button class="btn" onclick="openBibMatch()" id="btnBibMatch">批量导入 BibTeX</button>
+    <div class="divider"></div>
+    <div class="pager" id="pager"></div>
   </div>
 
   <table>
@@ -130,9 +148,7 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
       <tr><td colspan="7" class="empty">加载中…</td></tr>
     </tbody>
   </table>
-
-  <div class="pager" id="pager"></div>
-</div>
+ </div>
 
 <div class="bm-overlay" id="bmOverlay">
   <div class="bm-modal">
@@ -181,10 +197,11 @@ function init(){
 function fillTagFilter(){
   const box = document.getElementById('tagFilter');
   box.innerHTML = '';
+  const labels = {primary:'原始史料', secondary:'研究文献', reference:'工具书'};
   sourceTags.forEach(tag => {
     const s = document.createElement('span');
     s.className = 'tag-chip';
-    s.textContent = tag;
+    s.textContent = labels[tag] || tag;
     s.dataset.tag = tag;
     s.onclick = () => {s.classList.toggle('active'); loadPage(1);};
     box.appendChild(s);
@@ -406,8 +423,9 @@ function renderTable(docs){
 
 function renderPager(){
   const box = document.getElementById('pager');
-  if(state.pages <= 1){box.innerHTML = ''; return;}
-  let html = '<button ' + (state.page<=1?'disabled':'') + ' onclick="loadPage('+(state.page-1)+')">←</button>';
+  if(state.pages <= 1){box.innerHTML = '<span class="info">共 '+state.total+' 条</span>'; return;}
+  let html = '<button title="最前页" ' + (state.page<=1?'disabled':'') + ' onclick="loadPage(1)">|&lt;</button>';
+  html += '<button title="上一页" ' + (state.page<=1?'disabled':'') + ' onclick="loadPage('+(state.page-1)+')">←</button>';
   const maxButtons = 7;
   let start = Math.max(1, state.page - Math.floor(maxButtons/2));
   let end = Math.min(state.pages, start + maxButtons - 1);
@@ -417,10 +435,21 @@ function renderPager(){
     html += '<button class="'+(i===state.page?'active':'')+'" onclick="loadPage('+i+')">'+i+'</button>';
   }
   if(end < state.pages) html += '<span>…</span><button onclick="loadPage('+state.pages+')">'+state.pages+'</button>';
-  html += '<button ' + (state.page>=state.pages?'disabled':'') + ' onclick="loadPage('+(state.page+1)+')">→</button>';
+  html += '<button title="下一页" ' + (state.page>=state.pages?'disabled':'') + ' onclick="loadPage('+(state.page+1)+')">→</button>';
+  html += '<button title="最后页" ' + (state.page>=state.pages?'disabled':'') + ' onclick="loadPage('+state.pages+')">&gt;|</button>';
   html += '<span class="info">第 '+state.page+'/'+state.pages+' 页</span>';
   box.innerHTML = html;
 }
+
+function toggleExportMenu(ev){
+  if(ev) ev.stopPropagation();
+  document.getElementById('exportMenuWrap').classList.toggle('open');
+}
+document.addEventListener('click', function(e){
+  const wrap = document.getElementById('exportMenuWrap');
+  if(wrap && !wrap.contains(e.target)) wrap.classList.remove('open');
+  if(wrap && e.target.closest && e.target.closest('.export-menu')) wrap.classList.remove('open');
+});
 
 function toggleRow(id, cb){
   const row = document.getElementById('row-'+id);

@@ -2865,19 +2865,22 @@ async def reocr_cancel(collection: str, doc_id: int):
 # ── 命中文档检索（校对页内搜索）─────────────────────────
 
 @app.get("/collections/{collection}/doc/{doc_id}/hits")
-async def doc_hits(collection: str, doc_id: int, keyword: str):
-    """返回某文档中匹配关键词的所有 page/block/first_line_id。"""
+async def doc_hits(collection: str, doc_id: int, keyword: str, limit: int = 300):
+    """返回某文档中匹配关键词的所有 page/block/first_line_id + 高亮摘要。"""
     try:
         from .search import _fts_query
 
         fts_q = _fts_query(keyword)
         if not fts_q:
-            return {"keyword": keyword, "hits": []}
+            return {"keyword": keyword, "hits": [], "total": 0, "truncated": False}
+
+        if limit < 1:
+            limit = 300
 
         conn = get_conn(collection)
         try:
             rows = conn.execute(
-                """SELECT f.page_num, f.block_num, MIN(l.id) as line_id
+                """SELECT f.page_num, f.block_num, MIN(l.id) as line_id, l.text as text
                    FROM blocks_fts f
                    JOIN lines l ON l.doc_id = f.doc_id
                                AND l.page_num = f.page_num
@@ -2890,9 +2893,31 @@ async def doc_hits(collection: str, doc_id: int, keyword: str):
         finally:
             conn.close()
 
+        total = len(rows)
+        truncated = total > limit
+        hits = []
+        for r in rows[:limit]:
+            text = (r["text"] or "").strip()
+            if len(text) > 80:
+                idx = max((text.lower().find(v.lower()) for v in {keyword}
+                           if text.lower().find(v.lower()) >= 0), default=-1)
+                if idx >= 0:
+                    start = max(0, idx - 30)
+                    text = ("…" if start > 0 else "") + text[start:start + 80] + "…"
+                else:
+                    text = text[:80] + "…"
+            hits.append({
+                "page_num": r["page_num"],
+                "block_num": r["block_num"],
+                "line_id": r["line_id"],
+                "snippet": _highlight_keyword(text, keyword),
+            })
+
         return {
             "keyword": keyword,
-            "hits": [dict(r) for r in rows],
+            "hits": hits,
+            "total": total,
+            "truncated": truncated,
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})

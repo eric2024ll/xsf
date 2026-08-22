@@ -163,6 +163,7 @@
   display: flex;
   gap: 4px;
   margin-left: 6px;
+  position: relative;
 }
 .in-page-search input {
   padding: 4px 7px;
@@ -181,6 +182,52 @@
   font-size: 0.8rem;
 }
 .in-page-search button:hover { background: var(--primary-hover); }
+.doc-search-panel {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(420px, 90vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  z-index: 900;
+  font-size: 0.8rem;
+}
+.doc-search-panel.open { display: block; }
+.doc-search-panel .dsp-head {
+  position: sticky; top: 0;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  background: var(--card-bg, #fff);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.76rem; color: var(--text-muted);
+}
+.doc-search-panel .dsp-head .dsp-close {
+  margin-left: auto; background: none; border: none;
+  color: var(--text-muted); cursor: pointer; font-size: 1.1rem; padding: 0 4px;
+  position: static; border-radius: 0;
+}
+.doc-search-panel .dsp-item {
+  display: block; width: 100%; text-align: left;
+  background: none; border: none; cursor: pointer;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.78rem; line-height: 1.45; color: inherit;
+}
+.doc-search-panel .dsp-item:hover { background: var(--accent); }
+.doc-search-panel .dsp-item .dsp-page {
+  display: inline-block;
+  background: var(--accent); color: var(--primary);
+  border-radius: 9px; padding: 0 8px;
+  font-size: 0.7rem; margin-right: 6px;
+  flex-shrink: 0;
+}
+.doc-search-panel .dsp-empty { padding: 14px 10px; color: var(--text-muted); text-align: center; }
+.doc-search-panel mark { background: #ffe58f; padding: 0 1px; }
 
 .main {
   display: flex;
@@ -803,8 +850,9 @@ mark {
       </select>
       <button onclick="goPage({{ page_num + 1 }})" {% if page_num >= page_count %}disabled{% endif %} title="下一页">›</button>
       <div class="in-page-search">
-        <input type="text" id="inPageSearch" placeholder="页内搜索..." value="{{ keyword }}" onkeydown="if(event.key==='Enter')doInPageSearch()">
-        <button onclick="doInPageSearch()">查找</button>
+        <input type="text" id="inPageSearch" placeholder="搜索本文献..." value="{{ keyword }}" onkeydown="if(event.key==='Enter')doDocSearch()" oninput="hideDocSearchPanel()">
+        <button onclick="doDocSearch()">搜索</button>
+        <div class="doc-search-panel" id="docSearchPanel"></div>
       </div>
     </div>
     <div class="text-actions">
@@ -1085,15 +1133,66 @@ function scrollToFirstHit() {
   firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-function doInPageSearch() {
+// ── 搜索本文献 (全文档 FTS) ──
+const _dsp = document.getElementById('docSearchPanel');
+
+async function doDocSearch() {
   const kw = document.getElementById('inPageSearch').value.trim();
-  if (!kw) return;
+  if (!kw || !docId) return;
+  const panel = _dsp;
+  panel.innerHTML = '<div class="dsp-empty">搜索中…</div>';
+  panel.classList.add('open');
+  try {
+    const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/hits?keyword=` + encodeURIComponent(kw));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    renderDocSearchPanel(data, kw);
+  } catch (e) {
+    panel.innerHTML = '<div class="dsp-empty">✗ ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderDocSearchPanel(data, kw) {
+  const panel = _dsp;
+  const nPages = new Set(data.hits.map(h => h.page_num)).size;
+  let html = '<div class="dsp-head"><span>「' + escapeHtml(kw) + '」 共 ' + nPages + ' 页 ' + data.total + ' 处'
+    + (data.truncated ? '（仅显示前 ' + data.hits.length + ' 处）' : '')
+    + '</span><button class="dsp-close" onclick="hideDocSearchPanel()">&times;</button></div>';
+  if (!data.hits.length) {
+    html += '<div class="dsp-empty">无匹配</div>';
+  } else {
+    data.hits.forEach((h, i) => {
+      html += '<button class="dsp-item" onclick="docSearchJump(' + h.page_num + ')">'
+        + '<span class="dsp-page">第' + h.page_num + '页</span>'
+        + h.snippet + '</button>';
+    });
+  }
+  panel.innerHTML = html;
+  panel.classList.add('open');
+}
+
+function docSearchJump(pageNum) {
+  hideDocSearchPanel();
   const url = new URL(window.location.href);
-  url.searchParams.set('keyword', kw);
+  url.searchParams.set('page', pageNum);
+  url.searchParams.set('keyword', document.getElementById('inPageSearch').value.trim());
   url.searchParams.delete('block');
   url.searchParams.delete('line');
   window.location.href = url.toString();
 }
+
+function hideDocSearchPanel() {
+  if (_dsp) _dsp.classList.remove('open');
+}
+
+document.addEventListener('click', function(e) {
+  if (!_dsp) return;
+  const wrap = document.getElementById('inPageSearch');
+  if (wrap && !wrap.parentElement.contains(e.target) && !_dsp.contains(e.target)) hideDocSearchPanel();
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') hideDocSearchPanel();
+});
 
 // ── 拖拽平移 ──
 (function initPan() {
