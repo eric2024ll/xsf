@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import List
 
 import pymupdf
-from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi import FastAPI, UploadFile, File, Form, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -401,7 +401,7 @@ async def api_delete_collection(collection: str):
 
 
 @app.patch("/api/collections/{collection}")
-async def api_rename_collection(collection: str, new_name: str = ""):
+async def api_rename_collection(collection: str, new_name: str = Body("", embed=True)):
     """重命名书架: 移动 DB 目录 + 源文件目录."""
     new_name = (new_name or "").strip()
     if not new_name:
