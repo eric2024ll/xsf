@@ -94,6 +94,7 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
     <input type="text" id="titleFilter" placeholder="标题" style="width:140px;">
     <input type="text" id="yearFilter" placeholder="年份" style="width:70px;">
     <button class="btn" onclick="resetFilters()">重置</button>
+    {% if request.state.role != 'guest' %}
     <div class="spacer"></div>
     <div class="export-menu-wrap" id="exportMenuWrap">
       <button class="btn" onclick="toggleExportMenu(event)">导出 ▾</button>
@@ -105,10 +106,13 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
       </div>
     </div>
     <button class="btn" onclick="openBibMatch()" id="btnBibMatch">批量导入 BibTeX</button>
+    {% endif %}
   </div>
 
   <div class="toolbar">
+    {% if request.state.role != 'guest' %}
     <label><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"> 全选</label>
+    {% endif %}
     <div class="spacer"></div>
     <span style="font-size:0.8rem;color:var(--text-muted);">排序</span>
     <select id="sortSelect" onchange="loadPage(1)">
@@ -183,6 +187,7 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
 <script src="/static/preview-modal.js"></script>
 <script>
 const collection = {{ collection | tojson }};
+const IS_GUEST = {{ 'true' if request.state.role == 'guest' else 'false' }};
 const sourceTags = {{ source_tags | tojson }};
 const bibTypeLabels = {{ bib_type_labels | tojson }};
 let state = {page:1, total:0, pages:0, docs:[]};
@@ -403,7 +408,7 @@ function renderTable(docs){
     const checked = selectedIds.has(d.id) ? 'checked' : '';
     const tags = (JSON.parse(d.source_tags || '[]') || []).map(t => '<span class="badge">'+escapeHtml(t)+'</span>').join('');
     html += '<tr id="row-'+d.id+'" class="'+ (selectedIds.has(d.id)?'selected':'') + '">' +
-      '<td><input type="checkbox" '+checked+' onchange="toggleRow('+d.id+',this)"></td>' +
+      (IS_GUEST ? '<td></td>' : '<td><input type="checkbox" '+checked+' onchange="toggleRow('+d.id+',this)"></td>') +
       '<td class="cite">' + escapeHtml(d.cite_key || '-') + '</td>' +
       '<td class="title">' + escapeHtml(d.title || '(无标题)') +
         '<div class="meta">' + escapeHtml(d.author || '') + '</div>' +
@@ -414,8 +419,9 @@ function renderTable(docs){
       '<td class="actions">' +
         '<a href="/collections/' + collEnc + '/doc/' + d.id + '/proofread">校对</a>' +
         '<button class="btn" style="padding:2px 10px;font-size:0.8rem;" onclick="pmOpen('+attrEsc(JSON.stringify(collection))+','+d.id+',{title:'+attrEsc(JSON.stringify(d.title||''))+'})">预览</button>' +
+        (IS_GUEST ? '' :
         '<button class="btn" style="padding:2px 10px;font-size:0.8rem;" onclick="reocrDoc('+d.id+',this)">重OCR</button>' +
-        '<button class="btn" style="padding:2px 10px;font-size:0.8rem;color:var(--danger);" onclick="deleteDoc('+d.id+',this)">删除</button>' +
+        '<button class="btn" style="padding:2px 10px;font-size:0.8rem;color:var(--danger);" onclick="deleteDoc('+d.id+',this)">删除</button>') +
       '</td></tr>';
   });
   tbody.innerHTML = html;

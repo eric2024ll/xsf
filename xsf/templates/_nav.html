@@ -22,16 +22,24 @@
         {% if collection %}
         <a href="/collections/{{ collection }}/docs/list"
            class="nd-item {{ 'active' if active_nav == 'docs' else '' }}">文献列表</a>
+        {% if request.state.role != 'guest' %}
         <a href="/collections/{{ collection }}/upload"
            class="nd-item {{ 'active' if active_nav == 'upload' else '' }}">资料上传</a>
         {% else %}
+        <span class="nd-item disabled">资料上传</span>
+        {% endif %}
+        {% else %}
         <span class="nd-item disabled">文献列表</span>
         <span class="nd-item disabled">资料上传</span>
+        {% endif %}
+        {% if request.state.role != 'guest' %}
+        <a href="/users" class="nd-item {{ 'active' if active_nav == 'users' else '' }}">用户管理</a>
         {% endif %}
       </div>
     </div>
   </div>
   <span class="nav-current-coll" id="navCurrentColl">{% if collection %}当前书架：{{ collection }}{% endif %}</span>
+  {% if request.state.role == 'guest' %}<span class="nav-role-tag">临时用户 · 只读</span>{% endif %}
   <input type="text" class="nav-search" id="navSearch"
          placeholder="搜索文献…" autocomplete="off"
          aria-label="搜索文献">

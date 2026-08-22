@@ -91,6 +91,18 @@ body:has(.top-nav) { padding-top: var(--nav-h); }
   margin-right: 4px;
 }
 
+/* ── 临时用户只读标签 ── */
+.top-nav .nav-role-tag {
+  font-size: 0.75rem;
+  color: var(--warning, #b38b00);
+  background: var(--accent, #e8f0fe);
+  border-radius: 10px;
+  padding: 2px 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
 /* ── 下拉菜单 (悬浮于汉堡按钮下方) ── */
 .top-nav .nav-dropdown {
   display: none;

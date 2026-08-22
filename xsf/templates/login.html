@@ -106,8 +106,13 @@ body {
   {% endif %}
   <form method="post" action="/login">
     <div class="field">
+      <label for="username">用户名</label>
+      <input type="text" id="username" name="username" autofocus autocomplete="username"
+             placeholder="管理员请填 admin，留空也可">
+    </div>
+    <div class="field">
       <label for="password">密码</label>
-      <input type="password" id="password" name="password" autofocus required>
+      <input type="password" id="password" name="password" required autocomplete="current-password">
     </div>
     <button type="submit">登录</button>
   </form>

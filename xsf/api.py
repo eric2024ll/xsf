@@ -13,6 +13,7 @@ import sqlite3
 import tarfile
 import tempfile
 import threading
+import time
 import zipfile
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
@@ -29,6 +30,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from .config import (
     get_collections_dir, list_collections, get_auth_token, get_db_path,
 )
+from . import users as user_store
 from .db import init_db, get_conn
 from .search import search, get_block_lines, get_context, get_highlight_terms
 from .bib_utils import (
@@ -96,41 +98,91 @@ async def favicon():
     return Response(content=_FAVICON_SVG, media_type="image/svg+xml")
 
 
-# ── Auth Middleware ────────────────────────────────────
+# ── Auth Middleware (admin + 临时用户双角色) ──────────
+#
+# 角色:
+#   admin  — cookie xsf_auth == XSF_AUTH_TOKEN (无状态, mcp_adapter 兼容, 重启不掉线)
+#   guest  — cookie xsf_session = 内存 session id (登录时签发, 重启需重登)
+#   开发模式 — 未设 XSF_AUTH_TOKEN 时全部视为 admin (沿用旧语义)
 
 _PUBLIC_PATHS = {'/login', '/logout'}
 _PUBLIC_PREFIXES = ('/login', '/static', '/favicon')
+_GUEST_PAGE_BLOCK_RE = re.compile(r'^/collections/[^/]+/upload$')
+
+_SESSION_TTL = 7 * 24 * 3600  # guest session 7 天
+_sess_lock = threading.Lock()
+_sessions: dict = {}  # sid -> {"username": str, "expires": float}
 
 
-def _is_authenticated(request: Request) -> bool:
+def _sess_prune():
+    now = time.time()
+    for sid in [s for s, v in _sessions.items() if v["expires"] <= now]:
+        del _sessions[s]
+
+
+def _sess_create(username: str) -> str:
+    sid = secrets.token_urlsafe(32)
+    with _sess_lock:
+        _sess_prune()
+        _sessions[sid] = {"username": username, "expires": time.time() + _SESSION_TTL}
+    return sid
+
+
+def _sess_get(sid: str):
+    if not sid:
+        return None
+    with _sess_lock:
+        _sess_prune()
+        return _sessions.get(sid)
+
+
+def _get_role(request: Request) -> str | None:
+    """解析请求角色: 'admin' | 'guest' | None(未认证)."""
     token = get_auth_token()
     if token is None:
-        return True
-    cookie_val = request.cookies.get('xsf_auth', '')
-    return secrets.compare_digest(cookie_val, token)
+        return 'admin'  # 开发模式
+    legacy = request.cookies.get('xsf_auth', '')
+    if legacy and secrets.compare_digest(legacy, token):
+        return 'admin'
+    sess = _sess_get(request.cookies.get('xsf_session', ''))
+    if sess is not None:
+        return 'guest'
+    return None
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        token = get_auth_token()
-        if token is None:
-            return await call_next(request)
+        role = _get_role(request)
+        request.state.role = role or ''
 
         path = request.url.path
 
         if path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PREFIXES):
             return await call_next(request)
 
-        if _is_authenticated(request):
-            return await call_next(request)
+        if role is None:
+            is_api = path.startswith('/api/') or path.startswith('/collections/')
+            if is_api:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "未认证，请先登录"},
+                )
+            return RedirectResponse('/login', status_code=303)
 
-        is_api = path.startswith('/api/') or path.startswith('/collections/')
-        if is_api:
-            return JSONResponse(
-                status_code=401,
-                content={"error": "未认证，请先登录"},
-            )
-        return RedirectResponse('/login', status_code=303)
+        if role == 'guest':
+            # 写操作一律拒绝 (导出类 POST 端点含在内, 裁定: 临时用户仅搜索+浏览)
+            if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "临时用户无此权限，请联系管理员"},
+                )
+            # 管理页 / 上传页禁入
+            if path == '/users' or path.startswith('/api/users'):
+                return JSONResponse(status_code=403, content={"error": "需要管理员权限"})
+            if _GUEST_PAGE_BLOCK_RE.match(path):
+                return RedirectResponse('/', status_code=303)
+
+        return await call_next(request)
 
 
 app.add_middleware(AuthMiddleware)
@@ -177,29 +229,103 @@ async def login_page(request: Request, error: str = None):
 
 
 @app.post("/login")
-async def login_submit(request: Request, password: str = Form(...)):
+async def login_submit(request: Request,
+                       username: str = Form(''), password: str = Form(...)):
     token = get_auth_token()
-    if token is not None and secrets.compare_digest(password, token):
+    if token is None:
+        return RedirectResponse('/', status_code=303)  # 开发模式
+
+    username = (username or '').strip()
+
+    def _err(msg):
+        return templates.TemplateResponse(request, "login.html", {"error": msg})
+
+    # ── 管理员分支 ──
+    if not username or username.lower() == 'admin':
+        if secrets.compare_digest(password, token):
+            resp = RedirectResponse('/', status_code=303)
+            resp.set_cookie(
+                'xsf_auth', token,
+                httponly=True,
+                max_age=7 * 24 * 3600,
+                samesite='lax',
+            )
+            return resp
+        return _err("管理员密码错误")
+
+    # ── 临时用户分支 ──
+    status, _user = user_store.verify_user(username, password)
+    if status == 'ok':
+        sid = _sess_create(username)
         resp = RedirectResponse('/', status_code=303)
         resp.set_cookie(
-            'xsf_auth', token,
+            'xsf_session', sid,
             httponly=True,
-            max_age=7 * 24 * 3600,
+            max_age=_SESSION_TTL,
             samesite='lax',
         )
         return resp
-    return templates.TemplateResponse(
-        request,
-        "login.html",
-        {"error": "密码错误"},
-    )
+    if status == 'disabled':
+        return _err("账号已停用，请联系管理员")
+    if status == 'expired':
+        return _err("账号已过期，请联系管理员")
+    return _err("用户名或密码错误")
 
 
 @app.get("/logout")
 async def logout():
     resp = RedirectResponse('/login', status_code=303)
     resp.delete_cookie('xsf_auth')
+    resp.delete_cookie('xsf_session')
     return resp
+
+
+# ── 用户管理 (仅 admin; guest 被 middleware 拦截) ──────
+
+@app.get("/users")
+async def users_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "users.html",
+        _nav_ctx("users") | {"users": user_store.list_users()},
+    )
+
+
+@app.get("/api/users")
+async def api_list_users(request: Request):
+    return {"users": user_store.list_users()}
+
+
+@app.post("/api/users")
+async def api_create_user(request: Request,
+                          username: str = Form(...),
+                          password: str = Form(''),
+                          days: str = Form(''),
+                          note: str = Form('')):
+    days_val = days.strip() if days and days.strip() else None
+    err, user, plain = user_store.create_user(username, password or None, days_val, note)
+    if err:
+        return JSONResponse(status_code=400, content={"error": err})
+    return {"ok": True, "user": user, "password": plain}  # 密码仅此一次返回
+
+
+@app.post("/api/users/{username}/toggle")
+async def api_toggle_user(request: Request, username: str):
+    infos = {u["username"]: u for u in user_store.list_users()}
+    if username not in infos:
+        return JSONResponse(status_code=404, content={"error": "用户不存在"})
+    err = user_store.set_enabled(username, not infos[username]["enabled"])
+    if err:
+        return JSONResponse(status_code=400, content={"error": err})
+    return {"ok": True}
+
+
+@app.delete("/api/users/{username}")
+async def api_delete_user(request: Request, username: str):
+    err, deleted = user_store.delete_user(username)
+    if err:
+        return JSONResponse(status_code=404, content={"error": err})
+    return {"ok": True, "deleted": deleted}
 
 
 # ── 页面 ──────────────────────────────────────────────

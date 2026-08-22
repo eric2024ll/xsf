@@ -737,6 +737,7 @@ mark {
 </style>
 </head>
 <body data-page="proofread">
+{% set is_guest = request.state.role == 'guest' %}
 {% if error %}
 <div class="error-box">{{ error }}</div>
 {% else %}
@@ -744,6 +745,12 @@ mark {
 {% set has_pdf = is_md and linked_pdf %}
 
 {% include '_nav.html' %}
+
+{% if is_guest %}
+<div style="background:#fdf6e3;border-bottom:1px solid #e8d9a0;color:#8a6d00;font-size:0.82rem;padding:5px 16px;text-align:center;">
+  只读模式 — 临时用户仅可浏览与搜索
+</div>
+{% endif %}
 
 <div class="main" id="main" data-tab="img">
   <aside class="proof-sidebar" id="proofSidebar">
@@ -776,11 +783,14 @@ mark {
         <button onclick="zoomDelta(1.25)" title="放大">＋</button>
         <button onclick="zoomSetFit()" title="适应宽度">適寬</button>
         <button onclick="zoomSetPct(1)" title="实际尺寸 (150dpi)">1:1</button>
+        {% if not is_guest %}
         <button class="reocr-btn" id="reocrToggle" onclick="toggleReocrMode()">框选重OCR</button>
+        {% endif %}
         <button id="showAllBoxes" onclick="toggleShowAllBoxes()">显示全部框</button>
         <span class="hint">滚轮缩放 · 拖拽平移</span>
         <div class="type-legend" id="typeLegend"></div>
       </div>
+      {% if not is_guest %}
       <div class="reocr-actions" id="reocrActions">
         <span id="reocrHint" class="reocr-hint">在图上拖拽画框（可多个）→ 执行重OCR</span>
         <span id="reocrCount">已选 0 个区域</span>
@@ -798,6 +808,7 @@ mark {
         <button class="cancel-reocr" onclick="clearReocrRegions()">清空</button>
         <button class="cancel-reocr" onclick="exitReocrMode()">退出</button>
       </div>
+      {% endif %}
     <div class="image-wrap" id="imageWrap">
       <img id="pageImage" draggable="false" src="/collections/{{ collection }}/doc/{{ doc.id }}/page/{{ page_num }}/image" alt="第 {{ page_num }} 页" onload="onImageLoad()">
       {% for b in blocks %}
@@ -829,11 +840,13 @@ mark {
   </div>
   {% else %}
   <div class="link-pdf-bar">
+    {% if not is_guest %}
     <label class="link-pdf-btn">
       关联 PDF
-      <input type="file" accept=".pdf" onchange="uploadLinkedPdf(this)" hidden>
+      <input type="file" accept="application/pdf" onchange="uploadLinkedPdf(this)" hidden>
     </label>
-    <span class="link-pdf-hint">上传 PDF 关联此文档（纯展示，不 OCR）</span>
+    {% endif %}
+    <span class="link-pdf-hint">{% if is_guest %}此文档未关联 PDF{% else %}上传 PDF 关联此文档（纯展示，不 OCR）{% endif %}</span>
   </div>
   {% endif %}
 
@@ -862,12 +875,14 @@ mark {
         <button class="ta-more" onclick="toggleTaMenu(event)">⋯</button>
         <div class="ta-menu" id="taMenu">
           <button onclick="copyAllText()">复制全文</button>
+          {% if not is_guest %}
           <button onclick="exportPage()">导出本页</button>
           <button onclick="exportDocMd()">导出全篇</button>
+          {% endif %}
         </div>
       </div>
     </div>
-    <div id="pageText" class="page-text" contenteditable="true" oninput="onPageEdit()">
+    <div id="pageText" class="page-text"{% if not is_guest %} contenteditable="true" oninput="onPageEdit()"{% endif %}>
 {%- for b in blocks %}
 {%- for ln in b.lines %}
 {{- highlight(ln.text, keyword) | safe }}{% if not loop.last %}<br>{% endif -%}
@@ -885,6 +900,7 @@ mark {
 <script>
 const collection = {{ collection | tojson }};
 const docId = {{ doc.id | default('null') | tojson }};
+const IS_GUEST = {{ 'true' if is_guest else 'false' }};
 const doc = {{ doc | tojson }};
 const page = {{ page_num | default(1) }};
 const pageCount = {{ page_count | default(1) }};
@@ -939,6 +955,12 @@ function escapeHtml(s) {
 function renderDocTags() {
   const el = document.getElementById('docTags');
   if (!el) return;
+  if (IS_GUEST) {
+    el.innerHTML = _docTags.map(t =>
+      `<span class="tag-chip active">${escapeHtml(tagLabel(t))}</span>`
+    ).join('');
+    return;
+  }
   let html = _docTags.map((t, i) =>
     `<span class="tag-chip active removable" onclick="removeDocTag(${i})">${escapeHtml(tagLabel(t))}</span>`
   ).join('');
@@ -980,6 +1002,23 @@ window.BIB_FIELD_LABELS = {{ bib_field_labels | default({}) | tojson }};
 
 (function initBib() {
   var citeKey = (doc && doc.cite_key) || '';
+  if (IS_GUEST) {
+    // 只读: 直接渲染书目字段, 不挂编辑器
+    var panel = document.getElementById('proofBibPanel');
+    if (panel) {
+      var data = Object.assign({}, {{ bib_data | default({}) | tojson }});
+      var labels = {{ bib_field_labels | default({}) | tojson }};
+      var html = '';
+      Object.keys(data).forEach(function (k) {
+        var lb = labels[k] || k;
+        html += '<div style="display:flex;gap:8px;font-size:0.8rem;padding:3px 0;">'
+              + '<span style="color:var(--text-muted);min-width:5em;">' + lb + '</span>'
+              + '<span style="word-break:break-all;">' + String(data[k]).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span></div>';
+      });
+      panel.innerHTML = html || '<div style="font-size:0.8rem;color:var(--text-muted);">无书目信息</div>';
+    }
+    return;
+  }
   bibEditor.mount('proofBibPanel', {
     type: {{ bib_type | default('') | tojson }},
     data: Object.assign({}, {{ bib_data | default({}) | tojson }}),
@@ -1103,6 +1142,7 @@ async function autoSavePage() {
 }
 // 离开页面前保存
 window.addEventListener('beforeunload', () => {
+  if (IS_GUEST) return;
   clearTimeout(_saveTimer);
   const el = document.getElementById('pageText');
   if (el) {

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/static/app.css">
+<title>用户管理 — 小書房</title>
+<style>
+.page-wrap { max-width: 860px; margin: 24px auto; padding: 0 16px; }
+.panel {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow, 0 2px 8px rgba(0,0,0,0.08));
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.panel h2 { font-size: 1.05rem; margin-bottom: 14px; }
+.form-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.form-row .f { display: flex; flex-direction: column; gap: 4px; }
+.form-row label { font-size: 0.78rem; color: var(--text-muted); }
+.form-row input {
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 0.88rem; outline: none;
+}
+.form-row input:focus { border-color: var(--primary); }
+.btn {
+  padding: 8px 16px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--card-bg); cursor: pointer; font-size: 0.85rem;
+}
+.btn:hover { background: var(--accent); }
+.btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+.btn.danger { color: var(--danger); }
+table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+th { color: var(--text-muted); font-weight: 500; font-size: 0.8rem; }
+.empty { text-align: center; color: var(--text-muted); padding: 24px 0 !important; }
+.status { font-size: 0.78rem; }
+.status.on { color: var(--ok, #27ae60); }
+.status.off { color: var(--danger, #e5383b); }
+.status.exp { color: var(--warning, #b38b00); }
+.msg-bar { font-size: 0.82rem; margin-top: 10px; min-height: 1.2em; }
+.msg-bar.ok { color: var(--ok, #27ae60); }
+.msg-bar.err { color: var(--danger, #e5383b); }
+.cred-box {
+  background: var(--accent, #e8f0fe); border-radius: 6px; padding: 10px 14px;
+  margin-top: 10px; font-size: 0.9rem; display: none;
+}
+.cred-box code { font-size: 1.05rem; letter-spacing: 1px; }
+</style>
+</head>
+<body data-page="users">
+{% include '_nav.html' %}
+
+<div class="page-wrap">
+  <div class="panel">
+    <h2>创建临时用户</h2>
+    <div class="form-row">
+      <div class="f">
+        <label>用户名 *</label>
+        <input type="text" id="fUsername" maxlength="32" placeholder="如 reader01">
+      </div>
+      <div class="f">
+        <label>密码 (留空自动生成)</label>
+        <input type="text" id="fPassword" maxlength="64" placeholder="自动生成 8 位">
+      </div>
+      <div class="f">
+        <label>有效天数 (留空 = 永久)</label>
+        <input type="number" id="fDays" min="1" style="width:110px;" placeholder="永久">
+      </div>
+      <div class="f">
+        <label>备注</label>
+        <input type="text" id="fNote" maxlength="200" placeholder="给谁用、干什么">
+      </div>
+      <button class="btn primary" id="btnCreate" onclick="createUser()">创建</button>
+    </div>
+    <div class="msg-bar" id="createMsg"></div>
+    <div class="cred-box" id="credBox">
+      已创建 <b id="credUser"></b>，密码 <code id="credPass"></code>
+      （仅显示这一次，请立即复制保存）
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>临时用户列表</h2>
+    <table>
+      <thead>
+        <tr><th>用户名</th><th>创建时间</th><th>有效期至</th><th>状态</th><th>备注</th><th>操作</th></tr>
+      </thead>
+      <tbody id="userRows">
+        <tr><td colspan="6" class="empty">加载中…</td></tr>
+      </tbody>
+    </table>
+    <div class="msg-bar" id="listMsg"></div>
+  </div>
+</div>
+
+<script>
+const esc = s => String(s == null ? '' : s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+function fmtDt(s){
+  if(!s) return '-';
+  return String(s).replace('T',' ');
+}
+
+function statusCell(u){
+  if(u.expired) return '<span class="status exp">已过期</span>';
+  return u.enabled
+    ? '<span class="status on">启用</span>'
+    : '<span class="status off">已停用</span>';
+}
+
+async function loadUsers(){
+  try{
+    const r = await fetch('/api/users');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const tb = document.getElementById('userRows');
+    if(!data.users.length){
+      tb.innerHTML = '<tr><td colspan="6" class="empty">还没有临时用户</td></tr>';
+      return;
+    }
+    tb.innerHTML = data.users.map(u => {
+      const un = esc(u.username);
+      const toggleLbl = u.enabled ? '停用' : '启用';
+      return '<tr>'
+        + '<td>' + un + '</td>'
+        + '<td>' + fmtDt(u.created_at) + '</td>'
+        + '<td>' + (u.expires_at ? fmtDt(u.expires_at) : '永久') + '</td>'
+        + '<td>' + statusCell(u) + '</td>'
+        + '<td>' + esc(u.note || '') + '</td>'
+        + '<td>'
+        + '<button class="btn" style="padding:3px 10px;font-size:0.8rem;" onclick="toggleUser(\'' + un + '\')">' + toggleLbl + '</button> '
+        + '<button class="btn danger" style="padding:3px 10px;font-size:0.8rem;" onclick="deleteUser(\'' + un + '\')">删除</button>'
+        + '</td></tr>';
+    }).join('');
+  }catch(e){
+    document.getElementById('userRows').innerHTML =
+      '<tr><td colspan="6" class="empty">加载失败: ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+async function createUser(){
+  const msg = document.getElementById('createMsg');
+  const btn = document.getElementById('btnCreate');
+  const body = new URLSearchParams();
+  body.append('username', document.getElementById('fUsername').value.trim());
+  body.append('password', document.getElementById('fPassword').value);
+  body.append('days', document.getElementById('fDays').value);
+  body.append('note', document.getElementById('fNote').value);
+  btn.disabled = true;
+  try{
+    const r = await fetch('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    const data = await r.json();
+    if(!r.ok){ msg.textContent = '✗ ' + (data.error || '创建失败'); msg.className = 'msg-bar err'; return; }
+    msg.textContent = '✓ 已创建 ' + data.user.username; msg.className = 'msg-bar ok';
+    document.getElementById('credBox').style.display = 'block';
+    document.getElementById('credUser').textContent = data.user.username;
+    document.getElementById('credPass').textContent = data.password;
+    ['fUsername','fPassword','fDays','fNote'].forEach(id => document.getElementById(id).value = '');
+    loadUsers();
+  }catch(e){
+    msg.textContent = '✗ ' + e.message; msg.className = 'msg-bar err';
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+async function toggleUser(username){
+  try{
+    const r = await fetch('/api/users/' + encodeURIComponent(username) + '/toggle', { method: 'POST' });
+    if(!r.ok){ const d = await r.json(); throw new Error(d.error || 'HTTP ' + r.status); }
+    loadUsers();
+  }catch(e){ showListMsg('✗ ' + e.message); }
+}
+
+async function deleteUser(username){
+  if(!confirm('确定删除临时用户 ' + username + ' ？其正在使用的会话将在重启后失效。')) return;
+  try{
+    const r = await fetch('/api/users/' + encodeURIComponent(username), { method: 'DELETE' });
+    if(!r.ok){ const d = await r.json(); throw new Error(d.error || 'HTTP ' + r.status); }
+    loadUsers();
+  }catch(e){ showListMsg('✗ ' + e.message); }
+}
+
+function showListMsg(t){
+  const m = document.getElementById('listMsg');
+  m.textContent = t; m.className = 'msg-bar err';
+  setTimeout(() => { m.textContent = ''; }, 3000);
+}
+
+loadUsers();
+</script>
+</body>
+</html>
