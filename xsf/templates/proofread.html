@@ -1215,8 +1215,8 @@ var _dragOrigin = null; // {mx,my,x0,y0,x1,y1}
   function _down(clientX, clientY, target) {
     if (!_reocrMode) return;
     const rect = wrap.getBoundingClientRect();
-    const mx = clientX - rect.left;
-    const my = clientY - rect.top;
+    const mx = clamp(clientX - rect.left, 0, rect.width);
+    const my = clamp(clientY - rect.top, 0, rect.height);
     if (target.classList.contains('region-del')) {
       const idx = parseInt(target.dataset.idx);
       if (!isNaN(idx)) { _reocrRegions.splice(idx, 1); renderRegions(); updateReocrCount(); }
@@ -1263,14 +1263,20 @@ var _dragOrigin = null; // {mx,my,x0,y0,x1,y1}
       const ddy = (my - _dragOrigin.my) / sDisp;
       const r = _reocrRegions[_dragIdx];
       const o = _dragOrigin;
+      const iw = (img && img.naturalWidth) ? img.naturalWidth : Infinity;
+      const ih = (img && img.naturalHeight) ? img.naturalHeight : Infinity;
       if (_dragMode === 'move') {
-        r.x0 = o.x0 + ddx; r.y0 = o.y0 + ddy;
-        r.x1 = o.x1 + ddx; r.y1 = o.y1 + ddy;
+        const w = Math.min(o.x1 - o.x0, iw);
+        const h = Math.min(o.y1 - o.y0, ih);
+        r.x0 = clamp(o.x0 + ddx, 0, iw - w);
+        r.y0 = clamp(o.y0 + ddy, 0, ih - h);
+        r.x1 = r.x0 + w;
+        r.y1 = r.y0 + h;
       } else if (_dragMode === 'resize') {
-        if (_dragCorner.indexOf('l') >= 0) r.x0 = Math.min(o.x0 + ddx, o.x1 - 4);
-        if (_dragCorner.indexOf('r') >= 0) r.x1 = Math.max(o.x1 + ddx, o.x0 + 4);
-        if (_dragCorner.indexOf('t') >= 0) r.y0 = Math.min(o.y0 + ddy, o.y1 - 4);
-        if (_dragCorner.indexOf('b') >= 0) r.y1 = Math.max(o.y1 + ddy, o.y0 + 4);
+        if (_dragCorner.indexOf('l') >= 0) r.x0 = clamp(Math.min(o.x0 + ddx, o.x1 - 4), 0, iw);
+        if (_dragCorner.indexOf('r') >= 0) r.x1 = clamp(Math.max(o.x1 + ddx, o.x0 + 4), 0, iw);
+        if (_dragCorner.indexOf('t') >= 0) r.y0 = clamp(Math.min(o.y0 + ddy, o.y1 - 4), 0, ih);
+        if (_dragCorner.indexOf('b') >= 0) r.y1 = clamp(Math.max(o.y1 + ddy, o.y0 + 4), 0, ih);
       }
       renderRegions();
     }
