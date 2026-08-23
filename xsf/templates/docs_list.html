@@ -333,6 +333,7 @@ async function pollReocrStatus(){
 function updateReocrCell(j){
   let td = document.querySelector('td.reocr-cell[data-doc="'+j.doc_id+'"]');
   if(!td){
+    if(j.status !== 'running') return; // 终态任务不注入新单元格 (列表已刷新过), 防轮询-刷新死循环
     // 找到该行 actions 单元格, 在其后插入进度列
     const row = document.getElementById('row-'+j.doc_id);
     if(!row) return;
@@ -358,10 +359,16 @@ function updateReocrCell(j){
   }
 }
 
+let _reocrReloadTimer = null;
+
 function restoreReocrCell(td, j){
+  td.removeAttribute('data-doc'); // 先摘牌, 防重复调度刷新
+  if(_reocrReloadTimer) return;   // 多任务同时终态时只刷新一次
   // 终态显示 2.5s 后刷新列表恢复原按钮列
-  setTimeout(() => { loadPage(state.page); }, 2500);
-  td.removeAttribute('data-doc'); // 防重复调度刷新
+  _reocrReloadTimer = setTimeout(() => {
+    _reocrReloadTimer = null;
+    loadPage(state.page);
+  }, 2500);
 }
 
 async function reocrCancel(docId){
