@@ -2322,16 +2322,20 @@ async def edit_page(
 # ── 手工分栏重新 OCR ────────────────────────────────────
 
 def _reocr_regions_for_page(provider, src, page_num: int, region_list: list):
-    """分栏重 OCR 共享逻辑: 按 region 裁切页面 → 拼临时 PDF 一次 OCR → 收集 blocks.
+    """分栏重 OCR 共享逻辑: 整页上下文 OCR + region 几何过滤.
 
     region 坐标在 150dpi 页面像素空间 (与 page_image/bbox overlay 一致)。
-    返回 (new_blocks, page_w, page_h, n_crops), block bbox 已偏移回页面坐标。
-    无有效裁切区域时抛 ValueError; 调用方保证 page_num 在 1..len(src) 内。
+    整页按 300dpi 渲染构造单页 PDF (与整本重 OCR 相同几何 — 窄高裁切会
+    触发 PaddleOCR-VL 缩放不稳, 导致空白/幻觉, 见 2026-08-24 调查),
+    OCR 一次后只保留 bbox 落入某 region 的文字块 (中心点在 region 内,
+    或与 region 重叠面积 ≥ 块面积 50%), 坐标换算回 150dpi 空间。
+    返回 (new_blocks, page_w, page_h, n_regions);
+    block 按 (region 框选顺序, OCR 原始顺序) 排列。
+    无有效 region 时抛 ValueError; 调用方保证 page_num 在 1..len(src) 内。
     """
     import tempfile
 
-    PT_PER_PX = 72.0 / 150.0  # 150dpi 像素 → PDF 点
-    OCR_DPI = 300              # 裁切渲染精度（高清→paddle 取清晰像素）
+    OCR_DPI = 300  # 与整本重 OCR 一致的渲染精度
 
     page_obj = src[page_num - 1]
 
@@ -2339,9 +2343,7 @@ def _reocr_regions_for_page(provider, src, page_num: int, region_list: list):
     page_w = int(round(page_obj.rect.width * 150 / 72.0))
     page_h = int(round(page_obj.rect.height * 150 / 72.0))
 
-    # 每个 region 裁切为一张图，按顺序拼成多页 PDF
-    out_pdf = pymupdf.open()
-    crop_meta = []  # (x0, y0, log_w, log_h)
+    valid_regions = []
     for reg in region_list:
         try:
             x0, y0, x1, y1 = reg
@@ -2349,23 +2351,24 @@ def _reocr_regions_for_page(provider, src, page_num: int, region_list: list):
             continue
         if x1 <= x0 or y1 <= y0:
             continue
-        clip = pymupdf.Rect(x0 * PT_PER_PX, y0 * PT_PER_PX,
-                            x1 * PT_PER_PX, y1 * PT_PER_PX)
-        cpix = page_obj.get_pixmap(dpi=OCR_DPI, clip=clip)
-        if cpix.width <= 0 or cpix.height <= 0:
-            continue
-        # 逻辑页面尺寸 = 150dpi 空间像素数（paddle bbox 空间不变），
-        # 但 image object 是 OCR_DPI 高清 → 精度提升
-        log_w = max(1, int(round(x1 - x0)))
-        log_h = max(1, int(round(y1 - y0)))
-        cpage = out_pdf.new_page(width=log_w, height=log_h)
-        cpage.insert_image(cpage.rect, pixmap=cpix)
-        crop_meta.append((float(x0), float(y0), log_w, log_h))
+        valid_regions.append((float(x0), float(y0), float(x1), float(y1)))
 
-    if not crop_meta:
-        out_pdf.close()
+    if not valid_regions:
         raise ValueError("没有有效的裁切区域")
 
+    # 整页构造单页 PDF, 一次 OCR (页面尺寸=300dpi 像素数, 同 _run_reocr_doc)
+    # 防御: 超大页面 300dpi 渲染可能 OOM, 按面积封顶自适应降 dpi (下限 150)
+    ocr_dpi = OCR_DPI
+    page_area_pt = page_obj.rect.width * page_obj.rect.height
+    if page_area_pt > 0:
+        max_area_px = 40_000_000  # ~6.6 个 A4@300dpi
+        est_area = page_area_pt * (ocr_dpi / 72.0) ** 2
+        if est_area > max_area_px:
+            ocr_dpi = max(150, int(ocr_dpi * (max_area_px / est_area) ** 0.5))
+    pix = page_obj.get_pixmap(dpi=ocr_dpi)
+    out_pdf = pymupdf.open()
+    cpage = out_pdf.new_page(width=pix.width, height=pix.height)
+    cpage.insert_image(cpage.rect, pixmap=pix)
     fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
     os.close(fd)
     try:
@@ -2377,41 +2380,59 @@ def _reocr_regions_for_page(provider, src, page_num: int, region_list: list):
     finally:
         os.unlink(tmp_pdf)
 
-    # 收集 OCR 结果，按 region 顺序，bbox 偏移回原页面坐标
-    new_blocks = []  # {block_label, bbox, lines:[str,...]}
-    for i, page in enumerate(pages):
-        if i >= len(crop_meta):
-            break
-        ox, oy, _, _ = crop_meta[i]
-        parsing_res_list = page.get('parsing_res_list', [])
-        for block in parsing_res_list:
-            label = block.get('block_label', '')
-            if label == 'header':
-                continue
-            content = block.get('block_content', '')
-            if isinstance(content, dict):
-                text = content.get('html') or content.get('markdown') or ''
-            else:
-                text = str(content) if content else ''
-            text = text.strip()
-            if not text:
-                continue
-            # paddle-VL 整段识别 → 按 \n 切行（无独立行框，bbox 用 block 近似）
-            lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
-            if not lines:
-                continue
-            bbox = block.get('block_bbox')
-            # bbox 偏移：crop 内坐标 + region 左上角偏移
-            shifted = None
-            if bbox and len(bbox) >= 4:
-                shifted = [bbox[0] + ox, bbox[1] + oy,
-                           bbox[2] + ox, bbox[3] + oy]
-            new_blocks.append({
-                "block_label": label,
-                "bbox": shifted,
-                "lines": lines,
-            })
-    return new_blocks, page_w, page_h, len(crop_meta)
+    # paddle bbox 像素空间 → 150dpi 空间换算系数
+    # (协议: 响应 width/height 与 block_bbox 同一像素空间)
+    page0 = pages[0] if pages else {}
+    ow = float(page0.get('width') or 0) or float(pix.width) * 2
+    oh = float(page0.get('height') or 0) or float(pix.height) * 2
+    kx = page_w / ow
+    ky = page_h / oh
+
+    # 收集落入 region 的 blocks: (region_idx, ocr_order, block)
+    assigned = []
+    for order, block in enumerate(page0.get('parsing_res_list', [])):
+        label = block.get('block_label', '')
+        if label == 'header':
+            continue
+        content = block.get('block_content', '')
+        if isinstance(content, dict):
+            text = content.get('html') or content.get('markdown') or ''
+        else:
+            text = str(content) if content else ''
+        text = text.strip()
+        if not text:
+            continue
+        # paddle-VL 整段识别 → 按 \n 切行（无独立行框，bbox 用 block 近似）
+        lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+        if not lines:
+            continue
+        bbox = block.get('block_bbox')
+        if not bbox or len(bbox) < 4:
+            continue  # 无几何信息无法归属 region
+        try:
+            bx0, by0 = bbox[0] * kx, bbox[1] * ky
+            bx1, by1 = bbox[2] * kx, bbox[3] * ky
+        except (TypeError, ValueError):
+            continue  # bbox 非数值, 无法换算
+        barea = max(1e-6, (bx1 - bx0) * (by1 - by0))
+        cx, cy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0
+        for ri, (rx0, ry0, rx1, ry1) in enumerate(valid_regions):
+            center_in = (rx0 <= cx <= rx1) and (ry0 <= cy <= ry1)
+            if not center_in:
+                ix = max(0.0, min(bx1, rx1) - max(bx0, rx0))
+                iy = max(0.0, min(by1, ry1) - max(by0, ry0))
+                center_in = (ix * iy) / barea >= 0.5
+            if center_in:
+                assigned.append((ri, order, {
+                    "block_label": label,
+                    "bbox": [bx0, by0, bx1, by1],
+                    "lines": lines,
+                }))
+                break  # 一个 block 只归第一个匹配的 region
+
+    assigned.sort(key=lambda t: (t[0], t[1]))
+    new_blocks = [b for _, _, b in assigned]
+    return new_blocks, page_w, page_h, len(valid_regions)
 
 
 def _write_reocr_page(conn, doc_id: int, page_num: int, new_blocks: list,
@@ -2476,8 +2497,8 @@ def reocr_page(
 
     regions: JSON 编码的矩形列表，每个 = [x0,y0,x1,y1]，坐标在「150dpi 页面像素空间」
     （与 page_image 端点渲染的图片及现有 bbox overlay 坐标系一致）。
-    每个 region 裁切为一张图，按顺序拼成多页 PDF 一次提交 OCR；
-    返回结果按 region 顺序追加为新 block，bbox 偏移回原页面坐标。
+    整页上下文 OCR 一次后按几何过滤，只保留落入 region 的文字块，
+    bbox 换算回 150dpi 页面坐标；block 按 (region 框选顺序, OCR 原序) 排列。
     replace=True 时先清空该页原有 lines/blocks_fts 再写入。
     """
     try:
@@ -2881,7 +2902,8 @@ def reocr_range(
     """把手工分栏 region 批量应用到页范围 (后台线程逐页 OCR).
 
     region 坐标在 template_page (150dpi 页面像素空间) 上框选;
-    每个目标页按页面尺寸等比缩放坐标后裁切 OCR, 总是替换目标页原文本。
+    每个目标页按页面尺寸等比缩放坐标后, 整页上下文 OCR + region 几何过滤,
+    总是替换目标页原文本。
     fire-and-forget: 立即返回, 进度经 /reocr/status 轮询 (mode=regions)。
     """
     from .ocr import get_provider
