@@ -1105,7 +1105,9 @@ function applyScale() {
 
 // ── 整页自动保存 (debounce 1s) ──
 let _saveTimer = null;
+let _pageDirty = false;  // 仅用户真实编辑过才在离开时抢救保存
 function onPageEdit() {
+  _pageDirty = true;
   clearTimeout(_saveTimer);
   const el = document.getElementById('saveStatus');
   if (el) { el.textContent = '未保存'; el.className = 'save-status'; }
@@ -1130,6 +1132,7 @@ async function autoSavePage() {
     );
     const data = await res.json();
     if (res.ok && data.ok) {
+      _pageDirty = false;
       if (status) { status.textContent = '已保存 ✓'; status.className = 'save-status saved'; }
     } else {
       if (status) { status.textContent = '保存失败'; status.className = 'save-status error'; }
@@ -1140,9 +1143,9 @@ async function autoSavePage() {
     setTimeout(() => autoSavePage(), 3000);
   }
 }
-// 离开页面前保存
+// 离开页面前保存（仅当有未保存的用户编辑；防止 reocr 后 reload 用旧编辑器内容覆盖 DB）
 window.addEventListener('beforeunload', () => {
-  if (IS_GUEST) return;
+  if (IS_GUEST || !_pageDirty) return;
   clearTimeout(_saveTimer);
   const el = document.getElementById('pageText');
   if (el) {
@@ -1489,6 +1492,7 @@ async function doReocr() {
     );
     const data = await res.json();
     if (res.ok && data.status === 'ok') {
+      _pageDirty = false;  // 用户明确选择替换本页，弃用编辑器中的旧内容
       alert('重OCR完成：替换/新增 ' + data.new_blocks + ' 个文本块');
       const url = new URL(window.location.href);
       url.searchParams.delete('block');
