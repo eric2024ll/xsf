@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="/favicon.ico">
 <title>资料上传 — 小書房</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v={{ static_v }}">
 <style>
 .main { max-width: 700px; margin: 0 auto; padding: 20px; }
 .tab-bar { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
@@ -261,7 +261,7 @@
 
 <div class="msg" id="msg"></div>
 
-<script src="/static/nav.js"></script>
+<script src="/static/nav.js?v={{ static_v }}"></script>
 <script>
 var currentCollection = {{ collection | tojson }};
 var _TAG_LABELS = {primary:'原始史料', secondary:'研究文献', reference:'工具书'};

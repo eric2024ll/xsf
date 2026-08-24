@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="/favicon.ico">
 <title>文献列表 — 小書房</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v={{ static_v }}">
 <style>
 .container{max-width:1200px;margin:0 auto;padding:20px;}
 .top-bar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px;}
@@ -183,8 +183,8 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
 
 {% include '_preview_modal.html' %}
 
-<script src="/static/nav.js"></script>
-<script src="/static/preview-modal.js"></script>
+<script src="/static/nav.js?v={{ static_v }}"></script>
+<script src="/static/preview-modal.js?v={{ static_v }}"></script>
 <script>
 const collection = {{ collection | tojson }};
 const IS_GUEST = {{ 'true' if request.state.role == 'guest' else 'false' }};

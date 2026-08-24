@@ -48,6 +48,13 @@ _VERSION = "0.1.0"
 _BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
+# 静态资源版本号: 取 static 目录最新 mtime, 引用处带 ?v= 破浏览器启发式强缓存
+_static_v = format(
+    int(max((p.stat().st_mtime for p in (_BASE_DIR / "static").rglob("*") if p.is_file()), default=0)),
+    "x",
+)
+templates.env.globals["static_v"] = _static_v
+
 
 def _first_line_id_for_block(doc_id: int, page_num: int, block_num: int,
                              collection: str) -> int | None:

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="/favicon.ico">
 <title>小書房 — 书架</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v={{ static_v }}">
 <style>
 .main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .section-title { font-size: 1rem; font-weight: 700; margin-bottom: 12px; color: var(--text); }
@@ -81,8 +81,8 @@
 
 {% include '_preview_modal.html' %}
 
-<script src="/static/nav.js"></script>
-<script src="/static/preview-modal.js"></script>
+<script src="/static/nav.js?v={{ static_v }}"></script>
+<script src="/static/preview-modal.js?v={{ static_v }}"></script>
 <script>
 window.LAST_COLLECTION = {{ last_collection | tojson }};
 function escapeHtml(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}

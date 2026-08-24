@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="/favicon.ico">
 <title>{% if error %}校对页错误{% else %}校对 - {{ doc.title or doc.filename }} · 第 {{ page_num }} 页{% endif %}</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v={{ static_v }}">
 <style>
 
 /* ── 来源标签 ── */
@@ -896,7 +896,7 @@ mark {
 {% endif %}
 
 {% if not error %}
-<script src="/static/bib.js"></script>
+<script src="/static/bib.js?v={{ static_v }}"></script>
 <script>
 const collection = {{ collection | tojson }};
 const docId = {{ doc.id | default('null') | tojson }};

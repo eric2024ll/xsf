@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="/favicon.ico">
 <title>搜索 — 小書房</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v={{ static_v }}">
 <style>
 .search-toolbar {
   display: block; padding: 10px 14px; margin-bottom: 12px;
@@ -78,8 +78,8 @@
 
 {% include '_preview_modal.html' %}
 
-<script src="/static/nav.js"></script>
-<script src="/static/preview-modal.js"></script>
+<script src="/static/nav.js?v={{ static_v }}"></script>
+<script src="/static/preview-modal.js?v={{ static_v }}"></script>
 <script>
 var currentCollection = {{ collection | tojson }};
 var currentQuery = {{ q | tojson }};
