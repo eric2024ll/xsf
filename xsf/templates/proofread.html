@@ -1024,6 +1024,7 @@ window.BIB_FIELD_LABELS = {{ bib_field_labels | default({}) | tojson }};
     data: Object.assign({}, {{ bib_data | default({}) | tojson }}),
     docId: docId,
     coll: collection,
+    docTitle: (doc && doc.title) || '',
     citeKey: citeKey,
     readOnlyCiteKey: true
   });

@@ -6,7 +6,7 @@
  *   BIB_FIELD_LABELS  — { 'author': '作者', ... }
  *
  * 调用:
- *   bibEditor.mount(panelElId, { type, data, docId, coll, citeKey, readOnlyCiteKey })
+ *   bibEditor.mount(panelElId, { type, data, docId, coll, docTitle, citeKey, readOnlyCiteKey })
  *   bibEditor.getData() → { bib_type, bib_data }
  */
 
@@ -17,11 +17,14 @@ var bibEditor = (function() {
     data: {},
     docId: 0,
     coll: '',
+    docTitle: '',
     citeKey: '',
     readOnlyCiteKey: false,
     extraFields: [],
     panelEl: null,
   };
+
+  var _pickData = null;
 
   function _label(f) {
     return (window.BIB_FIELD_LABELS && window.BIB_FIELD_LABELS[f]) || f;
@@ -46,6 +49,7 @@ var bibEditor = (function() {
     _state.data = Object.assign({}, opts.data || {});
     _state.docId = opts.docId || 0;
     _state.coll = opts.coll || '';
+    _state.docTitle = opts.docTitle || '';
     _state.citeKey = opts.citeKey || '';
     _state.readOnlyCiteKey = !!opts.readOnlyCiteKey;
     _state.extraFields = [];
@@ -273,14 +277,154 @@ var bibEditor = (function() {
     }
   }
 
+  /* ── 导入: 服务端解析 + 多条目比对选择 ── */
+
+  /**
+   * 统一导入入口: 走服务端 match-bib 解析.
+   * 单条目 → 直接填充; 多条目 → 弹窗让用户比对选择 (与文献列表页行为对齐).
+   * 无服务端上下文 (无 docId/coll) 时回退前端单条目解析.
+   */
+  function _importText(text) {
+    text = (text || '').trim();
+    if (!text || text.indexOf('@') < 0) {
+      _showMsg('✗ 未找到 BibTeX 内容');
+      return;
+    }
+    if (!_state.docId || !_state.coll) {
+      _applyResult(parseBibtex(text));
+      return;
+    }
+    _showMsg('解析中…');
+    fetch('/collections/' + encodeURIComponent(_state.coll) + '/docs/match-bib', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bib_text: text, doc_ids: [_state.docId] })
+    }).then(function(res) {
+      return res.json().then(function(d) {
+        if (!res.ok || d.error) {
+          _showMsg('✗ ' + (d.error || '解析失败'));
+          return;
+        }
+        var entries = d.entries || [];
+        if (entries.length === 1) {
+          _applyResult({ bib_type: entries[0].type, cite_key: entries[0].cite_key, bib_data: entries[0].fields });
+        } else if (entries.length > 1) {
+          _openPicker(d);
+        } else {
+          _showMsg('✗ 未找到有效条目');
+        }
+      });
+    }).catch(function(e) {
+      _showMsg('✗ ' + (e && e.message ? e.message : '请求失败'));
+    });
+  }
+
+  /* ── 多条目比对弹窗 (bm-* 视觉沿用文献列表页) ── */
+
+  function _ensurePickerStyles() {
+    if (document.getElementById('bibPickerStyle')) return;
+    var st = document.createElement('style');
+    st.id = 'bibPickerStyle';
+    st.textContent = ''
+      + '.bm-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1600;align-items:center;justify-content:center;}'
+      + '.bm-modal{background:var(--card-bg,#fff);border-radius:var(--radius,8px);width:90%;max-width:700px;max-height:80vh;display:flex;flex-direction:column;}'
+      + '.bm-header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border,#ddd);}'
+      + '.bm-title{font-weight:700;font-size:1rem;}'
+      + '.bm-close{background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--text-muted,#888);}'
+      + '.bm-body{padding:18px;overflow-y:auto;flex:1;}'
+      + '.bm-doc-head{font-size:0.85rem;color:var(--text-muted,#888);margin-bottom:10px;word-break:break-all;}'
+      + '.bm-opt{display:flex;align-items:flex-start;gap:10px;padding:8px 4px;border-bottom:1px solid var(--bg,#f5f5f5);font-size:0.85rem;cursor:pointer;}'
+      + '.bm-opt input{margin-top:3px;flex:none;}'
+      + '.bm-entry{flex:1;min-width:0;word-break:break-all;}'
+      + '.bm-author{color:var(--text-muted,#888);}'
+      + '.bm-type{font-family:monospace;font-size:0.72rem;color:var(--text-muted,#888);}'
+      + '.bm-footer{display:flex;justify-content:flex-end;gap:10px;padding:12px 18px;border-top:1px solid var(--border,#ddd);}'
+      + '.bm-footer button{padding:6px 18px;border-radius:5px;border:1px solid var(--border,#ddd);cursor:pointer;font-size:0.85rem;background:var(--card-bg,#fff);}'
+      + '.bm-footer .bm-apply-btn{background:var(--primary,#2563eb);color:#fff;border-color:var(--primary,#2563eb);}';
+    document.head.appendChild(st);
+  }
+
+  function _openPicker(data) {
+    _ensurePickerStyles();
+    var ov = document.getElementById('bmPickOverlay');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'bmPickOverlay';
+      ov.className = 'bm-overlay';
+      document.body.appendChild(ov);
+    }
+    _pickData = data;
+
+    var bestIdx = -1;
+    var bestType = '';
+    if (data.matched && data.matched.length) {
+      bestIdx = data.matched[0].entry_idx;
+      bestType = data.matched[0].match_type || '';
+    }
+
+    var order = [];
+    if (bestIdx >= 0) order.push(bestIdx);
+    for (var i = 0; i < data.entries.length; i++) {
+      if (i !== bestIdx) order.push(i);
+    }
+
+    var rows = '';
+    for (var r = 0; r < order.length; r++) {
+      var idx = order[r];
+      var e = data.entries[idx] || {};
+      var f = e.fields || {};
+      var title = f.title || e.cite_key || '(无标题)';
+      var author = f.author || '';
+      var tag = (idx === bestIdx) ? (bestType === 'substring' ? ' ⚠️模糊匹配本文档' : ' ✅匹配本文档') : '';
+      rows += '<label class="bm-opt">'
+        + '<input type="radio" name="bmPickEntry" value="' + idx + '"' + (idx === bestIdx ? ' checked' : '') + '>'
+        + '<span class="bm-entry"><strong>' + _escape(title) + '</strong>'
+        + (author ? ' <span class="bm-author">' + _escape(author) + '</span>' : '')
+        + ' <span class="bm-type">' + _escape(e.type || '') + (e.cite_key ? ' · ' + _escape(e.cite_key) : '') + '</span>'
+        + tag + '</span></label>';
+    }
+
+    var head = _state.docTitle || ('文档 #' + _state.docId);
+    ov.innerHTML = '<div class="bm-modal">'
+      + '<div class="bm-header"><span class="bm-title">选择要导入的条目</span>'
+      + '<button type="button" class="bm-close" onclick="bibEditor.closePicker()">&times;</button></div>'
+      + '<div class="bm-body">'
+      + '<div class="bm-doc-head">' + _escape(head) + ' · 共 ' + data.entries.length + ' 条，请选择一条应用到编辑器：</div>'
+      + rows
+      + '</div>'
+      + '<div class="bm-footer"><button type="button" onclick="bibEditor.closePicker()">取消</button>'
+      + '<button type="button" class="bm-apply-btn" onclick="bibEditor.applyPicked()">应用</button></div>'
+      + '</div>';
+    ov.style.display = 'flex';
+    _showMsg('');
+  }
+
+  function closePicker() {
+    var ov = document.getElementById('bmPickOverlay');
+    if (ov) ov.style.display = 'none';
+  }
+
+  function applyPicked() {
+    var ov = document.getElementById('bmPickOverlay');
+    var sel = ov ? ov.querySelector('input[name="bmPickEntry"]:checked') : null;
+    if (!sel || !_pickData) {
+      _showMsg('✗ 请先选择一个条目');
+      return;
+    }
+    var e = (_pickData.entries || [])[parseInt(sel.value, 10)];
+    closePicker();
+    if (!e) return;
+    _applyResult({ bib_type: e.type, cite_key: e.cite_key, bib_data: e.fields });
+    _showMsg('✓ 已填充，请核对后保存');
+  }
+
   function importFile(event) {
     var file = event.target.files[0];
     if (!file) return;
     _showMsg('解析中…');
     var reader = new FileReader();
-    var self = this;
     reader.onload = function(e) {
-      _applyResult(parseBibtex(e.target.result));
+      _importText(e.target.result);
     };
     reader.readAsText(file);
     event.target.value = '';
@@ -289,14 +433,9 @@ var bibEditor = (function() {
   function onPaste(el) {
     var text = (el.value || '').trim();
     if (!text || text.indexOf('@') < 0) return;
-    var result = parseBibtex(text);
-    if (result && result.bib_data && Object.keys(result.bib_data).length > 0) {
-      _applyResult(result);
-      var ta = _state.panelEl.querySelector('.bib-paste-input');
-      if (ta) ta.value = '';
-    } else {
-      _showMsg('✗ 解析失败，请检查格式');
-    }
+    var ta = _state.panelEl.querySelector('.bib-paste-input');
+    if (ta) ta.value = '';
+    _importText(text);
   }
 
   return {
@@ -309,5 +448,7 @@ var bibEditor = (function() {
     importFile: importFile,
     onPaste: onPaste,
     parseBibtex: parseBibtex,
+    closePicker: closePicker,
+    applyPicked: applyPicked,
   };
 })();
