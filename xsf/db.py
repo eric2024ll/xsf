@@ -50,10 +50,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
 """
 
 
-def get_conn(collection: str) -> sqlite3.Connection:
+def get_conn(collection: str, create: bool = False) -> sqlite3.Connection:
+    """打开书架 DB. 默认 mode=rw 禁止 sqlite 静默创建新文件:
+    查询已删除书架时应报错, 而不是悄悄造出一个空壳 xsf.db 让书架「复活」.
+    create=True 仅用于 init_db 建库."""
     path = get_db_path(collection)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30)
+    mode = 'rwc' if create else 'rw'
+    if mode == 'rw':
+        if not path.exists():
+            raise sqlite3.OperationalError(f'书架 DB 不存在: {path}')
+        if path.stat().st_size == 0:
+            raise sqlite3.OperationalError(f'书架 DB 为空壳 (0 字节): {path}')
+    conn = sqlite3.connect(path.as_uri() + f'?mode={mode}', uri=True, timeout=30)
     conn.execute('PRAGMA foreign_keys = ON')
     conn.row_factory = sqlite3.Row
     return conn
@@ -113,7 +121,8 @@ def _migrate(conn):
 
 def init_db(collection: str):
     """初始化单个 collection 的 DB（建表 + 迁移）"""
-    conn = get_conn(collection)
+    get_db_path(collection).parent.mkdir(parents=True, exist_ok=True)
+    conn = get_conn(collection, create=True)
     conn.executescript(SCHEMA)
     _migrate(conn)
     conn.commit()

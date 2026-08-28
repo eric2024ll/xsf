@@ -31,11 +31,15 @@ def get_db_path(collection: str) -> Path:
 
 
 def list_collections() -> list[str]:
-    """扫描 db 目录下含 xsf.db 的子目录，返回 collection 名称列表"""
+    """扫描 db 目录下含非空 xsf.db 的子目录，返回 collection 名称列表.
+
+    跳过 0 字节空壳 (历史 bug: get_conn 曾静默创建空 DB)。
+    """
     db_dir = get_db_dir()
     result = []
     for child in sorted(db_dir.iterdir()):
-        if child.is_dir() and (child / 'xsf.db').exists():
+        db_file = child / 'xsf.db'
+        if child.is_dir() and db_file.exists() and db_file.stat().st_size > 0:
             result.append(child.name)
     return result
 

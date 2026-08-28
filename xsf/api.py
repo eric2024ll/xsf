@@ -392,8 +392,12 @@ async def api_create_collection(collection: str):
 
 
 @app.delete("/api/collections/{collection}")
-async def api_delete_collection(collection: str):
-    """删除书架: DB 目录 + 源文件目录."""
+async def api_delete_collection(request: Request, collection: str):
+    """删除书架: DB 目录 + 源文件目录.
+
+    若当前 last_collection cookie 就是被删书架, 一并清除, 避免残留 cookie
+    触发对已删书架的请求 → get_conn 静默重建空 DB → 书架「复活」。
+    """
     if collection not in list_collections():
         return JSONResponse({"error": "书架不存在"}, status_code=404)
     # DB 目录
@@ -404,6 +408,11 @@ async def api_delete_collection(collection: str):
     coll_dir = get_collections_dir() / collection
     if coll_dir.exists():
         shutil.rmtree(coll_dir)
+    last = _urlunquote(request.cookies.get("last_collection", ""))
+    if last == collection:
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie("last_collection")
+        return resp
     return {"ok": True}
 
 
