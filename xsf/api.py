@@ -1400,7 +1400,8 @@ async def api_docs_query(
                 params.append(f"%{title}%")
             if year:
                 conditions.append(
-                    "substr(json_extract(d.bib_data, '$.date'), 1, 4) = ?"
+                    "substr(COALESCE(json_extract(d.bib_data, '$.date'), "
+                    "json_extract(d.bib_data, '$.year')), 1, 4) = ?"
                 )
                 params.append(year)
 
