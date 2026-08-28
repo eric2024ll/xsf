@@ -89,10 +89,13 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
   <div class="filter-row">
     <span class="filter-group-label">筛选:</span>
     <span id="tagFilter"></span>
-    <input type="text" id="authorFilter" placeholder="作者" style="width:100px;">
-    <select id="bibTypeFilter"><option value="">文献类型</option></select>
-    <input type="text" id="titleFilter" placeholder="标题" style="width:140px;">
-    <input type="text" id="yearFilter" placeholder="年份" style="width:70px;">
+    <input type="text" id="authorFilter" placeholder="作者" style="width:100px;"
+           onchange="loadPage(1)" onkeydown="if(event.key==='Enter'&&!event.isComposing)loadPage(1)">
+    <select id="bibTypeFilter" onchange="loadPage(1)"><option value="">文献类型</option></select>
+    <input type="text" id="titleFilter" placeholder="标题" style="width:140px;"
+           onchange="loadPage(1)" onkeydown="if(event.key==='Enter'&&!event.isComposing)loadPage(1)">
+    <input type="text" id="yearFilter" placeholder="年份" style="width:70px;"
+           onchange="loadPage(1)" onkeydown="if(event.key==='Enter'&&!event.isComposing)loadPage(1)">
     <button class="btn" onclick="resetFilters()">重置</button>
     {% if request.state.role != 'guest' %}
     <div class="spacer"></div>
