@@ -53,6 +53,32 @@
 .result-actions a:hover, .result-actions button:hover { background: var(--accent); text-decoration: none; }
 .no-results { text-align: center; padding: 40px; color: var(--text-muted); }
 .coll-hint { padding: 20px; text-align: center; color: var(--text-muted); font-size: 0.88rem; }
+.doc-group {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  margin-bottom: 10px;
+}
+.doc-group-head {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  cursor: pointer; flex-wrap: wrap;
+}
+.doc-group-head:hover { background: var(--accent); }
+.doc-group-head .dg-title {
+  flex: 1; min-width: 200px; font-weight: 600; font-size: 0.92rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.doc-group-head .dg-count {
+  font-size: 0.78rem; background: var(--accent); color: var(--primary);
+  padding: 1px 8px; border-radius: 4px; white-space: nowrap;
+}
+.doc-group-head .dg-toggle { color: var(--text-muted); font-size: 0.85rem; width: 1em; flex-shrink: 0; }
+.doc-group-body { padding: 0 12px 12px; display: none; }
+.doc-group-body .result-item { margin-bottom: 8px; }
+.load-more {
+  display: block; margin: 8px auto 0; padding: 4px 16px; font-size: 0.8rem;
+  border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg);
+  color: var(--text); cursor: pointer; font-family: inherit;
+}
+.load-more:hover { background: var(--accent); }
 </style>
 </head>
 <body data-page="search">
@@ -93,18 +119,143 @@ async function doSearch(){
   if(!q||!currentCollection) return;
   currentQuery=q;
   var mode=document.getElementById('searchMode').value;
+  if(mode==='fts5'){ doFtsSearch(q); } else { doSagSearch(q); }
+}
+
+// ── FTS5: 按文档分组视图 ───────────────────────────────
+
+var groupData=[];
+
+async function doFtsSearch(q){
   var btn=document.getElementById('searchBtn');
   btn.disabled=true;btn.textContent='搜索中...';
   document.getElementById('resultCount').textContent='';
+  document.getElementById('results').innerHTML='';
   var base='/collections/'+encodeURIComponent(currentCollection)+'/';
-  var ep=(mode==='sag')?'sag-search?mode=vector&':'search?';
-  var params=new URLSearchParams({q:q,limit:(mode==='sag')?10:30});
   try{
-    var res=await fetch(base+ep+params);
+    var res=await fetch(base+'search-grouped?'+new URLSearchParams({q:q}));
     var data=await res.json();
-    renderResults(data,mode);
+    if(data.error){throw new Error(data.error);}
+    renderGroups(data);
+    if(data.groups&&data.groups.length){ toggleGroup(0,true); }
   }catch(e){
-    document.getElementById('resultCount').textContent='';
+    document.getElementById('results').innerHTML='<div class="no-results">搜索出错: '+escapeHtml(e.message)+'</div>';
+  }finally{
+    btn.disabled=false;btn.textContent='搜索';
+  }
+}
+
+function renderGroups(data){
+  var countEl=document.getElementById('resultCount');
+  var container=document.getElementById('results');
+  if(!data.groups||!data.groups.length){
+    countEl.innerHTML='<span class="engine-badge fts5">FTS5</span>';
+    container.innerHTML='<div class="no-results">未找到匹配结果</div>';
+    return;
+  }
+  var truncNote=data.groups_truncated?'（命中文献超过 '+data.groups.length+' 篇，仅列前 '+data.groups.length+' 篇）':'';
+  countEl.innerHTML='共命中 '+data.total_blocks+' 块 · '+data.total_docs+' 篇文献 '+
+    truncNote+'<span class="engine-badge fts5">FTS5</span>';
+  container.innerHTML='';
+  groupData=data.groups.map(function(g){
+    return {doc_id:g.doc_id,title:g.title||g.filename,cite_key:g.cite_key,
+            hit_count:g.hit_count,loaded:0};
+  });
+  groupData.forEach(function(g,i){ container.appendChild(buildGroupEl(i)); });
+}
+
+function buildGroupEl(i){
+  var g=groupData[i];
+  var div=document.createElement('div');
+  div.className='doc-group';
+  div.innerHTML=
+    '<div class="doc-group-head" id="dgh'+i+'" onclick="toggleGroup('+i+')">'+
+      '<span class="dg-toggle">▸</span>'+
+      '<span class="dg-title" title="'+attrEsc(g.title)+'">'+escapeHtml(g.title||('文档 #'+g.doc_id))+'</span>'+
+      (g.cite_key?'<span class="badge">['+escapeHtml(g.cite_key)+']</span>':'')+
+      '<span class="dg-count">'+g.hit_count+' 块命中</span>'+
+    '</div>'+
+    '<div class="doc-group-body" id="dgb'+i+'" style="display:none"><div id="dgl'+i+'"></div></div>';
+  return div;
+}
+
+function toggleGroup(i,forceOpen){
+  var g=groupData[i]; if(!g) return;
+  var body=document.getElementById('dgb'+i);
+  var arrow=document.querySelector('#dgh'+i+' .dg-toggle');
+  var open=forceOpen?true:(body.style.display==='none');
+  body.style.display=open?'block':'none';
+  arrow.textContent=open?'▾':'▸';
+  if(open&&g.loaded===0){ loadGroupBlocks(i); }
+}
+
+async function loadGroupBlocks(i){
+  var g=groupData[i];
+  var btn=document.getElementById('dgm'+i);
+  if(btn)btn.disabled=true;
+  var base='/collections/'+encodeURIComponent(currentCollection)+'/';
+  var params=new URLSearchParams({q:currentQuery,doc_id:g.doc_id,limit:20,offset:g.loaded});
+  try{
+    var res=await fetch(base+'search?'+params);
+    var data=await res.json();
+    if(data.error){throw new Error(data.error);}
+    var list=document.getElementById('dgl'+i);
+    (data.results||[]).forEach(function(r){ list.appendChild(buildBlockItem(r)); });
+    g.loaded+=(data.results||[]).length;
+    var more=document.getElementById('dgm'+i);
+    if(data.has_more){
+      if(!more){
+        more=document.createElement('button');
+        more.type='button';more.className='load-more';more.id='dgm'+i;
+        more.setAttribute('onclick','loadGroupBlocks('+i+')');
+        document.getElementById('dgb'+i).appendChild(more);
+      }
+      more.textContent='加载更多 ('+g.loaded+'/'+data.total+')';
+      more.disabled=false;
+    }else if(more){ more.remove(); }
+  }catch(e){
+    var el=document.getElementById('dgl'+i);
+    if(el){ el.innerHTML='<div class="no-results">加载出错: '+escapeHtml(e.message)+'</div>'; }
+    if(btn){ btn.disabled=false; }
+  }
+}
+
+function buildBlockItem(r){
+  var div=document.createElement('div');
+  div.className='result-item';
+  var preview=r.text&&r.text.length>300?r.text.slice(0,300)+'...':(r.text||'');
+  var collEnc=encodeURIComponent(currentCollection);
+  var meta='<div class="result-meta">'+
+      (r.page_num?'<span>第 '+r.page_num+' 页 / 段 '+r.block_num+'</span>':'')+
+      (r.score!=null?'<span>score '+Number(r.score).toFixed(3)+'</span>':'')+
+    '</div>';
+  var actions='<div class="result-actions">';
+  if(r.page_num){
+    var proofUrl='/collections/'+collEnc+'/doc/'+r.doc_id+'/proofread?page='+r.page_num+'&keyword='+encodeURIComponent(currentQuery)+'&block='+r.block_num;
+    if(r.line_id)proofUrl+='&line='+r.line_id;
+    actions+='<a href="'+proofUrl+'" target="_blank">校对</a>';
+  }
+  actions+='<button type="button" onclick="pmOpen('+attrEsc(JSON.stringify(currentCollection))+','+r.doc_id+','+(r.page_num?('{pageNum:'+r.page_num+',blockNum:'+r.block_num+',highlightTerms:highlightTerms}'):'{highlightTerms:highlightTerms}')+',title:'+attrEsc(JSON.stringify(r.title||''))+'})">预览</button></div>';
+  div.innerHTML=
+    meta+
+    '<div class="result-text">'+preview+'</div>'+
+    actions;
+  return div;
+}
+
+// ── SAG: 原扁平视图 ────────────────────────────────────
+
+async function doSagSearch(q){
+  var btn=document.getElementById('searchBtn');
+  btn.disabled=true;btn.textContent='搜索中...';
+  document.getElementById('resultCount').textContent='';
+  document.getElementById('results').innerHTML='';
+  var base='/collections/'+encodeURIComponent(currentCollection)+'/';
+  try{
+    var res=await fetch(base+'sag-search?mode=vector&'+new URLSearchParams({q:q,limit:10}));
+    var data=await res.json();
+    renderResults(data,'sag');
+  }catch(e){
     document.getElementById('results').innerHTML='<div class="no-results">搜索出错: '+escapeHtml(e.message)+'</div>';
   }finally{
     btn.disabled=false;btn.textContent='搜索';
@@ -124,30 +275,7 @@ function renderResults(data,requestedMode){
   countEl.innerHTML='找到 '+data.count+' 条结果 <span class="engine-badge '+engine+'">'+engineLabel+'</span>';
   container.innerHTML='';
   for(var i=0;i<data.results.length;i++){
-    var r=data.results[i];
-    var div=document.createElement('div');
-    div.className='result-item';
-    var preview=r.text.length>300?r.text.slice(0,300)+'...':r.text;
-    var collEnc=encodeURIComponent(currentCollection);
-    var meta='<div class="result-meta">'+
-        '<span class="badge">'+escapeHtml(currentCollection)+'</span>'+
-        (r.page_num?'<span>第 '+r.page_num+' 页 / 段 '+r.block_num+'</span>':'')+
-        (r.cite_key?'<span>['+escapeHtml(r.cite_key)+']</span>':'')+
-        (r.score!=null?'<span>score '+Number(r.score).toFixed(3)+'</span>':'')+
-      '</div>';
-    var actions='<div class="result-actions">';
-    if(r.page_num){
-      var proofUrl='/collections/'+collEnc+'/doc/'+r.doc_id+'/proofread?page='+r.page_num+'&keyword='+encodeURIComponent(currentQuery)+'&block='+r.block_num;
-      if(r.line_id)proofUrl+='&line='+r.line_id;
-      actions+='<a href="'+proofUrl+'" target="_blank">校对</a>';
-    }
-    actions+='<button type="button" onclick="pmOpen('+attrEsc(JSON.stringify(currentCollection))+','+r.doc_id+','+(r.page_num?('{pageNum:'+r.page_num+',blockNum:'+r.block_num+',highlightTerms:highlightTerms}'):'{highlightTerms:highlightTerms}')+',title:'+attrEsc(JSON.stringify(r.title||''))+'})">预览</button></div>';
-    div.innerHTML=
-      meta+
-      '<div class="result-title">'+escapeHtml(r.title)+'</div>'+
-      '<div class="result-text">'+preview+'</div>'+
-      actions;
-    container.appendChild(div);
+    container.appendChild(buildBlockItem(data.results[i]));
   }
 }
 

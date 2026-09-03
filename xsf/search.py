@@ -47,23 +47,32 @@ def get_highlight_terms(query: str) -> list[str]:
     return sorted(all_terms, key=len, reverse=True)
 
 
+def _search_filters(source_type: str, doc_id: int) -> tuple[str, list]:
+    """构造 source_type / doc_id 过滤 (WHERE 追加段 + 参数)."""
+    extra_where = ''
+    params = []
+    valid_types = {'primary', 'secondary', 'reference'}
+    if source_type and source_type in valid_types:
+        extra_where += f' AND d.is_{source_type} = 1'
+    if doc_id is not None:
+        extra_where += ' AND f.doc_id = ?'
+        params.append(doc_id)
+    return extra_where, params
+
+
 def search(query: str, collection: str,
-           limit: int = 20,
-           source_type: str = None) -> list[dict]:
-    """全文搜索，返回匹配块列表。
+           limit: int = 20, offset: int = 0,
+           source_type: str = None, doc_id: int = None) -> list[dict]:
+    """全文搜索，返回匹配块列表 (rank 序, 分页).
 
     source_type: 'primary'/'secondary'/'reference' 之一，用于按来源类型过滤。
+    doc_id: 给定时只搜该文档 (用于分组视图展开单篇)。
     """
     fts_q = _fts_query(query)
     if not fts_q:
         return []
 
-    valid_types = {'primary', 'secondary', 'reference'}
-    extra_where = ''
-    params = [fts_q]
-
-    if source_type and source_type in valid_types:
-        extra_where = f' AND d.is_{source_type} = 1'
+    extra_where, filter_params = _search_filters(source_type, doc_id)
 
     conn = get_conn(collection)
     try:
@@ -74,8 +83,62 @@ def search(query: str, collection: str,
                 JOIN documents d ON d.id = f.doc_id
                 WHERE blocks_fts MATCH ?{extra_where}
                 ORDER BY rank
+                LIMIT ? OFFSET ?''',
+            [fts_q] + filter_params + [limit, max(0, offset)]
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [dict(r) for r in rows]
+
+
+def count_hits(query: str, collection: str,
+               source_type: str = None, doc_id: int = None) -> dict:
+    """统计命中规模: 匹配块总数 + 涉及文献数."""
+    fts_q = _fts_query(query)
+    if not fts_q:
+        return {"blocks": 0, "docs": 0}
+
+    extra_where, filter_params = _search_filters(source_type, doc_id)
+
+    conn = get_conn(collection)
+    try:
+        row = conn.execute(
+            f'''SELECT COUNT(*) AS blocks, COUNT(DISTINCT f.doc_id) AS docs
+                FROM blocks_fts f
+                JOIN documents d ON d.id = f.doc_id
+                WHERE blocks_fts MATCH ?{extra_where}''',
+            [fts_q] + filter_params
+        ).fetchone()
+    finally:
+        conn.close()
+    return {"blocks": row["blocks"], "docs": row["docs"]}
+
+
+def search_grouped(query: str, collection: str,
+                   source_type: str = None, limit: int = 200) -> list[dict]:
+    """按文档聚合命中: 每篇的命中块数 + 最佳 rank.
+
+    排序: 命中块数降序, 同数按最佳 rank. 供搜索页分组视图.
+    """
+    fts_q = _fts_query(query)
+    if not fts_q:
+        return []
+
+    extra_where, filter_params = _search_filters(source_type, None)
+
+    conn = get_conn(collection)
+    try:
+        rows = conn.execute(
+            f'''SELECT f.doc_id, d.filename, d.title, d.cite_key,
+                       COUNT(*) AS hit_count, MIN(f.rank) AS best_rank
+                FROM blocks_fts f
+                JOIN documents d ON d.id = f.doc_id
+                WHERE blocks_fts MATCH ?{extra_where}
+                GROUP BY f.doc_id
+                ORDER BY hit_count DESC, best_rank ASC
                 LIMIT ?''',
-            params + [limit]
+            [fts_q] + filter_params + [limit]
         ).fetchall()
     finally:
         conn.close()

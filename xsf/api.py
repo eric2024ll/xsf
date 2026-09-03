@@ -32,7 +32,8 @@ from .config import (
 )
 from . import users as user_store
 from .db import init_db, get_conn
-from .search import search, get_block_lines, get_context, get_highlight_terms
+from .search import (search, search_grouped, count_hits, get_block_lines,
+                     get_context, get_highlight_terms)
 from .bib_utils import (
     generate_cite_key, sync_doc_fields, parse_bib_data, to_bibtex,
     parse_bib_entries, match_docs_to_entries,
@@ -615,10 +616,13 @@ def api_test_ocr_config(id: str = Form(None), url: str = Form(None),
 
 @app.get("/collections/{collection}/search")
 async def api_search(collection: str, q: str, limit: int = 20,
-                     source_type: str = None):
+                     offset: int = 0, source_type: str = None,
+                     doc_id: int = None):
+    """块级搜索 (rank 序, 分页). 响应含 total/has_more 供前端『加载更多』."""
     try:
         results = search(q, collection=collection, limit=limit,
-                         source_type=source_type)
+                         offset=offset, source_type=source_type,
+                         doc_id=doc_id)
         out = []
         for r in results:
             lines = get_block_lines(
@@ -638,8 +642,31 @@ async def api_search(collection: str, q: str, limit: int = 20,
                 "cite_key": r.get("cite_key"),
                 "text": _highlight_keyword(text, q),
             })
+        total = count_hits(q, collection=collection,
+                           source_type=source_type, doc_id=doc_id)["blocks"]
         return {"query": q, "collection": collection,
-                "count": len(out), "results": out}
+                "count": len(out), "results": out,
+                "total": total, "offset": offset, "limit": limit,
+                "has_more": offset + len(out) < total}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/collections/{collection}/search-grouped")
+async def api_search_grouped(collection: str, q: str,
+                             source_type: str = None, limit: int = 200):
+    """按文档聚合的搜索结果: 命中文献列表 + 每篇命中块数.
+
+    前端分组视图用: 先展示全部命中文献, 展开单篇再调 /search?doc_id=.
+    """
+    try:
+        groups = search_grouped(q, collection=collection,
+                                source_type=source_type, limit=limit)
+        stats = count_hits(q, collection=collection, source_type=source_type)
+        return {"query": q, "collection": collection,
+                "groups": groups,
+                "total_blocks": stats["blocks"], "total_docs": stats["docs"],
+                "groups_truncated": len(groups) >= limit}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
