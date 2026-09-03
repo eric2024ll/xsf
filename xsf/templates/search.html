@@ -87,10 +87,6 @@
   <div class="search-toolbar">
     <div class="st-search-row">
       <input type="text" id="searchInput" placeholder="输入搜索词..." autocomplete="off" value="{{ q }}">
-      <select id="searchMode" title="搜索模式">
-        <option value="fts5">关键词 (FTS5)</option>
-        <option value="sag">语义 (SAG)</option>
-      </select>
       <button type="button" id="searchBtn" onclick="doSearch()">搜索</button>
     </div>
   </div>
@@ -118,8 +114,7 @@ async function doSearch(){
   var q=document.getElementById('searchInput').value.trim();
   if(!q||!currentCollection) return;
   currentQuery=q;
-  var mode=document.getElementById('searchMode').value;
-  if(mode==='fts5'){ doFtsSearch(q); } else { doSagSearch(q); }
+  doFtsSearch(q);
 }
 
 // ── FTS5: 按文档分组视图 ───────────────────────────────
@@ -243,42 +238,6 @@ function buildBlockItem(r){
   return div;
 }
 
-// ── SAG: 原扁平视图 ────────────────────────────────────
-
-async function doSagSearch(q){
-  var btn=document.getElementById('searchBtn');
-  btn.disabled=true;btn.textContent='搜索中...';
-  document.getElementById('resultCount').textContent='';
-  document.getElementById('results').innerHTML='';
-  var base='/collections/'+encodeURIComponent(currentCollection)+'/';
-  try{
-    var res=await fetch(base+'sag-search?mode=vector&'+new URLSearchParams({q:q,limit:10}));
-    var data=await res.json();
-    renderResults(data,'sag');
-  }catch(e){
-    document.getElementById('results').innerHTML='<div class="no-results">搜索出错: '+escapeHtml(e.message)+'</div>';
-  }finally{
-    btn.disabled=false;btn.textContent='搜索';
-  }
-}
-
-function renderResults(data,requestedMode){
-  var countEl=document.getElementById('resultCount');
-  var container=document.getElementById('results');
-  if(!data.results||data.results.length===0){
-    countEl.textContent='';
-    container.innerHTML='<div class="no-results">未找到匹配结果</div>';
-    return;
-  }
-  var engine=data.engine||'fts5';
-  var engineLabel=(engine==='sag')?'SAG 语义':'FTS5'+((requestedMode==='sag'&&engine==='fts5')?' (降级)':'');
-  countEl.innerHTML='找到 '+data.count+' 条结果 <span class="engine-badge '+engine+'">'+engineLabel+'</span>';
-  container.innerHTML='';
-  for(var i=0;i<data.results.length;i++){
-    container.appendChild(buildBlockItem(data.results[i]));
-  }
-}
-
 document.getElementById('searchInput').addEventListener('keydown',function(e){
   if(e.key==='Enter')doSearch();
 });
@@ -287,17 +246,6 @@ if(currentQuery&&currentCollection){
   document.getElementById('searchInput').value=currentQuery;
   doSearch();
 }
-
-// SAG 可用性: 不可用则禁用语义选项 (提示降级)
-(function(){
-  fetch('/api/sag-status').then(function(r){return r.json();}).then(function(s){
-    var opt=document.querySelector('#searchMode option[value="sag"]');
-    if(s&&!s.healthy){
-      opt.disabled=true;
-      opt.textContent='语义 (SAG 不可用)';
-    }
-  }).catch(function(){});
-})();
 </script>
 </body>
 </html>

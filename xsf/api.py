@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List
 
@@ -671,162 +671,6 @@ async def api_search_grouped(collection: str, q: str,
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# ── SAG 语义搜索 ───────────────────────────────────────
-
-@app.get("/collections/{collection}/sag-search")
-async def api_sag_search(collection: str, q: str, limit: int = 10,
-                         mode: str = "vector"):
-    """SAG 语义搜索 (mode: vector|multi). SAG 不可用自动降级 FTS5.
-
-    响应带 engine 字段 ("sag" | "fts5") 供前端区分.
-    """
-    from . import sag_integration
-    from .search import get_highlight_terms
-
-    if mode not in ("vector", "multi"):
-        mode = "vector"
-
-    try:
-        try:
-            # run in a worker thread: sag_integration uses blocking requests
-            # (up to 120s) — calling it inline stalls the whole event loop,
-            # which cascades into every other endpoint timing out
-            results = await asyncio.to_thread(
-                sag_integration.search, q, collection, mode=mode, top_k=limit
-            )
-            out = []
-            for r in results:
-                out.append({
-                    "doc_id": r["doc_id"],
-                    "page_num": None,
-                    "block_num": None,
-                    "line_id": None,
-                    "filename": r.get("filename"),
-                    "title": r.get("title"),
-                    "cite_key": r.get("cite_key"),
-                    "score": r.get("score"),
-                    "text": _highlight_keyword(r["text"], q),
-                })
-            return {"query": q, "collection": collection, "engine": "sag",
-                    "mode": mode, "count": len(out), "results": out}
-        except sag_integration.SagUnavailable:
-            pass  # 降级 FTS5
-
-        # ── 降级: FTS5 ──
-        fts_results = search(q, collection=collection, limit=limit)
-        out = []
-        for r in fts_results:
-            lines_list = get_block_lines(
-                r["doc_id"], r["page_num"], r["block_num"], collection
-            )
-            text = " ".join(lines_list)
-            line_id = _first_line_id_for_block(
-                r["doc_id"], r["page_num"], r["block_num"], collection
-            )
-            out.append({
-                "doc_id": r["doc_id"],
-                "page_num": r["page_num"],
-                "block_num": r["block_num"],
-                "line_id": line_id,
-                "filename": r.get("filename"),
-                "title": r.get("title") or r.get("filename"),
-                "cite_key": r.get("cite_key"),
-                "score": None,
-                "text": _highlight_keyword(text, q),
-            })
-        return {"query": q, "collection": collection, "engine": "fts5",
-                "mode": mode, "count": len(out), "results": out}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-
-@app.get("/api/sag-status")
-async def api_sag_status():
-    """SAG 可用性探测 (前端切换搜索模式用)."""
-    from . import sag_integration
-    enabled = sag_integration.sag_base_url() is not None
-    healthy = (await asyncio.to_thread(sag_integration.health)) if enabled else False
-    return {"enabled": enabled, "healthy": healthy}
-
-
-# ── SAG 手动同步 (脏标记 + 并发去重) ─────────────────────
-
-_sag_sync_lock = threading.Lock()
-_sag_syncing: set = set()
-
-
-@contextmanager
-def _sag_sync_guard(collection: str, doc_id: int):
-    """(collection, doc_id) 粒度的同步互斥; 已在同步中时 yield True."""
-    key = (collection, doc_id)
-    with _sag_sync_lock:
-        busy = key in _sag_syncing
-        if not busy:
-            _sag_syncing.add(key)
-    try:
-        yield busy
-    finally:
-        if not busy:
-            with _sag_sync_lock:
-                _sag_syncing.discard(key)
-
-
-@app.post("/collections/{collection}/doc/{doc_id}/sag-sync")
-def api_sag_sync(collection: str, doc_id: int):
-    """手动同步单篇文档到 SAG (幂等: 删旧版→重 ingest), 成功清脏标记.
-
-    sync 端点: SAG ingest 大文档需数分钟, 走线程池不阻塞事件循环.
-    """
-    from . import sag_integration
-    logger = logging.getLogger("xsf.sag")
-
-    if not sag_integration.sag_base_url():
-        return JSONResponse(
-            status_code=503,
-            content={"error": "SAG 未配置 (XSF_SAG_URL)"},
-        )
-    # 并发去重: 同一篇正在同步中直接拒绝 (幂等重写若交错会产生 SAG 重复条目)
-    with _sag_sync_guard(collection, doc_id) as busy:
-        if busy:
-            return JSONResponse(
-                status_code=409,
-                content={"error": "该文档正在同步中"},
-            )
-        try:
-            result = sag_integration.sync_doc(doc_id, collection)
-        except Exception as e:
-            logger.warning("SAG sync 失败 coll=%s doc=%s: %s", collection, doc_id, e)
-            try:
-                conn = get_conn(collection)
-                try:
-                    conn.execute(
-                        "UPDATE documents SET sag_dirty = 1 WHERE id = ?",
-                        (doc_id,),
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
-            except Exception:
-                pass
-            return JSONResponse(status_code=502, content={"error": str(e)})
-        if not result.get("synced"):
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"文档不可同步: {result.get('reason')}"},
-            )
-        conn = get_conn(collection)
-        try:
-            conn.execute(
-                "UPDATE documents SET sag_dirty = 0 WHERE id = ?", (doc_id,),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    logger.info("SAG sync 完成 coll=%s doc=%s (%s)",
-                collection, doc_id, result.get("title"))
-    return {"ok": True, "doc_id": doc_id, "title": result.get("title")}
-
-
 # ── 单 collection 统计 ─────────────────────────────────
 
 @app.get("/collections/{collection}/stats")
@@ -1208,7 +1052,6 @@ async def api_update_doc(collection: str, doc_id: int,
                 conn.close()
 
         params.append(doc_id)
-        updates.append("sag_dirty = 1")  # 元数据变更 → SAG 待重同步
         sql = f"UPDATE documents SET {', '.join(updates)} WHERE id = ?"
 
         conn = get_conn(collection)
@@ -1296,7 +1139,7 @@ async def api_docs(collection: str, limit: int = 50):
                 """SELECT id, cite_key, title, author,
                           filename, page_count, doc_type,
                           is_primary, is_secondary, is_reference,
-                          sag_dirty, created_at
+                          created_at
                    FROM documents
                    ORDER BY created_at DESC LIMIT ?""",
                 (limit,),
@@ -1688,8 +1531,7 @@ async def api_batch_patch(collection: str, request: Request):
                 conn.execute(
                     """UPDATE documents
                        SET cite_key=?, bib_type=?, bib_data=?,
-                           title=COALESCE(?, title), author=COALESCE(?, author),
-                           sag_dirty=1
+                           title=COALESCE(?, title), author=COALESCE(?, author)
                        WHERE id=?""",
                     (ck, bib_type, json.dumps(bib_data, ensure_ascii=False),
                      synced["title"], synced["author"], doc_id),
@@ -2281,10 +2123,6 @@ async def edit_line(
                 "UPDATE lines SET text = ? WHERE id = ?",
                 (text, line_id),
             )
-            # 校对改动 → SAG 待重同步
-            conn.execute(
-                "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
-            )
 
             # 重新聚合该 block 全文
             block_rows = conn.execute(
@@ -2338,10 +2176,6 @@ async def edit_page(
             conn.execute(
                 "DELETE FROM blocks_fts WHERE doc_id = ? AND page_num = ?",
                 (doc_id, page_num),
-            )
-            # 校对改动 → SAG 待重同步
-            conn.execute(
-                "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
             )
 
             for bn, bt in enumerate(text.split("\n\n"), 1):
@@ -2527,9 +2361,6 @@ def _write_reocr_page(conn, doc_id: int, page_num: int, new_blocks: list,
             (doc_id, page_num, block_num,
              _tokenize(full_text)),
         )
-    conn.execute(
-        "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
-    )
     conn.commit()
     return total_lines
 
@@ -2746,7 +2577,7 @@ def _run_reocr_doc(collection: str, doc_id: int, provider, pdf_path: Path,
             (doc_id, total_pages),
         )
         conn.execute(
-            "UPDATE documents SET doc_type = 'ocr', sag_dirty = 1 WHERE id = ?",
+            "UPDATE documents SET doc_type = 'ocr' WHERE id = ?",
             (doc_id,),
         )
         conn.commit()
@@ -2822,15 +2653,6 @@ def reocr_doc(collection: str, doc_id: int):
                 "error": None, "cancel": False,
                 "mode": "full", "page_from": 1, "page_to": total_pages,
             }
-        # 先置脏: 逐页提交中途崩溃也能在 SAG 同步 tab 看到待重同步
-        conn = get_conn(collection)
-        try:
-            conn.execute(
-                "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
-            )
-            conn.commit()
-        finally:
-            conn.close()
         threading.Thread(
             target=_run_reocr_doc,
             args=(collection, doc_id, provider, pdf_path, total_pages),
@@ -3029,15 +2851,6 @@ def reocr_range(
                 "error": None, "cancel": False,
                 "mode": "regions", "page_from": page_from, "page_to": page_to,
             }
-        # 先置脏: 逐页提交中途崩溃也能在 SAG 同步 tab 看到待重同步
-        conn = get_conn(collection)
-        try:
-            conn.execute(
-                "UPDATE documents SET sag_dirty = 1 WHERE id = ?", (doc_id,),
-            )
-            conn.commit()
-        finally:
-            conn.close()
         threading.Thread(
             target=_run_reocr_regions,
             args=(collection, doc_id, provider, pdf_path,

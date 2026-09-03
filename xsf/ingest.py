@@ -106,8 +106,6 @@ def ingest_pdf(pdf_path: str | Path, collection: str,
         conn.close()
         doc.close()
 
-    _sync_sag(doc_id, collection)
-
     return {
         'doc_id': doc_id,
         'pages': page_count,
@@ -211,8 +209,6 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
     finally:
         conn.close()
 
-    _sync_sag(doc_id, collection)
-
     return {
         'doc_id': doc_id,
         'pages': page_count,
@@ -278,8 +274,6 @@ def ingest_markdown(md_path: str | Path, collection: str,
     finally:
         conn.close()
 
-    _sync_sag(doc_id, collection)
-
     return {
         'doc_id': doc_id,
         'pages': 1,
@@ -343,34 +337,6 @@ def ingest_image(img_path: str | Path, collection: str,
     return result
 
 
-def _sync_sag(doc_id: int, collection: str) -> None:
-    """入库后同步文档到 SAG (best effort, 失败静默降级 FTS-only).
-
-    失败时置 sag_dirty=1, 由上传页「SAG 同步」tab 手动重试.
-    """
-    import logging
-    logger = logging.getLogger("xsf.sag")
-    try:
-        from . import sag_integration
-        sag_integration.sync_doc(doc_id, collection)
-        logger.info("SAG 入库同步 coll=%s doc=%s", collection, doc_id)
-    except Exception as e:
-        logger.warning("SAG 入库同步失败 (置脏待手动重试) coll=%s doc=%s: %s",
-                       collection, doc_id, e)
-        try:
-            conn = get_conn(collection)
-            try:
-                conn.execute(
-                    "UPDATE documents SET sag_dirty = 1 WHERE id = ?",
-                    (doc_id,),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception:
-            pass
-
-
 def remove_doc(doc_id: int, collection: str):
     """删除文献（数据库 + PDF 文件）"""
     from .config import get_collections_dir
@@ -396,9 +362,3 @@ def remove_doc(doc_id: int, collection: str):
         fp = get_collections_dir() / "uploads" / filename
         if fp.exists():
             fp.unlink()
-
-    try:
-        from . import sag_integration
-        sag_integration.remove_doc(doc_id, collection)
-    except Exception:
-        pass
