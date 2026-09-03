@@ -235,7 +235,7 @@ function buildBlockItem(r){
     if(r.line_id)proofUrl+='&line='+r.line_id;
     actions+='<a href="'+proofUrl+'" target="_blank">校对</a>';
   }
-  actions+='<button type="button" onclick="pmOpen('+attrEsc(JSON.stringify(currentCollection))+','+r.doc_id+','+(r.page_num?('{pageNum:'+r.page_num+',blockNum:'+r.block_num+',highlightTerms:highlightTerms}'):'{highlightTerms:highlightTerms}')+',title:'+attrEsc(JSON.stringify(r.title||''))+'})">预览</button></div>';
+  actions+='<button type="button" onclick="pmOpen('+attrEsc(JSON.stringify(currentCollection))+','+r.doc_id+','+(r.page_num?('{pageNum:'+r.page_num+',blockNum:'+r.block_num+','):'{')+'highlightTerms:highlightTerms,title:'+attrEsc(JSON.stringify(r.title||''))+'})">预览</button></div>';
   div.innerHTML=
     meta+
     '<div class="result-text">'+preview+'</div>'+

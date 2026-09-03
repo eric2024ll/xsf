@@ -688,8 +688,12 @@ async def api_sag_search(collection: str, q: str, limit: int = 10,
 
     try:
         try:
-            results = sag_integration.search(q, collection,
-                                             mode=mode, top_k=limit)
+            # run in a worker thread: sag_integration uses blocking requests
+            # (up to 120s) — calling it inline stalls the whole event loop,
+            # which cascades into every other endpoint timing out
+            results = await asyncio.to_thread(
+                sag_integration.search, q, collection, mode=mode, top_k=limit
+            )
             out = []
             for r in results:
                 out.append({
@@ -741,7 +745,8 @@ async def api_sag_status():
     """SAG 可用性探测 (前端切换搜索模式用)."""
     from . import sag_integration
     enabled = sag_integration.sag_base_url() is not None
-    return {"enabled": enabled, "healthy": sag_integration.health() if enabled else False}
+    healthy = (await asyncio.to_thread(sag_integration.health)) if enabled else False
+    return {"enabled": enabled, "healthy": healthy}
 
 
 # ── SAG 手动同步 (脏标记 + 并发去重) ─────────────────────
