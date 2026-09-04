@@ -28,7 +28,8 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import (
-    get_collections_dir, list_collections, get_auth_token, get_db_path,
+    get_collections_dir, get_upload_dir, get_upload_path,
+    list_collections, get_auth_token, get_db_path,
 )
 from . import users as user_store
 from .db import init_db, get_conn
@@ -78,7 +79,6 @@ async def lifespan(app: FastAPI):
     """启动时初始化所有已有 collection 的 DB"""
     for coll in list_collections():
         init_db(coll)
-    (get_collections_dir() / "uploads").mkdir(parents=True, exist_ok=True)
     yield
 
 
@@ -867,8 +867,7 @@ async def api_add(
     """
     try:
         init_db(collection)
-        upload_dir = get_collections_dir() / "uploads"
-        upload_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir = get_upload_dir(collection)
 
         results = []
         errors = []
@@ -1088,8 +1087,7 @@ async def api_link_pdf(collection: str, doc_id: int,
                 content={"error": "仅支持 PDF 文件"},
             )
 
-        upload_dir = get_collections_dir() / "uploads"
-        upload_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir = get_upload_dir(collection)
         dst = upload_dir / fname
         content = await file.read()
         with open(dst, "wb") as f:
@@ -1592,7 +1590,7 @@ async def api_export_archive(collection: str, request: Request):
         # 2. 打包 tar.gz
         fd, tmp_tar = tempfile.mkstemp(suffix=".tar.gz")
         os.close(fd)
-        uploads_dir = get_collections_dir() / "uploads"
+        uploads_dir = get_upload_dir(collection)
         with tarfile.open(tmp_tar, "w:gz") as tar:
             tar.add(tmp_db, arcname="export.db")
             manifest = {
@@ -1654,8 +1652,7 @@ async def api_import_archive(collection: str, file: UploadFile = File(...)):
                 )
 
             src_uploads = Path(tmp_dir) / "uploads"
-            dst_uploads = get_collections_dir() / "uploads"
-            dst_uploads.mkdir(parents=True, exist_ok=True)
+            dst_uploads = get_upload_dir(collection)
 
             # 2. 三表联动导入
             src = sqlite3.connect(str(tmp_db_path))
@@ -1894,7 +1891,7 @@ async def proofread_page(
             # md 文档关联了 PDF 时，翻页范围跟随 PDF
             linked_pdf = doc["linked_pdf"] if "linked_pdf" in doc.keys() else None
             if linked_pdf:
-                lp_path = get_collections_dir() / "uploads" / linked_pdf
+                lp_path = get_upload_path(collection, linked_pdf)
                 if lp_path.exists():
                     try:
                         lp_doc = pymupdf.open(lp_path)
@@ -1971,7 +1968,7 @@ async def proofread_page(
         # 按 150 DPI 渲染时图片自然尺寸
         render_width = None
         render_height = None
-        pdf_path = get_collections_dir() / "uploads" / doc["filename"]
+        pdf_path = get_upload_path(collection, doc["filename"])
         if pdf_path.exists():
             try:
                 pdf_doc = pymupdf.open(pdf_path)
@@ -2063,7 +2060,7 @@ async def page_image(collection: str, doc_id: int, page_num: int):
         finally:
             conn.close()
 
-        pdf_path = get_collections_dir() / "uploads" / filename
+        pdf_path = get_upload_path(collection, filename)
         if not pdf_path.exists():
             return JSONResponse(
                 status_code=404,
@@ -2406,7 +2403,7 @@ def reocr_page(
         if doc is None:
             return JSONResponse(status_code=404, content={"error": "文献不存在"})
 
-        pdf_path = get_collections_dir() / "uploads" / doc["filename"]
+        pdf_path = get_upload_path(collection, doc["filename"])
         if not pdf_path.exists():
             return JSONResponse(
                 status_code=404,
@@ -2636,7 +2633,7 @@ def reocr_doc(collection: str, doc_id: int):
         if doc is None:
             return JSONResponse(status_code=404, content={"error": "文献不存在"})
 
-        pdf_path = get_collections_dir() / "uploads" / doc["filename"]
+        pdf_path = get_upload_path(collection, doc["filename"])
         if not pdf_path.exists():
             return JSONResponse(
                 status_code=404, content={"error": f"源文件不存在: {doc['filename']}"}
@@ -2817,7 +2814,7 @@ def reocr_range(
         if doc is None:
             return JSONResponse(status_code=404, content={"error": "文献不存在"})
 
-        pdf_path = get_collections_dir() / "uploads" / doc["filename"]
+        pdf_path = get_upload_path(collection, doc["filename"])
         if not pdf_path.exists():
             return JSONResponse(
                 status_code=404,

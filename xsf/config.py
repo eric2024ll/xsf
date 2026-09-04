@@ -55,6 +55,22 @@ def get_collections_dir() -> Path:
     return d
 
 
+def get_upload_dir(collection: str) -> Path:
+    """某书架的源文件目录: <collections>/{collection}/uploads/
+
+    2026-09-04 起按书架独立（原全局平铺 collections/uploads/ 已迁移），
+    跨书架同名文件不再互相覆盖。目录不存在时自动创建。
+    """
+    d = get_collections_dir() / collection / 'uploads'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_upload_path(collection: str, filename: str) -> Path:
+    """某书架内一份源文件的完整路径（纯拼接，不创建目录）。"""
+    return get_collections_dir() / collection / 'uploads' / filename
+
+
 def get_ocr_config_path() -> Path:
     """OCR 配置文件路径: <XSF_DATA>/ocr-config.json"""
     return get_data_dir() / 'ocr-config.json'

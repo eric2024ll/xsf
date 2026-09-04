@@ -147,8 +147,8 @@ python scripts/collection_io.py import <collection> <archive.tar.gz> \
 # 1. 先只导 DB
 python scripts/collection_io.py import 两岸三交 backup.tar.gz --db-only
 
-# 2. 源文件手动 rsync 到 OSS 挂载路径
-rsync -av uploads/ /mnt/oss/sources/xsf/collections/uploads/
+# 2. 源文件手动 rsync 到 OSS 挂载路径 (按书架分目录)
+rsync -av uploads/ /mnt/oss/sources/xsf/collections/<collection>/uploads/
 ```
 
 ### 打包格式
@@ -170,14 +170,17 @@ rsync -av uploads/ /mnt/oss/sources/xsf/collections/uploads/
 │   ├── 民族研究/xsf.db             #   每个 collection 独立 SQLite + FTS5
 │   └── 历史理论/xsf.db
 └── collections/                    # 书架目录
-    └── uploads/                    #   源文件（全局共享，服务器指 OSS）
-        ├── 云南茶业考.pdf
-        └── 茶马古道.md
+    ├── 两岸三交/uploads/            #   源文件按书架分目录 (2026-09-04 起)
+    │   ├── 云南茶业考.pdf
+    │   └── 茶马古道.md
+    └── _orphan/                    #   迁移时无 DB 引用的遗留文件
 ```
 
 - `XSF_DB_DIR`：DB 目录（默认 `XSF_DATA/db/`），**必须本地磁盘**——OSS 不支持 SQLite 文件锁。
 - `XSF_COLLECTIONS_DIR`：源文件目录（默认 `XSF_DATA/collections/`），服务器可指 OSS 挂载路径。
 - DB 内只存 `filename`（不含绝对路径），迁移时无需修改 DB 内容。
+- 源文件按书架分目录（`collections/{书架}/uploads/`，与 `db/{书架}/xsf.db` 对称），
+  跨书架同名文件互不干扰。历史迁移工具: `scripts/migrate_uploads_per_collection.py`。
 
 代码目录（`~/projects/xsf/`）只放程序与配置，不存文献或数据库。
 

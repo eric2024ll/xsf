@@ -159,7 +159,8 @@ source .venv/bin/activate
 pip install -e .
 
 # 5. 配置 OSS 数据存储 (collections 上 OSS, xsf.db 留本地)
-mkdir -p /mnt/oss/sources/xsf/collections/uploads
+#    uploads 按书架分目录, 程序会自动创建 <collections>/{书架}/uploads/, 这里只建根目录
+mkdir -p /mnt/oss/sources/xsf/collections
 echo 'export XSF_COLLECTIONS_DIR=/mnt/oss/sources/xsf/collections' >> ~/.bashrc
 source ~/.bashrc
 

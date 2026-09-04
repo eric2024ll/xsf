@@ -339,7 +339,7 @@ def ingest_image(img_path: str | Path, collection: str,
 
 def remove_doc(doc_id: int, collection: str):
     """删除文献（数据库 + PDF 文件）"""
-    from .config import get_collections_dir
+    from .config import get_upload_path
 
     filename = None
     conn = get_conn(collection)
@@ -359,6 +359,6 @@ def remove_doc(doc_id: int, collection: str):
         conn.close()
 
     if filename:
-        fp = get_collections_dir() / "uploads" / filename
+        fp = get_upload_path(collection, filename)
         if fp.exists():
             fp.unlink()

@@ -8,7 +8,7 @@
 
 数据结构:
   db/{collection}/xsf.db           — per-collection SQLite（本地磁盘）
-  collections/uploads/{filename}    — 源文件（全局共享，服务器指 OSS）
+  collections/{collection}/uploads/{filename} — 源文件（按书架分目录，服务器指 OSS）
 
 打包格式 (tar.gz):
   xsf.db
@@ -30,7 +30,7 @@ from pathlib import Path
 
 # 确保 xsf 包可 import
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from xsf.config import get_db_path, get_collections_dir  # noqa: E402
+from xsf.config import get_db_path, get_upload_dir  # noqa: E402
 
 
 # ── export ──────────────────────────────────────────────
@@ -41,7 +41,7 @@ def cmd_export(collection: str, output: str | None):
         print(f"错误: collection「{collection}」的数据库不存在: {db_path}", file=sys.stderr)
         sys.exit(1)
 
-    upload_dir = get_collections_dir() / "uploads"
+    upload_dir = get_upload_dir(collection)
 
     # 查 DB 获取文献数 + 源文件列表
     conn = sqlite3.connect(str(db_path))
@@ -166,8 +166,7 @@ def cmd_import(collection: str, archive: str, conflict: str,
             return
 
         # 导入源文件
-        upload_dir = get_collections_dir() / "uploads"
-        upload_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir = get_upload_dir(collection)
 
         src_files_dir = tdp / "uploads"
         if not src_files_dir.exists():
