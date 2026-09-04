@@ -9,6 +9,7 @@
 <style>
 .container{max-width:1200px;margin:0 auto;padding:20px;}
 .top-bar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px;}
+.scan-badge{font-size:0.78rem;color:var(--text-muted);background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:3px 10px;cursor:help;white-space:nowrap;}
 .filter-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card-bg);padding:14px;border-radius:var(--radius);border:1px solid var(--border);margin-bottom:12px;}
 .filter-row input[type="text"]{min-width:120px;}
 .filter-row select,.filter-row input{
@@ -83,6 +84,9 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
 {% include '_nav.html' %}
 <div class="container">
   <div class="top-bar">
+    {% if scan_status and scan_status.enabled %}
+    <span class="scan-badge" title="文件夹自动扫描 (每{{ scan_status.interval if scan_status.interval is defined else '?' }}s){% if scan_status.new %}&#10;本轮新增: {{ scan_status.new|join('、') }}{% endif %}{% if scan_status.pending_ocr %}&#10;待OCR ({{ scan_status.pending_ocr|length }}): {% for d in scan_status.pending_ocr[:8] %}{{ d.filename }}{% if not loop.last %}、{% endif %}{% endfor %}{% if scan_status.pending_ocr|length > 8 %} 等{% endif %}{% endif %}{% if scan_status.errors %}&#10;错误: {% for e in scan_status.errors %}{{ e.filename }}: {{ e.error }}{% if not loop.last %}; {% endif %}{% endfor %}{% endif %}">⟳ {{ scan_status.last_run or '…' }}{% if scan_status.added %} · +{{ scan_status.added }}{% endif %}{% if scan_status.ocr_enabled %} · OCR{% if scan_status.ocr_running %} {{ scan_status.ocr_running }}中{% endif %}{% if scan_status.ocr_queued %} {{ scan_status.ocr_queued }}待{% endif %} · 待OCR {{ scan_status.pending_ocr|length }}{% endif %}</span>
+    {% endif %}
     <div class="top-bar-right" id="statsSummary"></div>
   </div>
 

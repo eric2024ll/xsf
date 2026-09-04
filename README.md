@@ -8,6 +8,7 @@
 
 - **多书架管理**：按研究主题分 `collection`（如「民族研究」「历史理论」「周易」），可单架搜索也可跨架搜索。
 - **born-digital PDF 解析**：用 PyMuPDF 提取文本，按页/块/行三级存储。
+- **文件夹投放自动入库**：把 PDF/MD 丢进 `{书架}/uploads/`，后台线程自动扫描入库；无文本层的扫描件自动排 OCR 队列回填（见「数据目录结构」注记）。
 - **中文全文检索**：FTS5 + jieba 分词，支持短语匹配与上下文展示。
 - **行级回溯**：搜索命中到「页-段」后，可查看上下数行原文，便于核对与摘录。
 - **数据与代码分离**：文献与 SQLite 数据库独立存放，代码仓只保留程序。
@@ -181,6 +182,26 @@ rsync -av uploads/ /mnt/oss/sources/xsf/collections/<collection>/uploads/
 - DB 内只存 `filename`（不含绝对路径），迁移时无需修改 DB 内容。
 - 源文件按书架分目录（`collections/{书架}/uploads/`，与 `db/{书架}/xsf.db` 对称），
   跨书架同名文件互不干扰。历史迁移工具: `scripts/migrate_uploads_per_collection.py`。
+
+### 文件夹投放自动入库（2026-09-04 起）
+
+把 PDF/MD 直接丢进 `{书架}/uploads/`（SMB/NFS/rsync 均可），后台线程每
+`XSF_SCAN_INTERVAL` 秒（默认 120，`0` 关闭）轮询 diff，新文件自动入库：
+
+- PDF 先走 born-digital 秒级解析（文献列表立即可见），MD 直接入库。
+- 平均行数/页 < 2 的 PDF 视为扫描件，自动入 OCR 队列（worker 单线程串行，
+  与手动「重新 OCR」共用同一任务机制，校对页可看进度），完成后可检索。
+  `XSF_SCAN_OCR=0` 可关自动 OCR（仅标记待 OCR）。
+- 文件写入未满 `XSF_SCAN_STABLE_SEC` 秒（默认 60）视为仍在传输，下轮再收。
+- `collections/` 根目录与 `_orphan/` 不扫描——文件必须放进书架子目录才会被认领。
+- 文献列表页左上角角标显示扫描时间/新增/OCR 队列状态。
+- 投放入库的文献初始无 cite_key/元数据，可在 Web 详情页补录。
+
+| 环境变量 | 默认 | 说明 |
+|----------|------|------|
+| `XSF_SCAN_INTERVAL` | `120` | 扫描轮询间隔秒，`0` 关闭整个扫描 |
+| `XSF_SCAN_STABLE_SEC` | `60` | 文件稳定阈值秒（mtime 距今小于此值跳过） |
+| `XSF_SCAN_OCR` | `1` | 扫描件自动 OCR，`0` 仅标记不自动跑 |
 
 代码目录（`~/projects/xsf/`）只放程序与配置，不存文献或数据库。
 
