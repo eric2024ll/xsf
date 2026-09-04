@@ -1,9 +1,12 @@
-"""文件夹投放自动入库 + 扫描件自动 OCR.
+"""文件夹投放自动入库 + PDF 自动 OCR.
 
 后台线程轮询各书架 uploads/ 目录 (NFS 挂载无 inotify, 只能轮询 diff):
-  - 新 PDF/MD 自动入库 (born-digital 秒级解析, 文献列表立即可见)
-  - 低文本文档 (平均行数/页 < 2 且 doc_type != 'ocr') 入自动 OCR 队列,
-    OCR worker 单线程串行回填 (与手动 reocr 走同一 job store / 执行器)
+  - 新 PDF/MD 自动入库 (秒级解析, 文献列表立即可见)
+  - PDF 不区分 born-digital 一律入自动 OCR 队列 (2026-09-04 决策),
+    OCR worker 单线程串行回填 (与手动 reocr 走同一 job store / 执行器);
+    幂等闸门: doc_type='ocr' 即出队
+  - 投放重复 (filename 已在 DB) 跳过并记录到状态角标; 新入库文件若与
+    其它书架同名, 记录跨书架警告 (仅提醒不阻断, 跨书架共存是设计行为)
 
 环境变量:
   XSF_SCAN_INTERVAL    轮询间隔秒 (默认 120, 0=关闭整个扫描)
@@ -33,8 +36,8 @@ logger = logging.getLogger("xsf.scan")
 
 _SCAN_EXTS = {'.pdf', '.md', '.markdown'}
 _IGNORE_SUFFIXES = ('.tmp', '.part', '.partial', '.crdownload', '.swp')
-OCR_LINES_PER_PAGE = 2   # 平均行/页低于此值视为扫描件, 入 OCR 队列
 MAX_OCR_ATTEMPTS = 3
+_DUP_REPORT_WINDOW = 3600   # mtime 距今小于此值的重复文件才报「跳过重复」(秒)
 
 _stop = threading.Event()
 _queue_cond = threading.Condition()
@@ -66,21 +69,37 @@ def _upload_dir(collection: str) -> Path:
     return get_collections_dir() / collection / 'uploads'
 
 
-def _ingest_new(collection: str) -> tuple[list, list]:
-    """diff 目录 vs DB, 新文件入库. 返回 (new_records, errors)."""
+def _cross_collections(filename: str, current: str) -> list:
+    """查同名文件存在于哪些其它书架 (仅提醒)."""
+    hits = []
+    for c in list_collections():
+        if c == current:
+            continue
+        try:
+            rows = _query(
+                c, 'SELECT id FROM documents WHERE filename = ?', (filename,))
+        except Exception:
+            continue
+        if rows:
+            hits.append(c)
+    return hits
+
+
+def _ingest_new(collection: str) -> tuple[list, list, list]:
+    """diff 目录 vs DB, 新文件入库. 返回 (new_records, errors, dups)."""
     updir = _upload_dir(collection)
     if not updir.is_dir():
-        return [], []
+        return [], [], []
     try:
         db_names = {
             r['filename'] for r in _query(
                 collection, 'SELECT filename FROM documents')}
     except Exception:
-        return [], []
+        return [], [], []
 
     stable_sec = _env_int('XSF_SCAN_STABLE_SEC', 60)
     now = time.time()
-    new_records, errors = [], []
+    new_records, errors, dups = [], [], []
 
     for f in sorted(updir.iterdir()):
         fn = f.name
@@ -89,6 +108,10 @@ def _ingest_new(collection: str) -> tuple[list, list]:
         if f.suffix.lower() not in _SCAN_EXTS:
             continue
         if fn in db_names:
+            # 新投放的重复 (mtime 在窗口内) 报告一次; 陈年文件不刷屏
+            if now - f.stat().st_mtime < _DUP_REPORT_WINDOW:
+                dups.append(fn)
+                logger.info("跳过重复 coll=%s %s (已在库)", collection, fn)
             _failed.pop((collection, fn), None)
             continue
         if now - f.stat().st_mtime < stable_sec:
@@ -105,9 +128,12 @@ def _ingest_new(collection: str) -> tuple[list, list]:
                 r = ingest_markdown(f, collection=collection)
                 r['ext'] = 'md'
             r['filename'] = fn
-            r['needs_ocr'] = (
-                r['ext'] == 'pdf'
-                and r['lines'] / max(r['pages'], 1) < OCR_LINES_PER_PAGE)
+            # PDF 一律入 OCR 队列 (2026-09-04 决策, 不区分 born-digital)
+            r['needs_ocr'] = r['ext'] == 'pdf'
+            r['cross'] = _cross_collections(fn, collection)
+            if r['cross']:
+                logger.warning("跨书架同名 coll=%s %s 也存在于: %s",
+                               collection, fn, ', '.join(r['cross']))
             new_records.append(r)
             _failed.pop((collection, fn), None)
             logger.info("扫描入库 coll=%s %s: %s 页 %s 行%s",
@@ -117,7 +143,7 @@ def _ingest_new(collection: str) -> tuple[list, list]:
             _failed[(collection, fn)] = (f.stat().st_mtime, str(e))
             errors.append({'filename': fn, 'error': str(e)})
             logger.warning("扫描入库失败 coll=%s %s: %s", collection, fn, e)
-    return new_records, errors
+    return new_records, errors, dups
 
 
 def _query(collection: str, sql: str, params=()):
@@ -129,19 +155,18 @@ def _query(collection: str, sql: str, params=()):
 
 
 def _pending_ocr(collection: str) -> list:
-    """全库低文本 PDF (排除已 OCR 的), 供入队. 天然幂等: OCR 完成后行数达标不再返回."""
+    """全库所有未 OCR 的 PDF (doc_type != 'ocr'), 供入队.
+
+    天然幂等: OCR 完成后 doc_type→'ocr' 不再返回;
+    OCR 后仍空文本的也不会死循环重试 (同样被 doc_type 闸门挡住).
+    """
     rows = _query(collection, """
-        SELECT d.id, d.filename, d.page_count,
-               (SELECT COUNT(*) FROM lines l WHERE l.doc_id = d.id) AS n_lines
+        SELECT d.id, d.filename, d.page_count
         FROM documents d
         WHERE d.doc_type != 'ocr' AND d.filename LIKE '%.pdf'
     """)
-    out = []
-    for r in rows:
-        if r['n_lines'] / max(r['page_count'] or 1, 1) < OCR_LINES_PER_PAGE:
-            out.append({'id': r['id'], 'filename': r['filename'],
-                        'pages': r['page_count']})
-    return out
+    return [{'id': r['id'], 'filename': r['filename'],
+             'pages': r['page_count']} for r in rows]
 
 
 def _enqueue_ocr(collection: str, pending: list) -> None:
@@ -163,15 +188,21 @@ def _enqueue_ocr(collection: str, pending: list) -> None:
 def _scan_cycle() -> None:
     ocr_enabled = _env_int('XSF_SCAN_OCR', 1) != 0
     for coll in list_collections():
-        new_records, errors = _ingest_new(coll)
+        new_records, errors, dups = _ingest_new(coll)
         pending = _pending_ocr(coll)
         if ocr_enabled:
             _enqueue_ocr(coll, pending)
+        cross_warn = [
+            {'filename': r['filename'], 'also_in': r['cross']}
+            for r in new_records if r.get('cross')]
         with _status_lock:
             _status[coll] = {
                 'last_run': time.strftime('%H:%M:%S'),
                 'added': len(new_records),
                 'new': [r['filename'] for r in new_records[:5]],
+                'dup_total': len(dups),
+                'dups': dups[:5],
+                'cross_warn': cross_warn[:3],
                 'pending_ocr': pending,
                 'errors': [
                     {'filename': e['filename'], 'error': e['error']}

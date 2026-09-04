@@ -854,6 +854,28 @@ def _file_ext(filename: str) -> str:
     return filename.rsplit('.', 1)[-1].lower()
 
 
+def _cross_collection_hits(filename: str, current: str) -> list:
+    """查同名文件存在于哪些其它书架 (仅提醒, 不阻断; 跨书架共存是设计行为)."""
+    hits = []
+    for c in list_collections():
+        if c == current:
+            continue
+        try:
+            conn = get_conn(c)
+            try:
+                row = conn.execute(
+                    "SELECT id FROM documents WHERE filename = ?",
+                    (filename,),
+                ).fetchone()
+            finally:
+                conn.close()
+        except Exception:
+            continue
+        if row:
+            hits.append(c)
+    return hits
+
+
 @app.post("/collections/{collection}/add")
 async def api_add(
     collection: str,
@@ -866,17 +888,20 @@ async def api_add(
 ):
     """批量上传：支持 pdf / md / 图片（图片自动 OCR）。
 
-    - pdf：born-digital 解析；ocr=True 则走 PaddleOCR-VL
+    - pdf：born-digital 解析；ocr=True 则走 PaddleOCR-VL（前端默认勾选）
     - md/markdown：按段落解析入库（doc_type='markdown'）
     - 图片（jpg/png/...）：包成单页 PDF 后强制 OCR（doc_type='ocr'）
     - source_tags: JSON 数组字符串，如 '["primary","档案"]'
-    返回 {status, results:[...], errors:[...]}。
+    返回 {status, results, skipped, errors}：
+      - skipped: filename 已在本架的重复文件（不算错误）
+      - results/skipped 条目带 cross_collection: 其它书架同名提醒
     """
     try:
         init_db(collection)
         upload_dir = get_upload_dir(collection)
 
         results = []
+        skipped = []
         errors = []
         for file in files:
             fname = file.filename or "unknown"
@@ -889,7 +914,7 @@ async def api_add(
                 })
                 continue
 
-            # 去重检查: 同 filename 已入库则跳过
+            # 去重检查: 同 filename 已入库则跳过 (不算错误)
             conn = get_conn(collection)
             existing = conn.execute(
                 "SELECT id FROM documents WHERE filename = ?",
@@ -897,11 +922,12 @@ async def api_add(
             ).fetchone()
             conn.close()
             if existing:
-                errors.append({
+                skipped.append({
                     "filename": fname,
-                    "error": f"'{fname}' 已在书架「{collection}」中",
+                    "reason": f"'{fname}' 已在书架「{collection}」中",
                     "doc_id": existing["id"],
-                    "duplicate": True,
+                    "cross_collection": _cross_collection_hits(
+                        fname, collection),
                 })
                 continue
 
@@ -929,16 +955,23 @@ async def api_add(
                     author=author or None,
                     source_tags=source_tags,
                 )
-                results.append({"filename": fname, "result": r})
+                cross = _cross_collection_hits(fname, collection)
+                results.append({
+                    "filename": fname,
+                    "result": r,
+                    "cross_collection": cross,
+                })
             except Exception as e:
                 errors.append({"filename": fname, "error": str(e)})
 
         return {
             "status": "ok",
             "results": results,
+            "skipped": skipped,
             "errors": errors,
             "total": len(files),
             "succeeded": len(results),
+            "skipped_count": len(skipped),
             "failed": len(errors),
         }
     except Exception as e:

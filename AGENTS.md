@@ -285,7 +285,7 @@ curl -s -b /tmp/xsf_cookie http://localhost:8090/ -o /dev/null -w '%{http_code}\
 | `XSF_OCR_METHOD` | 可选 | 默认 OCR provider id (匹配 ocr-config.json). 未设则取配置文件 default > 首个 provider |
 | `XSF_SCAN_INTERVAL` | 可选 | 文件夹扫描轮询间隔秒, 默认 120, `0` 关闭. PDF/MD 丢进 `{书架}/uploads/` 自动入库 |
 | `XSF_SCAN_STABLE_SEC` | 可选 | 文件稳定阈值秒 (默认 60), mtime 距今小于此值视为仍在写入, 下轮再收 |
-| `XSF_SCAN_OCR` | 可选 | 扫描件自动 OCR (默认 1), `0` 仅标记待OCR 不自动跑 |
+| `XSF_SCAN_OCR` | 可选 | PDF 自动 OCR (默认 1, 不区分 born-digital, 2026-09-04 起), `0` 仅标记待OCR 不自动跑. Web 上传 OCR 复选框默认勾选 |
 
 ## 常用命令速查
 
