@@ -1584,6 +1584,82 @@ async def api_batch_patch(collection: str, request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.post("/collections/{collection}/docs/batch-tags")
+async def api_batch_tags(collection: str, request: Request):
+    """批量修改来源标签 (source_tags)。
+
+    body: {"ids": [...], "action": "set|add|remove", "tags": [...]}
+    - set: 替换整个标签集
+    - add: 与原标签并集
+    - remove: 从原标签移除; 移空回落 ["primary"] (与 _migrate/_source_flags 兜底一致)
+    同步派生 is_primary/is_secondary/is_reference 三列。
+    """
+    try:
+        body = await request.json()
+        ids = body.get("ids", [])
+        action = body.get("action", "")
+        tags = body.get("tags", [])
+
+        if not isinstance(ids, list) or not ids:
+            return JSONResponse(status_code=400, content={"error": "未选择文献"})
+        if action not in ("set", "add", "remove"):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "action 必须是 set/add/remove"},
+            )
+        if not isinstance(tags, list) or not tags:
+            return JSONResponse(status_code=400, content={"error": "tags 必须是非空数组"})
+        tags = [str(t).strip() for t in tags if str(t).strip()]
+        if not tags:
+            return JSONResponse(status_code=400, content={"error": "tags 不能全为空"})
+        tags = list(dict.fromkeys(tags))
+
+        conn = get_conn(collection)
+        updated = 0
+        try:
+            for doc_id in ids:
+                row = conn.execute(
+                    "SELECT source_tags FROM documents WHERE id = ?",
+                    (doc_id,),
+                ).fetchone()
+                if row is None:
+                    continue
+                try:
+                    current = json.loads(row["source_tags"] or "[]")
+                    if not isinstance(current, list):
+                        current = ["primary"]
+                except (json.JSONDecodeError, TypeError):
+                    current = ["primary"]
+                current = [str(t).strip() for t in current if str(t).strip()]
+                if not current:
+                    current = ["primary"]
+
+                if action == "set":
+                    new_tags = tags
+                elif action == "add":
+                    new_tags = current + [t for t in tags if t not in current]
+                else:  # remove
+                    new_tags = [t for t in current if t not in tags] or ["primary"]
+
+                is_p = 1 if "primary" in new_tags else 0
+                is_s = 1 if "secondary" in new_tags else 0
+                is_r = 1 if "reference" in new_tags else 0
+                conn.execute(
+                    """UPDATE documents
+                       SET source_tags=?, is_primary=?, is_secondary=?, is_reference=?
+                       WHERE id=?""",
+                    (json.dumps(new_tags, ensure_ascii=False),
+                     is_p, is_s, is_r, doc_id),
+                )
+                updated += 1
+            conn.commit()
+        finally:
+            conn.close()
+        return {"updated": updated}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.post("/collections/{collection}/docs/export-archive")
 async def api_export_archive(collection: str, request: Request):
     """导出选中文献为数据包 (tar.gz)：含 export.db + uploads/ + manifest.json。"""

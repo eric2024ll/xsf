@@ -113,6 +113,7 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
       </div>
     </div>
     <button class="btn" onclick="openBibMatch()" id="btnBibMatch">批量导入 BibTeX</button>
+    <button class="btn" onclick="btOpen()" id="btnBatchTags">批量标签</button>
     {% endif %}
   </div>
 
@@ -186,6 +187,31 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
   </div>
 </div>
 
+<div class="bm-overlay" id="btOverlay">
+  <div class="bm-modal" style="max-width:480px;">
+    <div class="bm-header">
+      <span class="bm-title">批量修改标签（已选 <span id="btCount">0</span> 篇）</span>
+      <button class="bm-close" onclick="btClose()">&times;</button>
+    </div>
+    <div class="bm-body">
+      <div class="bm-section">
+        <div class="bm-section-title">操作</div>
+        <label style="display:block;padding:4px 0;font-size:0.85rem;"><input type="radio" name="btAction" value="set" checked> 设为（替换全部标签）</label>
+        <label style="display:block;padding:4px 0;font-size:0.85rem;"><input type="radio" name="btAction" value="add"> 添加（并入现有标签）</label>
+        <label style="display:block;padding:4px 0;font-size:0.85rem;"><input type="radio" name="btAction" value="remove"> 移除（从现有标签移除，移空回落原始史料）</label>
+      </div>
+      <div class="bm-section">
+        <div class="bm-section-title">标签</div>
+        <div id="btChips" style="margin-bottom:8px;"></div>
+        <input type="text" id="btCustom" placeholder="自定义标签，逗号分隔" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;box-sizing:border-box;">
+      </div>
+      <div style="text-align:right;">
+        <button class="btn" onclick="btApply()">应用</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="msg" id="msg"></div>
 
 {% include '_preview_modal.html' %}
@@ -197,6 +223,7 @@ const collection = {{ collection | tojson }};
 const IS_GUEST = {{ 'true' if request.state.role == 'guest' else 'false' }};
 const sourceTags = {{ source_tags | tojson }};
 const bibTypeLabels = {{ bib_type_labels | tojson }};
+const TAG_LABELS = {primary:'原始史料', secondary:'研究文献', reference:'工具书'};
 let state = {page:1, total:0, pages:0, docs:[]};
 let selectedIds = new Set();
 
@@ -209,11 +236,10 @@ function init(){
 function fillTagFilter(){
   const box = document.getElementById('tagFilter');
   box.innerHTML = '';
-  const labels = {primary:'原始史料', secondary:'研究文献', reference:'工具书'};
   sourceTags.forEach(tag => {
     const s = document.createElement('span');
     s.className = 'tag-chip';
-    s.textContent = labels[tag] || tag;
+    s.textContent = TAG_LABELS[tag] || tag;
     s.dataset.tag = tag;
     s.onclick = () => {s.classList.toggle('active'); loadPage(1);};
     box.appendChild(s);
@@ -420,7 +446,7 @@ function renderTable(docs){
   const collEnc = encodeURIComponent(collection);
   docs.forEach(d => {
     const checked = selectedIds.has(d.id) ? 'checked' : '';
-    const tags = (JSON.parse(d.source_tags || '[]') || []).map(t => '<span class="badge">'+escapeHtml(t)+'</span>').join('');
+    const tags = (JSON.parse(d.source_tags || '[]') || []).map(t => '<span class="badge">'+escapeHtml(TAG_LABELS[t] || t)+'</span>').join('');
     html += '<tr id="row-'+d.id+'" class="'+ (selectedIds.has(d.id)?'selected':'') + '">' +
       (IS_GUEST ? '<td></td>' : '<td><input type="checkbox" '+checked+' onchange="toggleRow('+d.id+',this)"></td>') +
       '<td class="cite">' + escapeHtml(d.cite_key || '-') + '</td>' +
@@ -509,6 +535,54 @@ function resetFilters(){
 function getSelectedIds(){
   if(selectedIds.size === 0){showMsg('请先选择文献','err'); return null;}
   return Array.from(selectedIds);
+}
+
+function btOpen(){
+  const ids = getSelectedIds(); if(!ids) return;
+  document.getElementById('btCount').textContent = ids.length;
+  const chips = document.getElementById('btChips');
+  chips.innerHTML = '';
+  const pool = [...new Set(['primary','secondary','reference',
+                ...sourceTags.filter(t => !TAG_LABELS[t])])];
+  pool.forEach(tag => {
+    const s = document.createElement('span');
+    s.className = 'tag-chip';
+    s.textContent = TAG_LABELS[tag] || tag;
+    s.dataset.tag = tag;
+    s.onclick = () => s.classList.toggle('active');
+    chips.appendChild(s);
+  });
+  document.getElementById('btCustom').value = '';
+  document.getElementById('btOverlay').style.display = 'flex';
+}
+
+function btClose(){
+  document.getElementById('btOverlay').style.display = 'none';
+}
+
+async function btApply(){
+  const ids = getSelectedIds(); if(!ids) return;
+  const action = document.querySelector('input[name=btAction]:checked');
+  const tags = [...document.querySelectorAll('#btChips .tag-chip.active')]
+    .map(s => s.dataset.tag);
+  const custom = document.getElementById('btCustom').value
+    .split(/[,，]/).map(s => s.trim()).filter(Boolean);
+  const all = [...new Set([...tags, ...custom])];
+  if(all.length === 0){showMsg('请选择或输入标签','err'); return;}
+  try{
+    const r = await fetch('/collections/' + encodeURIComponent(collection) + '/docs/batch-tags', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ids, action: action ? action.value : 'set', tags: all}),
+    });
+    const d = await r.json();
+    if(d.error){showMsg(d.error,'err'); return;}
+    showMsg('已更新 ' + d.updated + ' 篇标签');
+    btClose();
+    loadPage(state.page);
+  }catch(e){
+    showMsg('批量标签请求失败: '+e.message,'err');
+  }
 }
 
 async function exportBib(){
