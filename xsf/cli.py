@@ -160,6 +160,17 @@ def cmd_stats(args):
 
 
 def main():
+    # 便携版/桌面版: 从 exe 旁 .env 补缺失环境变量 (已有环境变量优先)
+    from .env import load_env
+    load_env()
+    # 输出重定向 (管道/文件) 时切 UTF-8, 防非 UTF-8 默认编码下中文报错;
+    # 真控制台不动 (Windows 下 PEP 528 原生支持中文)
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if not stream.isatty():
+                stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError, OSError):
+            pass
     parser = argparse.ArgumentParser(
         prog='xsf', description='小書房 — 文献池检索系统')
     sub = parser.add_subparsers(dest='command')

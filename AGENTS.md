@@ -132,6 +132,18 @@ uvicorn xsf.api:app --host 0.0.0.0 --port 8090
 - `POST .../docs/export-bib` `/export-md` `/export-archive` 导出　`.../docs/import-archive` 导入
 - `POST .../docs/match-bib` 自动书目匹配　`.../docs/batch-patch` 批量改元数据
 
+## Windows 便携版打包
+
+> 设计依据: histflow-plan `system/tools/18-windows-portable.md`. CLI + skill + MCP 全保留, 零 API 改动.
+
+- **构建**: GitHub Actions `windows-portable` workflow (workflow_dispatch 手动触发, 或 push tag `v*` 自动构建并附 release)
+- **本地复现** (Windows + Python 3.12): `pip install -e ".[desktop,build,mcp]"` → `pyinstaller packaging/xsf.spec --noconfirm` → `pwsh packaging/make_portable.ps1`
+- **产物**: `dist/xsf-portable-win64-<ver>.zip` — `小書房.exe` (托盘 GUI, windowed) + `xsf.exe` (CLI) + `xsf-mcp.exe` 共享 `_internal/`, 附 `.env.example` / `README-使用说明.txt` / `add-to-path.bat`
+- **`.env` 加载**: `xsf/env.py` — 环境变量 > exe 旁 `.env` > exe 上级 `.env` ($XSF_ENV 显式指定); Linux systemd 部署不受影响 (只填缺失键)
+- **托盘启动器**: `xsf/desktop.py` — 绑 127.0.0.1 (XSF_HOST 可改), 端口 8090 起顺延 (XSF_PORT), 单实例检测, pystray 托盘
+- **OCR**: 便携版不内置本地引擎, 走远程 provider (generic_http 内网 GPU / aistudio 云端)
+- **数据迁移**: Web 导出/导入归档, 或 `scripts/collection_io.py`
+
 ## 阿里云服务器部署 (可选: 实测/OCR 跑批)
 
 > **服务器**: `47.93.199.96` (阿里云轻量 2核4G)

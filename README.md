@@ -241,6 +241,28 @@ rsync -av uploads/ /mnt/oss/sources/xsf/collections/<collection>/uploads/
 
 ---
 
+## Windows 便携版
+
+免安装 zip（双击 `小書房.exe` → 起服务 + 开浏览器 + 托盘常驻），详见 `packaging/README-使用说明.txt`（随 zip 分发）。
+
+```bash
+# 构建 (GitHub Actions, 推荐): Actions → windows-portable → Run workflow
+#   或 push tag: git tag v0.1.0 && git push origin v0.1.0  (自动附到 release)
+
+# 本地复现 (Windows + Python 3.12):
+pip install -e ".[desktop,build,mcp]"
+pyinstaller packaging/xsf.spec --noconfirm
+pwsh packaging/make_portable.ps1     # → dist/xsf-portable-win64-<ver>.zip
+```
+
+- 产物：`小書房.exe`（托盘 GUI）+ `xsf.exe`（CLI）+ `xsf-mcp.exe`（MCP），共享 `_internal/`
+- 配置：zip 根 `.env`（复制 `.env.example`），环境变量优先；数据默认 `%USERPROFILE%\xsf-data`
+- 单实例：8090 已有服务时只开浏览器；端口占用自动顺延 8091-8099
+- OCR：不内置本地引擎，Web「OCR 设置」配远程 provider（generic_http / aistudio）
+- skill 接入：服务链首选 `127.0.0.1:8090`，设 `XSF_ENV` 指向 .env 即可
+
+---
+
 ## 开发
 
 ```bash

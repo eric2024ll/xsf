@@ -21,6 +21,8 @@ xsf-mcp = "xsf.mcp_adapter:main"
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]
+desktop = ["pystray", "Pillow"]
+build = ["pyinstaller>=6.3"]
 
 [tool.setuptools.packages.find]
 include = ["xsf*"]

@@ -1,0 +1,51 @@
+name: windows-portable
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: pip install -e ".[desktop,build,mcp]"
+
+      - name: FTS5 自检
+        run: python -c "import sqlite3, tempfile, os; db = os.path.join(tempfile.mkdtemp(), 't.db'); c = sqlite3.connect(db); c.execute('CREATE VIRTUAL TABLE t USING fts5(x)'); c.close(); print('FTS5 OK')"
+
+      - name: PyInstaller 打包
+        run: pyinstaller packaging/xsf.spec --noconfirm
+
+      - name: 组装便携版 zip
+        shell: pwsh
+        run: pwsh packaging/make_portable.ps1
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xsf-portable-win64
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: 附到 release (tag 构建)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$env:GITHUB_REF_NAME" --repo "$env:GITHUB_REPOSITORY" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "$env:GITHUB_REF_NAME" dist/*.zip --clobber --repo "$env:GITHUB_REPOSITORY"
+          } else {
+            gh release create "$env:GITHUB_REF_NAME" dist/*.zip --generate-notes --repo "$env:GITHUB_REPOSITORY"
+          }
