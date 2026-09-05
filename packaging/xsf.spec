@@ -22,6 +22,10 @@ extra_datas += collect_data_files('opencc')
 
 pkg_datas = [
     (str(root / 'packaging' / 'xsf.ico'), 'packaging'),
+    # api.py 以 __file__ 相对路径加载 web 资源 (frozen 时 = _internal/xsf/),
+    # StaticFiles(check_dir=True) import 期检查目录, 缺失即崩; templates 同理 (页面渲染)
+    (str(root / 'xsf' / 'static'), 'xsf/static'),
+    (str(root / 'xsf' / 'templates'), 'xsf/templates'),
 ]
 
 

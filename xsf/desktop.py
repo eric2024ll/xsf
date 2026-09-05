@@ -137,42 +137,59 @@ def main() -> None:
         sys.exit(1)
 
     url = f'http://{"127.0.0.1" if host in ("0.0.0.0", "") else host}:{port}/'
-    webbrowser.open(url)
+    _open_browser(url)
 
     _run_tray(server, url)
 
 
+def _open_browser(url: str) -> None:
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass  # headless / 无默认浏览器不致命, 服务照常
+
+
 def _run_tray(server, url: str) -> None:
-    """托盘常驻; 无 pystray (开发裸环境) 时退化为阻塞等待."""
+    """托盘常驻; 托盘不可用 (无 pystray / 无显示后端) 时退化为阻塞等待."""
+    icon = None
     try:
         import pystray
-    except ImportError:
-        pystray = None
 
-    if pystray is None:
-        _log(f'pystray 未安装, 服务运行于 {url} (Ctrl+C 退出)')
+        def _open(_icon=None, _item=None):
+            _open_browser(url)
+
+        def _quit(_icon=None, _item=None):
+            server.should_exit = True
+            icon.stop()
+
+        menu = pystray.Menu(
+            pystray.MenuItem(f'打开小書房 ({url})', _open, default=True),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem('退出', _quit),
+        )
+        icon = pystray.Icon('xsf', _load_icon_image(),
+                            f'小書房 — {url}', menu)
+    except Exception as exc:  # ImportError / Xlib DisplayNameError 等
+        _log(f'托盘不可用 ({exc}), 服务运行于 {url}')
+
+    if icon is None:
         try:
             while True:
                 time.sleep(3600)
         except KeyboardInterrupt:
-            server.should_exit = True
+            pass
+        server.should_exit = True
         return
 
-    def _open(_icon=None, _item=None):
-        webbrowser.open(url)
-
-    def _quit(_icon=None, _item=None):
-        server.should_exit = True
-        icon.stop()
-
-    menu = pystray.Menu(
-        pystray.MenuItem(f'打开小書房 ({url})', _open, default=True),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem('退出', _quit),
-    )
-    icon = pystray.Icon('xsf', _load_icon_image(),
-                        f'小書房 — {url}', menu)
-    icon.run()
+    try:
+        icon.run()
+    except Exception as exc:
+        _log(f'托盘异常退出 ({exc}), 服务保持运行于 {url} (Ctrl+C 退出)')
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            pass
     server.should_exit = True
     _log('bye')
 
