@@ -24,8 +24,29 @@ START_TIMEOUT = 20.0
 
 
 def _log(msg: str) -> None:
-    # windowed exe 无控制台, 仅开发模式可见
+    # 开发模式上屏; windowed exe 落 xsf-desktop.log (见 _ensure_streams)
     print(msg, file=sys.stderr, flush=True)
+
+
+def _ensure_streams() -> None:
+    """windowed exe (console=False) 的 stdout/stderr 是 None,
+    uvicorn formatter 的 sys.stdout.isatty()/print/warnings 都会 AttributeError.
+
+    重定向到 exe 同目录 xsf-desktop.log (不可写则 devnull), 兼作用户排障日志.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    sink = None
+    if getattr(sys, 'frozen', False):
+        try:
+            sink = open(Path(sys.executable).parent / 'xsf-desktop.log',
+                        'a', buffering=1, encoding='utf-8')
+        except OSError:
+            pass
+    if sink is None:
+        sink = open(os.devnull, 'w', encoding='utf-8')
+    sys.stdout = sys.stdout or sink
+    sys.stderr = sys.stderr or sink
 
 
 def _alert(msg: str, title: str = '小書房') -> None:
@@ -96,6 +117,7 @@ def _load_icon_image():
 
 
 def main() -> None:
+    _ensure_streams()          # 必须最先: 后续 _log/uvicorn 都依赖流存在
     load_env()
 
     host = os.environ.get('XSF_HOST', '127.0.0.1').strip() or '127.0.0.1'
