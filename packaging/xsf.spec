@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 
-root = Path(SPECPATH).resolve()          # 仓库根 (spec 所在目录的上级)
+root = Path(SPECPATH).resolve().parent   # 仓库根 (SPECPATH = spec 所在目录 packaging/, 再上一级)
 entries = root / 'packaging' / 'entries'
 
 # jieba 词典 / opencc 字典是包内非 .py 数据, PyInstaller 静态分析收不到, 手动收集
