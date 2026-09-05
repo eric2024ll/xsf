@@ -47,27 +47,40 @@ pyz_gui = PYZ(a_gui.pure)
 pyz_cli = PYZ(a_cli.pure)
 pyz_mcp = PYZ(a_mcp.pure)
 
+# PyInstaller 6: EXE 只吃 PYZ + TOC (scripts), 不能传 Analysis 对象;
+# onedir 共享 _internal 时须 exclude_binaries=True, binaries/datas 归 COLLECT.
 exe_gui = EXE(
-    pyz_gui, a_gui, a_gui.binaries, a_gui.datas,
+    pyz_gui,
+    a_gui.scripts,
+    [],
+    exclude_binaries=True,
     name='小書房',
     console=False,
     icon=str(root / 'packaging' / 'xsf.ico'),
     disable_windowed_traceback=False,
 )
 exe_cli = EXE(
-    pyz_cli, a_cli, a_cli.binaries, a_cli.datas,
+    pyz_cli,
+    a_cli.scripts,
+    [],
+    exclude_binaries=True,
     name='xsf',
     console=True,
 )
 exe_mcp = EXE(
-    pyz_mcp, a_mcp, a_mcp.binaries, a_mcp.datas,
+    pyz_mcp,
+    a_mcp.scripts,
+    [],
+    exclude_binaries=True,
     name='xsf-mcp',
     console=True,
 )
 
 coll = COLLECT(
     exe_gui, exe_cli, exe_mcp,
-    a_gui, a_cli, a_mcp,
+    a_gui.binaries, a_gui.datas,
+    a_cli.binaries, a_cli.datas,
+    a_mcp.binaries, a_mcp.datas,
     strip=False,
     upx=False,
     name='xsf-portable',
