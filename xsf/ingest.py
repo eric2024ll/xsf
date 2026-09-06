@@ -181,23 +181,22 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
                 if not text:
                     continue
 
-                # paddle-VL 整段识别 → 按 \n 切行（无独立行框，bbox 用 block 近似）
-                lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
-                if not lines:
+                # 块粒度: 一块一行记录 (行内 \n 保留, bbox 即块框) — 2026-09-06 批次2
+                text = text.strip()
+                if not text:
                     continue
 
                 block_num += 1
                 bbox_json = json.dumps(bbox) if bbox else None
                 suspect = detect_suspect(text, label, bbox_json, page_w, page_h)
 
-                for ln_num, ln_text in enumerate(lines, 1):
-                    conn.execute(
-                        '''INSERT INTO lines
-                           (doc_id, page_num, block_num, line_num, text, bbox, block_label, page_w, page_h, suspect)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                        (doc_id, page_num, block_num, ln_num, ln_text, bbox_json, label, page_w, page_h, suspect)
-                    )
-                    total_lines += 1
+                conn.execute(
+                    '''INSERT INTO lines
+                       (doc_id, page_num, block_num, line_num, text, bbox, block_label, page_w, page_h, suspect)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    (doc_id, page_num, block_num, 1, text, bbox_json, label, page_w, page_h, suspect)
+                )
+                total_lines += 1
 
                 conn.execute(
                     '''INSERT INTO blocks_fts

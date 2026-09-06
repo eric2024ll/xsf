@@ -900,7 +900,7 @@ mark {
     <div id="pageText" class="page-text"{% if not is_guest %} contenteditable="true" oninput="onPageEdit()"{% endif %}>
 {%- for b in blocks %}
 {%- for ln in b.lines %}
-{{- highlight(ln.text, keyword) | safe }}{% if not loop.last %}<br>{% endif -%}
+{{- (highlight(ln.text, keyword) | safe) | replace('\n', '<br>') }}{% if not loop.last %}<br>{% endif -%}
 {%- endfor %}
 {%- if not loop.last %}<br><br>{% endif -%}
 {%- endfor %}

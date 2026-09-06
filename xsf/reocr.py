@@ -138,9 +138,7 @@ def _run_reocr_doc(collection: str, doc_id: int, provider, pdf_path: Path,
                         text = text.strip()
                         if not text:
                             continue
-                        lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
-                        if not lines:
-                            continue
+                        # 块粒度: 一块一行记录 (行内 \n 保留) — 2026-09-06 批次2
 
                         block_num += 1
                         bbox = block.get('block_bbox')
@@ -149,16 +147,15 @@ def _run_reocr_doc(collection: str, doc_id: int, provider, pdf_path: Path,
                         page_h = p.get('height') or pix.height
                         suspect = detect_suspect(text, label, bbox_json, page_w, page_h)
 
-                        for ln_num, ln_text in enumerate(lines, 1):
-                            conn.execute(
-                                """INSERT INTO lines
-                                   (doc_id, page_num, block_num, line_num, text,
-                                    bbox, block_label, page_w, page_h, suspect)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                                (doc_id, page_num, block_num, ln_num, ln_text,
-                                 bbox_json, label, page_w, page_h, suspect),
-                            )
-                            total_lines += 1
+                        conn.execute(
+                            """INSERT INTO lines
+                               (doc_id, page_num, block_num, line_num, text,
+                                bbox, block_label, page_w, page_h, suspect)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (doc_id, page_num, block_num, 1, text,
+                             bbox_json, label, page_w, page_h, suspect),
+                        )
+                        total_lines += 1
                         conn.execute(
                             """INSERT INTO blocks_fts
                                (doc_id, page_num, block_num, text)

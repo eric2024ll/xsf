@@ -2232,20 +2232,20 @@ async def edit_page(
                 (doc_id, page_num),
             )
 
+            # 块粒度: \n\n 分块, 每块一条 line 记录 — 2026-09-06 批次2
             for bn, bt in enumerate(text.split("\n\n"), 1):
-                lines = [l for l in bt.split("\n") if l]
-                if not lines:
+                bt = bt.strip("\n")
+                if not bt.strip():
                     continue
-                for ln, line_text in enumerate(lines, 1):
-                    conn.execute(
-                        """INSERT INTO lines(doc_id, page_num, block_num, line_num, text)
-                           VALUES (?, ?, ?, ?, ?)""",
-                        (doc_id, page_num, bn, ln, line_text),
-                    )
+                conn.execute(
+                    """INSERT INTO lines(doc_id, page_num, block_num, line_num, text)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (doc_id, page_num, bn, 1, bt),
+                )
                 conn.execute(
                     """INSERT INTO blocks_fts(doc_id, page_num, block_num, text)
                        VALUES (?, ?, ?, ?)""",
-                    (doc_id, page_num, bn, _tokenize("\n".join(lines))),
+                    (doc_id, page_num, bn, _tokenize(bt)),
                 )
 
             conn.commit()
@@ -2339,10 +2339,8 @@ def _reocr_regions_for_page(provider, src, page_num: int, region_list: list):
         text = text.strip()
         if not text:
             continue
-        # paddle-VL 整段识别 → 按 \n 切行（无独立行框，bbox 用 block 近似）
-        lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
-        if not lines:
-            continue
+        # 块粒度: 不切行, 整块入库 — 2026-09-06 批次2
+        lines = [text]
         bbox = block.get('block_bbox')
         if not bbox or len(bbox) < 4:
             continue  # 无几何信息无法归属 region
