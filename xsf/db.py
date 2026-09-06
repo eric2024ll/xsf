@@ -55,6 +55,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
     block_num UNINDEXED,
     text
 );
+
+CREATE TABLE IF NOT EXISTS page_regions (
+    doc_id INTEGER NOT NULL,
+    page_num INTEGER NOT NULL,
+    region_idx INTEGER NOT NULL,          -- 阅读顺序 (1 起)
+    bbox TEXT NOT NULL,                   -- [x0,y0,x1,y1] 150dpi 坐标空间
+    direction TEXT NOT NULL DEFAULT 'h',  -- h 横排 | v_rtl 竖右起 | v_ltr 竖左起
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (doc_id, page_num, region_idx)
+);
 """
 
 
@@ -97,6 +107,17 @@ def _migrate(conn):
             error TEXT,
             updated_at TEXT DEFAULT (datetime('now')),
             PRIMARY KEY (doc_id, page_num)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS page_regions (
+            doc_id INTEGER NOT NULL,
+            page_num INTEGER NOT NULL,
+            region_idx INTEGER NOT NULL,
+            bbox TEXT NOT NULL,
+            direction TEXT NOT NULL DEFAULT 'h',
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (doc_id, page_num, region_idx)
         )
     """)
 

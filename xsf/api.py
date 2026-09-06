@@ -2510,6 +2510,194 @@ def reocr_page(
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# ── 栏系统: 页面阅读区域定义 + 按栏重组 ────────────────────
+
+@app.get("/collections/{collection}/doc/{doc_id}/page/{page_num}/regions")
+async def api_get_regions(collection: str, doc_id: int, page_num: int):
+    """读该页栏定义: [{region_idx, bbox: [x0,y0,x1,y1], direction}]。"""
+    conn = get_conn(collection)
+    try:
+        rows = conn.execute(
+            "SELECT region_idx, bbox, direction FROM page_regions "
+            "WHERE doc_id = ? AND page_num = ? ORDER BY region_idx",
+            (doc_id, page_num),
+        ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                bbox = json.loads(r["bbox"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            out.append({"region_idx": r["region_idx"], "bbox": bbox,
+                        "direction": r["direction"]})
+        return {"regions": out}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/page/{page_num}/regions")
+async def api_save_regions(collection: str, doc_id: int, page_num: int,
+                           regions: str = Form(...)):
+    """全量保存该页栏定义。regions = [{bbox, direction}] (JSON, 150dpi 空间)。"""
+    try:
+        payload = json.loads(regions)
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "regions 不是合法 JSON"}, status_code=400)
+    if not isinstance(payload, list) or len(payload) > 50:
+        return JSONResponse({"error": "regions 应为列表 (≤50)"}, status_code=400)
+    clean = []
+    for i, item in enumerate(payload, 1):
+        bbox = item.get("bbox")
+        direction = item.get("direction", "h")
+        if (not isinstance(bbox, list) or len(bbox) != 4
+                or not all(isinstance(v, (int, float)) for v in bbox)
+                or direction not in ("h", "v_rtl", "v_ltr")):
+            return JSONResponse(
+                {"error": f"第 {i} 个栏格式非法 (bbox 四数值 + direction)"},
+                status_code=400,
+            )
+        clean.append((bbox, direction))
+    conn = get_conn(collection)
+    try:
+        conn.execute(
+            "DELETE FROM page_regions WHERE doc_id = ? AND page_num = ?",
+            (doc_id, page_num),
+        )
+        for idx, (bbox, direction) in enumerate(clean, 1):
+            conn.execute(
+                "INSERT INTO page_regions "
+                "(doc_id, page_num, region_idx, bbox, direction) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (doc_id, page_num, idx, json.dumps(bbox), direction),
+            )
+        conn.commit()
+        return {"ok": True, "count": len(clean)}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/page/{page_num}/reorder")
+async def api_reorder_by_regions(collection: str, doc_id: int,
+                                 page_num: int):
+    """按已存栏定义重排该页 block 阅读顺序 (不重跑 OCR)。
+
+    块 bbox 中心命中栏 → 栏间按 region_idx, 栏内按方向排序
+    (h: y→x / v_rtl: -x→y / v_ltr: x→y); 未命中栏的块保持原相对顺序放末尾。
+    """
+    conn = get_conn(collection)
+    try:
+        regions = []
+        for r in conn.execute(
+                "SELECT region_idx, bbox, direction FROM page_regions "
+                "WHERE doc_id = ? AND page_num = ? ORDER BY region_idx",
+                (doc_id, page_num)).fetchall():
+            try:
+                regions.append((r["region_idx"], json.loads(r["bbox"]),
+                                r["direction"]))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        if not regions:
+            return JSONResponse({"error": "本页未定义栏, 请先保存栏定义"},
+                                status_code=400)
+
+        rows = conn.execute(
+            "SELECT id, block_num, text, bbox, block_label, page_w, page_h, "
+            "suspect FROM lines WHERE doc_id = ? AND page_num = ? "
+            "ORDER BY block_num, line_num",
+            (doc_id, page_num),
+        ).fetchall()
+        if not rows:
+            return JSONResponse({"error": "本页无文本块"}, status_code=400)
+
+        # 行归并为块单元 (旧行粒度一块多行; 新粒度一块一行)
+        from collections import OrderedDict
+        blocks_in = OrderedDict()
+        for row in rows:
+            blocks_in.setdefault(row["block_num"], []).append(row)
+
+        def _center(bbox_json):
+            try:
+                b = json.loads(bbox_json)
+                return (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+            except (json.JSONDecodeError, TypeError, IndexError):
+                return None
+
+        def _sort_key(direction, cx, cy):
+            if direction == "v_rtl":
+                return (-cx, cy)
+            if direction == "v_ltr":
+                return (cx, cy)
+            return (cy, cx)
+
+        def _block_center(block_rows):
+            c = _center(block_rows[0]["bbox"])
+            if c:
+                return c
+            # 无 bbox: 用块内任一行的近似
+            for r in block_rows:
+                c = _center(r["bbox"])
+                if c:
+                    return c
+            return None
+
+        assigned = {r[0]: [] for r in regions}   # region_idx -> [block_num]
+        unassigned = []
+        for bn, block_rows in blocks_in.items():
+            c = _block_center(block_rows)
+            hit = None
+            if c:
+                for ridx, bbox, _d in regions:
+                    if bbox[0] <= c[0] <= bbox[2] and bbox[1] <= c[1] <= bbox[3]:
+                        hit = ridx
+                        break
+            if hit is None:
+                unassigned.append(bn)
+            else:
+                assigned[hit].append(bn)
+
+        ordered = []   # [block_num] 新阅读顺序
+        for ridx, _bbox, direction in regions:
+            keyed = []
+            for bn in assigned[ridx]:
+                c = _block_center(blocks_in[bn]) or (0, 0)
+                keyed.append((_sort_key(direction, c[0], c[1]), bn))
+            keyed.sort(key=lambda kr: kr[0])
+            ordered.extend(bn for _, bn in keyed)
+        ordered.extend(unassigned)
+
+        # 短事务重写: 全删重插, 保留文本/几何/疑点; 块内行序不动
+        conn.execute("DELETE FROM lines WHERE doc_id = ? AND page_num = ?",
+                     (doc_id, page_num))
+        conn.execute("DELETE FROM blocks_fts WHERE doc_id = ? AND page_num = ?",
+                     (doc_id, page_num))
+        for new_bn, old_bn in enumerate(ordered, 1):
+            block_rows = blocks_in[old_bn]
+            texts = []
+            for ln, row in enumerate(block_rows, 1):
+                conn.execute(
+                    """INSERT INTO lines
+                       (doc_id, page_num, block_num, line_num, text, bbox,
+                        block_label, page_w, page_h, suspect)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (doc_id, page_num, new_bn, ln, row["text"], row["bbox"],
+                     row["block_label"], row["page_w"], row["page_h"],
+                     row["suspect"]),
+                )
+                texts.append(row["text"])
+            conn.execute(
+                "INSERT INTO blocks_fts (doc_id, page_num, block_num, text) "
+                "VALUES (?, ?, ?, ?)",
+                (doc_id, page_num, new_bn, _tokenize("\n".join(texts))),
+            )
+        conn.commit()
+        return {"ok": True, "blocks": len(ordered),
+                "unassigned": len(unassigned)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        conn.close()
+
+
 # ── 整本重 OCR: 后台任务 + 进度注册表 ─────────────────────
 
 # (job store 与 _run_reocr_doc 已抽到 xsf/reocr.py, 2026-09-04, 手动/自动 OCR 共用)

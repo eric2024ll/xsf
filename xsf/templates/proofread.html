@@ -630,7 +630,20 @@ mark {
   padding: 1px 5px;
   border-radius: 3px;
   white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
 }
+.region-btn {
+  background: var(--success, #2e7d32);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.region-btn:hover { opacity: 0.88; }
+.region-btn:disabled { opacity: 0.5; cursor: default; }
 .region-del {
   position: absolute;
   top: -8px; right: -8px;
@@ -806,9 +819,13 @@ mark {
       </div>
       {% if not is_guest %}
       <div class="reocr-actions" id="reocrActions">
-        <span id="reocrHint" class="reocr-hint">在图上拖拽画框（可多个）→ 执行重OCR</span>
+        <span id="reocrHint" class="reocr-hint">在图上拖拽画框（可多个）→ 执行重OCR；或框选后「存为栏」定义阅读顺序（点区标签切方向）</span>
         <span id="reocrCount">已选 0 个区域</span>
         <button class="do-reocr" id="doReocrBtn" onclick="doReocr()">执行重OCR（替换本页）</button>
+        <button class="region-btn" id="saveRegionsBtn" onclick="saveRegions()">存为栏</button>
+        <button class="region-btn" id="reorderBtn" onclick="reorderPage()">按栏重组</button>
+        <button class="region-btn" onclick="copyPrevRegions()">复制上页栏</button>
+        <span id="savedRegionsInfo" class="reocr-hint"></span>
         <span class="range-box">
           应用到第
           <input type="number" id="reocrFrom" min="1" max="{{ page_count }}" value="{{ page_num }}"> –
@@ -1316,6 +1333,7 @@ function toggleReocrMode() {
     act.classList.add('show');
     renderRegions();
     updateReocrCount();
+    refreshSavedRegionsInfo();
   } else {
     exitReocrMode();
   }
@@ -1336,6 +1354,8 @@ function updateReocrCount() {
   const el = document.getElementById('reocrCount');
   if (el) el.textContent = '已选 ' + _reocrRegions.length + ' 个区域';
 }
+const DIR_LABEL = { h: '横', v_rtl: '竖右', v_ltr: '竖左' };
+const DIR_CYCLE = { h: 'v_rtl', v_rtl: 'v_ltr', v_ltr: 'h' };
 function renderRegions() {
   const layer = document.getElementById('drawLayer');
   if (!layer) return;
@@ -1351,7 +1371,8 @@ function renderRegions() {
     d.style.top = (r.y0 * s) + 'px';
     d.style.width = ((r.x1 - r.x0) * s) + 'px';
     d.style.height = ((r.y1 - r.y0) * s) + 'px';
-    d.innerHTML = '<span class="region-tag">区' + (i + 1) + '</span>' +
+    const dir = r.direction || 'h';
+    d.innerHTML = '<span class="region-tag" data-idx="' + i + '" data-role="dir" title="点击切换方向">区' + (i + 1) + '·' + DIR_LABEL[dir] + '</span>' +
       '<span class="region-del" data-idx="' + i + '">\u00d7</span>' +
       '<span class="region-handle tl" data-idx="' + i + '" data-corner="tl"></span>' +
       '<span class="region-handle tr" data-idx="' + i + '" data-corner="tr"></span>' +
@@ -1379,6 +1400,15 @@ var _dragOrigin = null; // {mx,my,x0,y0,x1,y1}
     if (target.classList.contains('region-del')) {
       const idx = parseInt(target.dataset.idx);
       if (!isNaN(idx)) { _reocrRegions.splice(idx, 1); renderRegions(); updateReocrCount(); }
+      return;
+    }
+    if (target.dataset.role === 'dir') {
+      const idx = parseInt(target.dataset.idx);
+      if (!isNaN(idx)) {
+        const cur = _reocrRegions[idx].direction || 'h';
+        _reocrRegions[idx].direction = DIR_CYCLE[cur];
+        renderRegions();
+      }
       return;
     }
     if (target.classList.contains('region-handle')) {
@@ -1537,6 +1567,86 @@ function setReocrButtonsDisabled(dis) {
     b2.disabled = dis;
     b2.textContent = dis ? '运行中…' : '批量执行';
   }
+}
+
+// ── 栏系统: 存栏 / 按栏重组 / 复制上页栏 ──
+async function refreshSavedRegionsInfo() {
+  const el = document.getElementById('savedRegionsInfo');
+  if (!el) return;
+  try {
+    const res = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/regions`);
+    const data = await res.json();
+    const dirs = (data.regions || []).map(r => DIR_LABEL[r.direction] || r.direction).join(' ');
+    el.textContent = (data.regions || []).length
+      ? `本页已存 ${data.regions.length} 栏 (${dirs})`
+      : '本页未存栏';
+  } catch (e) { el.textContent = ''; }
+}
+
+async function saveRegions() {
+  if (!_reocrRegions.length) { alert('请先框选区域（点区标签可切换横/竖方向）'); return; }
+  const regions = _reocrRegions.map(r => ({
+    bbox: [Math.round(r.x0), Math.round(r.y0), Math.round(r.x1), Math.round(r.y1)],
+    direction: r.direction || 'h'
+  }));
+  try {
+    const body = new URLSearchParams();
+    body.append('regions', JSON.stringify(regions));
+    const res = await fetch(
+      `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/regions`,
+      { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() }
+    );
+    const data = await res.json();
+    if (res.ok && data.ok) { alert(`已保存 ${data.count} 个栏定义`); refreshSavedRegionsInfo(); }
+    else alert('保存失败: ' + (data.error || res.status));
+  } catch (e) { alert('网络错误: ' + e.message); }
+}
+
+async function reorderPage() {
+  if (!confirm('按本页已存栏定义重排阅读顺序（不重跑 OCR，块内文本不动）。确认执行？')) return;
+  const btn = document.getElementById('reorderBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '重组中…'; }
+  try {
+    const res = await fetch(
+      `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/reorder`,
+      { method: 'POST' }
+    );
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      _pageDirty = false;  // 服务端已重写本页, 弃用编辑器旧内容
+      alert(`重组完成: ${data.blocks} 块` + (data.unassigned ? `（${data.unassigned} 块未落入选中栏, 已按原序放末尾）` : ''));
+      const url = new URL(window.location.href);
+      url.searchParams.delete('block');
+      url.searchParams.delete('line');
+      window.location.href = url.toString();
+    } else {
+      alert('重组失败: ' + (data.error || res.status));
+      if (btn) { btn.disabled = false; btn.textContent = '按栏重组'; }
+    }
+  } catch (e) {
+    alert('网络错误: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '按栏重组'; }
+  }
+}
+
+async function copyPrevRegions() {
+  if (page <= 1) { alert('已是第一页'); return; }
+  if (!confirm(`把第 ${page - 1} 页的栏定义复制到本页？`)) return;
+  try {
+    const res = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page - 1}/regions`);
+    const data = await res.json();
+    const regions = data.regions || [];
+    if (!regions.length) { alert(`第 ${page - 1} 页未存栏定义`); return; }
+    const body = new URLSearchParams();
+    body.append('regions', JSON.stringify(regions.map(r => ({ bbox: r.bbox, direction: r.direction }))));
+    const res2 = await fetch(
+      `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/regions`,
+      { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() }
+    );
+    const data2 = await res2.json();
+    if (res2.ok && data2.ok) { alert(`已复制 ${data2.count} 个栏`); refreshSavedRegionsInfo(); }
+    else alert('复制失败: ' + (data2.error || res2.status));
+  } catch (e) { alert('网络错误: ' + e.message); }
 }
 
 async function doReocrRange() {
