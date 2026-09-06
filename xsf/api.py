@@ -49,6 +49,7 @@ from .reocr import (
     _run_reocr_doc, register_job, pop_job,
 )
 from .folder_scan import get_scan_status, start_scan_threads, shutdown_scan
+from .suspect import detect_suspect
 
 _VERSION = "0.1.0"
 
@@ -479,9 +480,11 @@ async def api_get_ocr_config():
         providers.append({
             'id': p['id'],
             'name': p.get('name', p['id']),
-            'type': p.get('type', 'generic_http'),
-            'url': p.get('url', ''),
+            'type': p.get('type', 'vl_api'),
+            'endpoint': p.get('endpoint', 'paddle_http'),
+            'url': p.get('base_url', p.get('url', '')),
             'model': p.get('model') or '',
+            'structured': p.get('endpoint', 'paddle_http') != 'openai_chat',
             'has_key': bool(p.get('api_key')),
             'updated_at': p.get('updated_at') or p.get('created_at'),
         })
@@ -496,22 +499,36 @@ async def api_save_ocr_provider(name: str = Form(...), url: str = Form(''),
                                 id: str = Form(None),
                                 api_key: str = Form(None),
                                 model: str = Form(None),
-                                type: str = Form('generic_http')):
-    """新增/编辑 provider。api_key 留空且为编辑 → 保留旧值。"""
+                                endpoint: str = Form('paddle_http')):
+    """新增/编辑 provider (v3 vl_api)。api_key 留空且为编辑 → 保留旧值。"""
     from .config import save_ocr_provider
     try:
         p = save_ocr_provider(name=name, url=url, pid=id,
                               api_key=(api_key or '').strip() or None,
-                              model=model, type=type)
+                              model=model, endpoint=endpoint)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except KeyError as e:
         return JSONResponse({"error": str(e)}, status_code=404)
-    if p.get('type') == 'aistudio' and not p.get('api_key'):
+    if p.get('endpoint') == 'aistudio_job' and not p.get('api_key'):
         return JSONResponse(
-            {"error": "aistudio 类型必须填写 token (API Key)"}, status_code=400
+            {"error": "aistudio_job 类型必须填写 token (API Key)"},
+            status_code=400,
         )
     return {"ok": True, "id": p['id']}
+
+
+@app.post("/api/ocr-config/test")
+async def api_test_ocr_provider(id: str = Form(...)):
+    """连接测试: 按端点类型轻量探活, 不跑大推理。"""
+    from .config import get_ocr_provider_cfg
+    from .ocr.vl_api import VLApiAdapter
+    try:
+        cfg = get_ocr_provider_cfg(id)
+    except RuntimeError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    result = VLApiAdapter(cfg).test_connection()
+    return result
 
 
 @app.delete("/api/ocr-config/provider/{pid}")
@@ -525,98 +542,20 @@ async def api_delete_ocr_provider(pid: str):
 
 @app.post("/api/ocr-config/default")
 async def api_set_ocr_default(id: str = Form(...)):
-    from .config import set_default_ocr_provider
+    from .config import get_ocr_provider_cfg, set_default_ocr_provider
     try:
+        cfg = get_ocr_provider_cfg(id)
+        if cfg.get('endpoint') == 'openai_chat':
+            return JSONResponse(
+                {"error": "openai_chat 无坐标输出, 不能做默认入库引擎"},
+                status_code=400,
+            )
         set_default_ocr_provider(id)
     except KeyError:
         return JSONResponse({"error": f"provider 不存在: {id}"},
                             status_code=404)
     return {"ok": True, "default": id}
 
-
-@app.post("/api/ocr-config/test")
-def api_test_ocr_config(id: str = Form(None), url: str = Form(None),
-                        api_key: str = Form(None),
-                        model: str = Form(None)):
-    """测试 provider 连通: 发 1 页空白 PDF, 校验 200 + pages 结构。
-
-    sync 端点 (线程池执行): 内部 requests.post/aistudio 轮询为阻塞调用.
-    id 非空 → 用已保存配置 (url/api_key 参数可覆盖);
-    无 id → 用表单传入的 url/api_key (添加前预检)。
-    """
-    import tempfile
-    import requests as _req
-    from .ocr.http_api import _normalize_pages
-
-    ptype = 'generic_http'
-    if id:
-        try:
-            from .config import get_ocr_provider_cfg
-            cfg = get_ocr_provider_cfg(id)
-            ptype = cfg.get('type', 'generic_http')
-            test_url = url or cfg['url']
-            test_key = api_key or cfg.get('api_key')
-            test_model = model if model is not None else cfg.get('model')
-        except RuntimeError as e:
-            return JSONResponse({"ok": False, "error": str(e)},
-                                status_code=400)
-    else:
-        test_url = (url or '').strip()
-        test_key = (api_key or '').strip() or None
-        test_model = (model or '').strip() or None
-        if not test_url and ptype == 'generic_http':
-            return JSONResponse({"ok": False, "error": "未指定 provider id 或 url"},
-                                status_code=400)
-
-    fd, tmp_pdf = tempfile.mkstemp(suffix='.pdf')
-    os.close(fd)
-    try:
-        doc = pymupdf.open()
-        doc.new_page(width=72, height=72)
-        doc.save(tmp_pdf)
-        doc.close()
-
-        if ptype == 'aistudio':
-            from .ocr.aistudio_api import ocr_file_aistudio
-            try:
-                pages = ocr_file_aistudio(tmp_pdf, token=test_key or '',
-                                          model=test_model)
-                return {"ok": True, "pages": len(pages)}
-            except Exception as e:
-                return JSONResponse({"ok": False, "error": str(e)},
-                                    status_code=502)
-
-        headers = {"Authorization": f"Bearer {test_key}"} if test_key else {}
-        form = {"model": test_model} if test_model else {}
-        r = _req.post(test_url, headers=headers, data=form,
-                      files={"file": open(tmp_pdf, 'rb')}, timeout=120)
-        if r.status_code == 200:
-            try:
-                pages = _normalize_pages(r.json())
-                return {"ok": True, "pages": len(pages)}
-            except (ValueError, Exception) as e:
-                return JSONResponse(
-                    {"ok": False, "error": f"响应不是 pages 形态: {e}"},
-                    status_code=502,
-                )
-        if r.status_code in (401, 403):
-            return JSONResponse(
-                {"ok": False, "error": f"鉴权失败 (HTTP {r.status_code}): 检查 api_key"},
-                status_code=r.status_code,
-            )
-        return JSONResponse(
-            {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"},
-            status_code=502,
-        )
-    except _req.RequestException as e:
-        return JSONResponse(
-            {"ok": False, "error": f"网络错误: {e}"}, status_code=504
-        )
-    finally:
-        try:
-            os.unlink(tmp_pdf)
-        except OSError:
-            pass
 
 
 # ── 搜索 ──────────────────────────────────────────────
@@ -2021,7 +1960,7 @@ async def proofread_page(
 
             rows = conn.execute(
                 """SELECT id, page_num, block_num, line_num, text,
-                          bbox, block_label, page_w, page_h
+                          bbox, block_label, page_w, page_h, suspect
                    FROM lines
                    WHERE doc_id = ? AND page_num = ?
                    ORDER BY block_num, line_num""",
@@ -2057,6 +1996,7 @@ async def proofread_page(
                 "id": r["id"],
                 "line_num": r["line_num"],
                 "text": r["text"],
+                "suspect": r["suspect"],
                 "bbox": line_bbox,
             })
         blocks = [blocks_map[bn] for bn in sorted(blocks_map)]
@@ -2234,7 +2174,7 @@ async def edit_line(
                 )
 
             conn.execute(
-                "UPDATE lines SET text = ? WHERE id = ?",
+                "UPDATE lines SET text = ?, suspect = NULL WHERE id = ?",
                 (text, line_id),
             )
 
@@ -2458,14 +2398,16 @@ def _write_reocr_page(conn, doc_id: int, page_num: int, new_blocks: list,
         block_num += 1
         bbox_json = json.dumps(b["bbox"]) if b["bbox"] else None
         full_text = '\n'.join(b["lines"])
+        suspect = detect_suspect(full_text, b["block_label"], bbox_json,
+                                 page_w, page_h)
         for ln_num, ln_text in enumerate(b["lines"], 1):
             conn.execute(
                 """INSERT INTO lines
                    (doc_id, page_num, block_num, line_num, text,
-                    bbox, block_label, page_w, page_h)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    bbox, block_label, page_w, page_h, suspect)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (doc_id, page_num, block_num, ln_num, ln_text,
-                 bbox_json, b["block_label"], page_w, page_h),
+                 bbox_json, b["block_label"], page_w, page_h, suspect),
             )
             total_lines += 1
         conn.execute(

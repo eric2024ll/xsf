@@ -1,71 +1,27 @@
-"""OCR provider 注册表 (generic_http 同步协议, 配置驱动).
+"""OCR provider 注册表 (统一 vl_api 架构, 配置驱动).
 
-2026-08-14 重构: 注册表从代码注册升级为配置注册 (ocr-config.json v2).
-provider = {id, name, url, api_key?, model?}, 用户在 Web 界面自助添加.
-兼容性门槛不变: 端点必须返回 parsing_res_list 中间格式
-(含 block_bbox + block_label + block_content).
+2026-09-06 v3 重构: 三种 endpoint profile (paddle_http / aistudio_job /
+openai_chat) 统一为 VLApiAdapter, 能力二分 structured/plain。
+provider = {id, name, type: 'vl_api', endpoint, base_url?, api_key?, model?}。
 
-设计依据: histflow-plan system/tools/14-ocr-pipeline.md §3.3 修订注
+调用方约定:
+  首次入库 / 画框几何过滤重 OCR → adapter.ocr() (需 .structured == True)
+  整页对照 / 栏裁切            → adapter.ocr_image_plain()
+
+设计依据: histflow-plan system/tools/14-ocr-pipeline.md §3.3
 """
 from ..config import get_ocr_provider_cfg, get_default_ocr_provider_id, \
     get_ocr_providers
-from .adapter import DirectAdapter
-from .http_api import ocr_file
+from .vl_api import VLApiAdapter
 
 
-def _build_adapter(provider_id: str = None) -> DirectAdapter:
-    """按配置构建 adapter (type: generic_http | aistudio | local_merged)。找不到配置 raise RuntimeError。"""
+def _build_adapter(provider_id: str = None) -> VLApiAdapter:
+    """按配置构建 VLApiAdapter。找不到配置 raise RuntimeError。"""
     cfg = get_ocr_provider_cfg(provider_id)
-    pid = cfg['id']
-    ptype = cfg.get('type', 'generic_http')
-
-    if ptype == 'aistudio':
-        from .aistudio_api import ocr_file_aistudio
-
-        def _ocr(pdf_path, _cfg=cfg):
-            return ocr_file_aistudio(
-                pdf_path,
-                token=_cfg.get('api_key'),
-                model=_cfg.get('model'),
-            )
-    elif ptype == 'local_merged':
-        from .merger import merge_pages
-
-        urls = cfg.get('urls', [])
-        if len(urls) < 2:
-            raise RuntimeError(f'local_merged provider "{pid}" 需要至少 2 个 URL, 当前 {len(urls)}')
-
-        def _ocr(pdf_path, _urls=urls, _cfg=cfg):
-            import concurrent.futures
-            pages_list = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-                futures = {
-                    ex.submit(ocr_file, pdf_path, url=u,
-                              api_key=_cfg.get('api_key'),
-                              model=_cfg.get('model')): u
-                    for u in _urls
-                }
-                for fut in concurrent.futures.as_completed(futures):
-                    try:
-                        pages_list.append(fut.result())
-                    except Exception as e:
-                        raise RuntimeError(
-                            f'合并 OCR 子调用失败 ({futures[fut]}): {e}'
-                        )
-            return merge_pages(pages_list[0], pages_list[1])
-    else:
-        def _ocr(pdf_path, _cfg=cfg):
-            return ocr_file(
-                pdf_path,
-                url=_cfg['url'],
-                api_key=_cfg.get('api_key'),
-                model=_cfg.get('model'),
-            )
-
-    return DirectAdapter(_ocr, pid)
+    return VLApiAdapter(cfg)
 
 
-def get_provider(method=None):
+def get_provider(method=None) -> VLApiAdapter:
     """按 provider id 取 adapter。
 
     method 解析链: 显式 id > 配置 default > XSF_OCR_METHOD(匹配 id) > 首个。
@@ -73,8 +29,8 @@ def get_provider(method=None):
     pid = method or get_default_ocr_provider_id()
     if pid is None:
         raise RuntimeError(
-            '未配置 OCR provider。请在前端「OCR 设置」添加 generic_http '
-            'provider (POST 文件 → {pages:[...]})。'
+            '未配置 OCR provider。请在前端「OCR 设置」添加 vl_api '
+            'provider (paddle_http / aistudio_job / openai_chat)。'
         )
     return _build_adapter(pid)
 
@@ -82,11 +38,3 @@ def get_provider(method=None):
 def list_providers():
     """列出已配置 provider: {id: name}。"""
     return {p['id']: p.get('name', p['id']) for p in get_ocr_providers()}
-
-
-def register(name, adapter):
-    """代码注册 (保留扩展点, 当前无使用方)。"""
-    raise NotImplementedError(
-        'provider 已改为配置注册 (ocr-config.json v2), '
-        '请在前端「OCR 设置」添加, 不再支持代码注册'
-    )

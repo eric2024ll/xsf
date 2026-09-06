@@ -272,6 +272,20 @@
   transition: border-width .12s ease, background .12s ease;
 }
 .image-wrap.show-all .bbox-overlay { display: block; }
+.bbox-overlay.bbox-suspect {
+  border-style: dashed;
+  border-color: #e63946;
+  background: color-mix(in srgb, #e63946 10%, transparent);
+}
+.bbox-overlay.bbox-suspect::after {
+  content: '⚠';
+  position: absolute;
+  top: -18px;
+  left: -12px;
+  font-size: 13px;
+  color: #e63946;
+  text-shadow: 0 0 3px #fff;
+}
 .bbox-overlay:hover {
   border-color: var(--tc, #4361ee);
   background: color-mix(in srgb, var(--tc, #4361ee) 22%, transparent);
@@ -814,11 +828,12 @@ mark {
       {% for b in blocks %}
         {% for ln in b.lines %}
           {% if ln.bbox %}
-          <div class="bbox-overlay"
+          <div class="bbox-overlay{% if ln.suspect %} bbox-suspect{% endif %}"
                id="bbox-{{ ln.id }}"
                data-line-id="{{ ln.id }}"
                data-block-num="{{ b.block_num }}"
                data-type="{{ b.block_label }}"
+               {% if ln.suspect %}title="疑点: {{ ln.suspect }}"{% endif %}
                data-x0="{{ ln.bbox[0] }}"
                data-y0="{{ ln.bbox[1] }}"
                data-x1="{{ ln.bbox[2] }}"

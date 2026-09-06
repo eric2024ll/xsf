@@ -40,6 +40,15 @@ CREATE INDEX IF NOT EXISTS idx_lines_doc_page
 CREATE INDEX IF NOT EXISTS idx_lines_doc_block
     ON lines(doc_id, page_num, block_num);
 
+CREATE TABLE IF NOT EXISTS ocr_page_state (
+    doc_id INTEGER NOT NULL,
+    page_num INTEGER NOT NULL,
+    status TEXT NOT NULL,          -- done | error
+    error TEXT,
+    updated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (doc_id, page_num)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
     doc_id UNINDEXED,
     page_num UNINDEXED,
@@ -67,7 +76,8 @@ def get_conn(collection: str, create: bool = False) -> sqlite3.Connection:
 
 
 def _migrate(conn):
-    """给旧 DB 补列: lines 表 bbox/block_label (P1); documents 表 source_type (P2)."""
+    """给旧 DB 补列: lines 表 bbox/block_label (P1); documents 表 source_type (P2);
+    lines.suspect + ocr_page_state (P3, 2026-09-06)."""
     cols = {row[1] for row in conn.execute("PRAGMA table_info(lines)")}
     if "bbox" not in cols:
         conn.execute("ALTER TABLE lines ADD COLUMN bbox TEXT")
@@ -77,6 +87,18 @@ def _migrate(conn):
         conn.execute("ALTER TABLE lines ADD COLUMN page_w INTEGER")
     if "page_h" not in cols:
         conn.execute("ALTER TABLE lines ADD COLUMN page_h INTEGER")
+    if "suspect" not in cols:
+        conn.execute("ALTER TABLE lines ADD COLUMN suspect TEXT")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ocr_page_state (
+            doc_id INTEGER NOT NULL,
+            page_num INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            error TEXT,
+            updated_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (doc_id, page_num)
+        )
+    """)
 
     doc_cols = {row[1] for row in conn.execute("PRAGMA table_info(documents)")}
     if "is_primary" not in doc_cols:

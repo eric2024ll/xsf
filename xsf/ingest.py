@@ -5,6 +5,7 @@ import pymupdf
 import jieba
 from pathlib import Path
 from .db import get_conn
+from .suspect import detect_suspect
 
 
 def _tokenize(text: str) -> str:
@@ -120,7 +121,7 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
                        author: str = None,
                        source_tags: str = '["primary"]',
                        provider_id: str = None) -> dict:
-    """扫描件 OCR 入库（generic_http provider）。bbox+block_label 入库，doc_type='ocr'。"""
+    """扫描件 OCR 入库（vl_api provider）。bbox+block_label 入库，doc_type='ocr'。"""
     from .ocr import get_provider
 
     pdf_path = Path(pdf_path)
@@ -187,13 +188,14 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
 
                 block_num += 1
                 bbox_json = json.dumps(bbox) if bbox else None
+                suspect = detect_suspect(text, label, bbox_json, page_w, page_h)
 
                 for ln_num, ln_text in enumerate(lines, 1):
                     conn.execute(
                         '''INSERT INTO lines
-                           (doc_id, page_num, block_num, line_num, text, bbox, block_label, page_w, page_h)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                        (doc_id, page_num, block_num, ln_num, ln_text, bbox_json, label, page_w, page_h)
+                           (doc_id, page_num, block_num, line_num, text, bbox, block_label, page_w, page_h, suspect)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (doc_id, page_num, block_num, ln_num, ln_text, bbox_json, label, page_w, page_h, suspect)
                     )
                     total_lines += 1
 

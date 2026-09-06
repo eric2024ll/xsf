@@ -77,12 +77,44 @@ def get_ocr_config_path() -> Path:
 
 
 def _read_ocr_config() -> dict:
-    """读取 OCR 配置文件。损坏/不存在返回 {}。"""
+    """读取 OCR 配置文件。损坏/不存在返回 {}。
+
+    v2 → v3 一次性原地迁移 (2026-09-06):
+      generic_http → {type: vl_api, endpoint: paddle_http, url→base_url}
+      aistudio     → {type: vl_api, endpoint: aistudio_job}
+      local_merged → 删除 (p3 已裁撤)
+    """
     p = get_ocr_config_path()
     try:
-        return json.loads(p.read_text('utf-8'))
+        cfg = json.loads(p.read_text('utf-8'))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
+    if cfg.get('version') == 2:
+        providers = []
+        for pr in cfg.get('providers', []):
+            if not isinstance(pr, dict) or not pr.get('id'):
+                continue
+            ptype = pr.get('type', 'generic_http')
+            if ptype == 'local_merged':
+                continue
+            np = dict(pr)
+            np['type'] = 'vl_api'
+            if ptype == 'aistudio':
+                np['endpoint'] = 'aistudio_job'
+            elif ptype == 'vl_api':
+                pass
+            else:
+                np['endpoint'] = 'paddle_http'
+            if 'url' in np:
+                np['base_url'] = np.pop('url')
+            providers.append(np)
+        cfg['providers'] = providers
+        cfg['version'] = 3
+        try:
+            _write_ocr_config(cfg)
+        except OSError:
+            pass  # 迁移写失败不阻塞读 (下次再迁)
+    return cfg
 
 
 def _write_ocr_config(data: dict) -> None:
@@ -103,17 +135,22 @@ def _write_ocr_config(data: dict) -> None:
         raise
 
 
-# ── OCR provider 配置 (v2, generic_http 同步协议) ────────
-# schema: {version: 2, providers: [{id, name, url, api_key?, model?}], default?}
-# 唯一协议: POST <url> multipart(file[, model]) [+ Bearer api_key]
-#           → {pages: [{page_index, parsing_res_list, width, height}]}
-# 旧 v1 ({token, provider}) 无对应协议, 不迁移, 读作空列表。
+# ── OCR provider 配置 (v3, 统一 vl_api 架构) ────────
+# schema: {version: 3, providers: [{id, name, type: 'vl_api',
+#          endpoint: 'paddle_http'|'aistudio_job'|'openai_chat',
+#          base_url?, api_key?, model?}], default?}
+#   paddle_http  POST <base_url>/ocr multipart(file) [+ Bearer]
+#                → {pages: [{page_index, parsing_res_list, ...}]}  [结构化]
+#   aistudio_job PaddleOCR aistudio 云端 (submit→poll→fetch, api_key=token) [结构化]
+#   openai_chat  POST <base_url>/chat/completions (OpenAI 兼容视觉)       [纯文本]
+#                Ollama / vLLM / LM Studio / 本地 paddle-vl 均适用
+# 旧 v2 已自动迁移; v1 ({token, provider}) 不迁移, 读作空列表。
 
 
 def get_ocr_providers() -> list[dict]:
-    """v2 providers 列表 (深拷贝)。v1/损坏配置返回 []。"""
+    """v3 providers 列表 (深拷贝)。旧版/损坏配置返回 []。"""
     cfg = _read_ocr_config()
-    if cfg.get('version') != 2:
+    if cfg.get('version') != 3:
         return []
     providers = cfg.get('providers', [])
     return [dict(p) for p in providers if isinstance(p, dict) and p.get('id')]
@@ -122,7 +159,7 @@ def get_ocr_providers() -> list[dict]:
 def get_default_ocr_provider_id() -> str | None:
     """默认 provider id: 配置 default > XSF_OCR_METHOD (匹配 id) > 首个。"""
     cfg = _read_ocr_config()
-    providers = cfg.get('providers', []) if cfg.get('version') == 2 else []
+    providers = cfg.get('providers', []) if cfg.get('version') == 3 else []
     ids = [p.get('id') for p in providers if p.get('id')]
     default = cfg.get('default')
     if default in ids:
@@ -139,7 +176,7 @@ def get_ocr_provider_cfg(provider_id: str = None) -> dict:
     if not providers:
         raise RuntimeError(
             '未配置 OCR provider。请在前端「OCR 设置」添加 '
-            '(generic_http: POST 文件 → {pages:[...]})，'
+            '(vl_api: paddle_http / aistudio_job / openai_chat)，'
             '或设置 XSF_OCR_METHOD 环境变量。'
         )
     want = provider_id or get_default_ocr_provider_id()
@@ -159,36 +196,34 @@ def _next_provider_id(providers: list[dict]) -> str:
 
 
 def save_ocr_provider(name: str, url: str = None, pid: str = None,
-                      api_key: str = None, model: str = None,
-                      type: str = 'generic_http',
-                      urls: list[str] = None) -> dict:
-    """新增 (pid 为空) / 编辑 (pid 已存在) provider。
+                       api_key: str = None, model: str = None,
+                       endpoint: str = 'paddle_http') -> dict:
+    """新增 (pid 为空) / 编辑 (pid 已存在) provider (v3, 统一 vl_api).
 
-    type:
-      'generic_http' (自定义同步端点, 需 url)
-      'aistudio'     (内置云端, 无需 url)
-      'local_merged' (本地合并: PP-OCRv66 + PP-StructureV3, 需 urls 列表)
+    endpoint:
+      'paddle_http'  (本地/自建 PaddleOCR-VL HTTP, 需 base_url)
+      'aistudio_job' (aistudio 云端, api_key=token)
+      'openai_chat'  (OpenAI 兼容视觉端点, 需 base_url; Ollama/vLLM/LM Studio)
     api_key 传 None/空 且为编辑 → 保留旧值。
-    urls 仅用于 local_merged 类型, 双 URL 列表。
     返回写入后的完整 provider dict。
     """
-    PROVIDER_TYPES = ('generic_http', 'aistudio', 'local_merged')
+    ENDPOINTS = ('paddle_http', 'aistudio_job', 'openai_chat')
     name = (name or '').strip()
     url = (url or '').strip()
-    ptype = (type or 'generic_http').strip() or 'generic_http'
-    if ptype not in PROVIDER_TYPES:
-        raise ValueError(f'未知 provider 类型: {ptype} (可选: {", ".join(PROVIDER_TYPES)})')
+    ep = (endpoint or 'paddle_http').strip() or 'paddle_http'
+    if ep not in ENDPOINTS:
+        raise ValueError(f'未知 endpoint: {ep} (可选: {", ".join(ENDPOINTS)})')
     if not name:
         raise ValueError('name 不能为空')
-    if ptype == 'generic_http':
+    if ep in ('paddle_http', 'openai_chat'):
         if not url:
-            raise ValueError('generic_http 类型必须填 url')
+            raise ValueError(f'{ep} 类型必须填 base_url')
         if not (url.startswith('http://') or url.startswith('https://')):
-            raise ValueError('url 必须以 http:// 或 https:// 开头')
+            raise ValueError('base_url 必须以 http:// 或 https:// 开头')
 
     cfg = _read_ocr_config()
-    if cfg.get('version') != 2:
-        cfg = {'version': 2, 'providers': []}
+    if cfg.get('version') != 3:
+        cfg = {'version': 3, 'providers': []}
     providers = cfg.get('providers', [])
 
     if pid:
@@ -196,13 +231,9 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
         if target is None:
             raise KeyError(f'provider 不存在: {pid}')
         target['name'] = name
-        target['type'] = ptype
-        if urls is not None:
-            target['urls'] = urls
-        elif ptype == 'local_merged':
-            target.pop('url', None)
-        else:
-            target['url'] = url
+        target['type'] = 'vl_api'
+        target['endpoint'] = ep
+        target['base_url'] = url
         if api_key:                       # 空 = 保留旧值
             target['api_key'] = api_key.strip()
         if model is not None:
@@ -214,16 +245,12 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
         entry = {
             'id': pid,
             'name': name,
-            'type': ptype,
+            'type': 'vl_api',
+            'endpoint': ep,
+            'base_url': url,
             'model': (model or '').strip() or None,
             'created_at': datetime.now().isoformat(timespec='seconds'),
         }
-        if ptype == 'local_merged':
-            if not urls or len(urls) < 2:
-                raise ValueError('local_merged 类型必须提供 urls 列表 (至少 2 个 URL)')
-            entry['urls'] = list(urls)
-        else:
-            entry['url'] = url
         if api_key:
             entry['api_key'] = api_key.strip()
         providers.append(entry)
@@ -240,7 +267,7 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
 def delete_ocr_provider(pid: str) -> bool:
     """删除 provider。若它是 default 则清空 default。返回是否删除。"""
     cfg = _read_ocr_config()
-    if cfg.get('version') != 2:
+    if cfg.get('version') != 3:
         return False
     providers = cfg.get('providers', [])
     remaining = [p for p in providers if p.get('id') != pid]
@@ -257,7 +284,7 @@ def delete_ocr_provider(pid: str) -> bool:
 def set_default_ocr_provider(pid: str) -> None:
     """设置全局默认 provider。"""
     cfg = _read_ocr_config()
-    providers = cfg.get('providers', []) if cfg.get('version') == 2 else []
+    providers = cfg.get('providers', []) if cfg.get('version') == 3 else []
     ids = [p.get('id') for p in providers]
     if pid not in ids:
         raise KeyError(f'provider 不存在: {pid}')

@@ -184,7 +184,7 @@ def main():
     p_add.add_argument('--title', help='标题')
     p_add.add_argument('--author', help='作者')
     p_add.add_argument('--ocr', action='store_true',
-                       help='扫描件OCR（generic_http provider）')
+                       help='扫描件OCR（vl_api provider）')
     p_add.add_argument('--provider',
                        help='OCR provider id（默认用 OCR 设置里的 default）')
     p_add.add_argument('--primary', dest='primary', action='store_true',

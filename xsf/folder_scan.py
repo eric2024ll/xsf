@@ -258,7 +258,14 @@ def _ocr_worker() -> None:
             _run_reocr_doc(collection, doc_id, provider, pdf_path, total_pages)
 
             job = _reocr_get(collection, doc_id)
-            if job and job.get('status') == 'error':
+            if job and job.get('status') == 'done_with_errors':
+                # 页级断点: 大部分页已入库 (doc_type='ocr'), 失败页明细在
+                # ocr_page_state, 重启后重跑会自动跳过 done 页只补失败页
+                logger.warning(
+                    "自动 OCR 部分完成 coll=%s doc=%s 失败页=%s (明细见 ocr_page_state)",
+                    collection, doc_id, job.get('failed_pages'))
+                _ocr_attempts.pop((collection, doc_id), None)
+            elif job and job.get('status') == 'error':
                 key = (collection, doc_id)
                 n = _ocr_attempts.get(key, 0) + 1
                 _ocr_attempts[key] = n

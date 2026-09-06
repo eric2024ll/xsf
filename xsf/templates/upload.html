@@ -181,7 +181,7 @@
     </div>
   </div>
 
-  <!-- Tab3: OCR 设置 (generic_http provider 管理) -->
+  <!-- Tab3: OCR 设置 (vl_api provider 管理) -->
   <div class="tab-pane" id="tab-ocr">
     <div class="ocr-form">
       <div class="section-title">已添加的 OCR 服务</div>
@@ -190,27 +190,28 @@
       <div class="section-title" id="providerFormTitle">添加 OCR 服务</div>
       <input type="hidden" id="pfId" value="">
       <div class="field">
-        <label>类型</label>
+        <label>端点类型</label>
         <select id="pfType" onchange="onTypeChange()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;">
-          <option value="generic_http">通用 HTTP 服务（本地 GPU / 自建 API）</option>
-          <option value="aistudio">aistudio 云端（内置，免 URL）</option>
+          <option value="paddle_http">PaddleHTTP 结构化（本地 GPU / 自建 VL 服务）</option>
+          <option value="aistudio_job">aistudio 云端（内置，免 URL）</option>
+          <option value="openai_chat">OpenAI 兼容对话（Ollama / vLLM / LM Studio 等）</option>
         </select>
       </div>
       <div class="field">
         <label>名称</label>
-        <input type="text" id="pfName" placeholder="如: 本机 GPU / aistudio 云端">
+        <input type="text" id="pfName" placeholder="如: 本机 VL / aistudio 云端 / Ollama">
       </div>
       <div class="field" id="pfUrlRow">
-        <label>URL</label>
-        <input type="text" id="pfUrl" placeholder="http://127.0.0.1:8091/ocr">
+        <label>Base URL</label>
+        <input type="text" id="pfUrl" placeholder="http://127.0.0.1:8091">
       </div>
       <div class="field">
         <label>API Key（aistudio 即其 token；编辑时留空保留原值）</label>
-        <input type="password" id="pfKey" placeholder="aistudio 类型必填；其他留空 = 不鉴权">
+        <input type="password" id="pfKey" placeholder="aistudio_job 必填；Ollama 通常留空">
       </div>
       <div class="field">
-        <label>Model（可选）</label>
-        <input type="text" id="pfModel" placeholder="如: PaddleOCR-VL-1.6（留空用默认）">
+        <label>Model（openai_chat 必填，如 qwen2.5-vl）</label>
+        <input type="text" id="pfModel" placeholder="结构化端点可留空（用服务默认）">
       </div>
       <div class="hint" id="pfHint">
         通用类型契约：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code>。本地模型先包装成 HTTP 服务再添加。
@@ -362,7 +363,7 @@ function ocrStatusEl(msg, cls) {
 }
 function resetProviderForm() {
   document.getElementById('pfId').value = '';
-  document.getElementById('pfType').value = 'generic_http';
+  document.getElementById('pfType').value = 'paddle_http';
   document.getElementById('pfName').value = '';
   document.getElementById('pfUrl').value = '';
   document.getElementById('pfKey').value = '';
@@ -373,13 +374,15 @@ function resetProviderForm() {
 }
 function onTypeChange() {
   var t = document.getElementById('pfType').value;
-  var isAi = t === 'aistudio';
+  var isAi = t === 'aistudio_job';
   document.getElementById('pfUrlRow').style.display = isAi ? 'none' : '';
   var hint = document.getElementById('pfHint');
-  if (isAi) {
+  if (t === 'aistudio_job') {
     hint.innerHTML = 'aistudio 内置三阶段协议 (提交→轮询→取结果)，只需填 token。单文件 &lt; 100 页。';
+  } else if (t === 'openai_chat') {
+    hint.innerHTML = 'OpenAI 兼容 <code>/v1/chat/completions</code> 视觉端点 (Ollama / vLLM / LM Studio / 本机 paddle-vl)。Base URL 填到 <code>…/v1</code>，Model 必填。<b>纯文本输出无坐标，不能做默认入库引擎</b>，用于整页对照与分栏裁切。';
   } else {
-    hint.innerHTML = '通用类型契约：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code>。本地模型先包装成 HTTP 服务再添加。上传 OCR 始终使用默认服务（点选列表项切换）。';
+    hint.innerHTML = '结构化契约：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code> (base_url 自动补 <code>/ocr</code>)。上传 OCR / 画框重 OCR 使用默认服务（点选列表项切换）。';
   }
 }
 var _providers = [], _defaultPid = null;
@@ -400,13 +403,15 @@ function renderProviders() {
   }
   el.innerHTML = _providers.map(function(p) {
     var isDef = p.id === _defaultPid;
+    var epLabel = {paddle_http:'结构化', aistudio_job:'aistudio', openai_chat:'OpenAI'}[p.endpoint] || p.endpoint || '';
     return '<div class="provider-item' + (isDef ? ' is-default' : '') + '">' +
       '<input type="radio" name="defProvider" class="radio" ' + (isDef ? 'checked' : '') +
       ' title="设为默认" onchange="setDefault(\'' + p.id + '\')">' +
       '<div class="meta">' +
       '<div class="pname">' + escapeHtml(p.name) + (isDef ? ' <span class="badge-def">默认</span>' : '') +
-      (p.type === 'aistudio' ? ' <span class="badge-def" style="color:var(--text-muted)">aistudio</span>' : '') + '</div>' +
-      '<div class="purl">' + (p.type === 'aistudio' ? 'aistudio 云端 (内置)' : escapeHtml(p.url)) + '</div>' +
+      ' <span class="badge-def" style="color:var(--text-muted)">' + epLabel + '</span>' +
+      (!p.structured ? ' <span style="color:var(--warn,#c0392b);font-size:0.75rem;">(无坐标，不可做默认)</span>' : '') + '</div>' +
+      '<div class="purl">' + (p.endpoint === 'aistudio_job' ? 'aistudio 云端 (内置)' : escapeHtml(p.url)) + '</div>' +
       '<div class="pinfo">' +
       (p.has_key ? '<span class="badge-ok">🔑 已设密钥</span> · ' : '') +
       (p.model ? 'model: ' + escapeHtml(p.model) + ' · ' : '') +
@@ -420,6 +425,8 @@ function renderProviders() {
   }).join('');
 }
 async function setDefault(pid) {
+  var p = _providers.filter(function(x) { return x.id === pid; })[0];
+  if (p && !p.structured) { ocrStatusEl('✗ 该服务无坐标输出 (openai_chat)，不能做默认入库引擎', 'err'); loadProviders(); return; }
   try {
     var fd = new FormData(); fd.append('id', pid);
     var r = await fetch('/api/ocr-config/default', { method: 'POST', body: fd });
@@ -430,13 +437,13 @@ async function setDefault(pid) {
 }
 async function testProvider(pid, btn) {
   if (btn) btn.disabled = true;
-  ocrStatusEl('测试中（发送空白页 PDF，可能需数十秒）…', 'loading');
+  ocrStatusEl('测试中（轻量探活）…', 'loading');
   try {
     var fd = new FormData(); fd.append('id', pid);
     var r = await fetch('/api/ocr-config/test', { method: 'POST', body: fd });
     var data = await r.json();
-    if (data.ok) ocrStatusEl('✓ 连通成功（返回 ' + data.pages + ' 页）', 'ok');
-    else ocrStatusEl('✗ ' + (data.error || '测试失败'), 'err');
+    if (data.ok) ocrStatusEl('✓ 连通: ' + (data.detail || 'ok'), 'ok');
+    else ocrStatusEl('✗ ' + (data.detail || data.error || '测试失败'), 'err');
   } catch (e) { ocrStatusEl('✗ 网络错误: ' + e.message, 'err'); }
   if (btn) btn.disabled = false;
 }
@@ -444,7 +451,7 @@ function editProvider(pid) {
   var p = _providers.filter(function(x) { return x.id === pid; })[0];
   if (!p) return;
   document.getElementById('pfId').value = p.id;
-  document.getElementById('pfType').value = p.type || 'generic_http';
+  document.getElementById('pfType').value = p.endpoint || 'paddle_http';
   document.getElementById('pfName').value = p.name;
   document.getElementById('pfUrl').value = p.url || '';
   document.getElementById('pfKey').value = '';
@@ -471,13 +478,14 @@ async function saveProvider() {
   var key = document.getElementById('pfKey').value;
   var model = document.getElementById('pfModel').value.trim();
   if (!name) { alert('名称不能为空'); return; }
-  if (type === 'generic_http' && !url) { alert('URL 不能为空'); return; }
-  if (type === 'aistudio' && !id && !key) { alert('aistudio 类型需要填写 token'); return; }
+  if (type !== 'aistudio_job' && !url) { alert('Base URL 不能为空'); return; }
+  if (type === 'openai_chat' && !model && !id) { alert('openai_chat 需要填写 Model'); return; }
+  if (type === 'aistudio_job' && !id && !key) { alert('aistudio_job 类型需要填写 token'); return; }
   var btn = document.getElementById('pfSaveBtn');
   btn.disabled = true; ocrStatusEl('保存中…', 'loading');
   try {
     var fd = new FormData();
-    fd.append('name', name); fd.append('url', url); fd.append('type', type);
+    fd.append('name', name); fd.append('url', url); fd.append('endpoint', type);
     fd.append('api_key', key); fd.append('model', model);
     if (id) fd.append('id', id);
     var r = await fetch('/api/ocr-config/provider', { method: 'POST', body: fd });
