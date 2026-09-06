@@ -127,7 +127,7 @@ class VLApiAdapter:
             'aistudio_job 暂不支持整图纯文本路径 (用于整本入库即可)')
 
     def _openai_chat(self, image_bytes: bytes, mime: str,
-                     prompt: str = None) -> str:
+                     prompt: str = None, max_tokens: int = None) -> str:
         """POST <base_url>/chat/completions, OpenAI 视觉消息格式。"""
         url = self.base_url
         if not url.endswith('/chat/completions'):
@@ -149,6 +149,8 @@ class VLApiAdapter:
             }],
             'stream': False,
         }
+        if max_tokens:
+            body['max_tokens'] = max_tokens
         last_exc = None
         for attempt in range(MAX_RETRIES):
             try:
@@ -168,7 +170,8 @@ class VLApiAdapter:
                 content = (data.get('choices') or [{}])[0] \
                     .get('message', {}).get('content', '')
                 if not content:
-                    raise ValueError(f'响应无 content: {str(data)[:200]}')
+                    # 空响应 (如空白图/低 max_tokens) 重试无意义, 直接返回
+                    return ''
                 return content
             except (requests.ConnectionError, requests.Timeout,
                     ValueError) as e:
@@ -190,22 +193,22 @@ class VLApiAdapter:
                         'detail': r.json().get('model', 'ok') if ok
                         else f'HTTP {r.status_code}'}
             if self.endpoint == 'openai_chat':
-                headers = {}
-                if self.api_key:
-                    headers['Authorization'] = f'Bearer {self.api_key}'
-                r = requests.get(f"{self._root_url()}/models",
-                                 headers=headers, timeout=10)
-                ok = r.status_code == 200
-                detail = 'ok'
-                if ok:
-                    try:
-                        ids = [m.get('id') for m in r.json().get('data', [])]
-                        detail = f"models: {', '.join(filter(None, ids)) or '无'}"
-                    except ValueError:
-                        pass
-                else:
-                    detail = f'HTTP {r.status_code}'
-                return {'ok': ok, 'detail': detail}
+                # 对指定 model 发 1x1 小图真实请求, 验证 model 可调用
+                # (小图 + max_tokens=8, 开销可忽略)
+                tiny_png = base64.b64decode(
+                    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE'
+                    'QVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+                try:
+                    self._openai_chat(tiny_png, 'image/png', '',
+                                      max_tokens=8)
+                    return {'ok': True,
+                            'detail': f'model 可调用: {self.model}'}
+                except Exception as e:
+                    msg = str(e)[:200]
+                    if 'HTTP 404' in msg:
+                        return {'ok': False,
+                                'detail': f'model 不存在: {self.model}'}
+                    return {'ok': False, 'detail': msg}
             if self.endpoint == 'aistudio_job':
                 # aistudio 无免费探活端点: 只验证 token 已配置,
                 # 真实任务首次调用时才验证有效性 (避免测试也烧配额)
