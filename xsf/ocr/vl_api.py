@@ -165,6 +165,17 @@ class VLApiAdapter:
                     raise RuntimeError(
                         f'OCR 服务拒绝访问 (HTTP {r.status_code}): '
                         f'检查 api_key 是否有效')
+                if r.status_code >= 400:
+                    # 提取服务端错误详情 (OpenAI 风格 error.message)
+                    detail = ''
+                    try:
+                        err = r.json().get('error') or {}
+                        detail = err.get('message') or r.text[:200]
+                    except ValueError:
+                        detail = r.text[:200]
+                    raise RuntimeError(
+                        f'HTTP {r.status_code}: {detail}'
+                        if detail else f'HTTP {r.status_code} ({url})')
                 r.raise_for_status()
                 data = r.json()
                 content = (data.get('choices') or [{}])[0] \
@@ -193,22 +204,55 @@ class VLApiAdapter:
                         'detail': r.json().get('model', 'ok') if ok
                         else f'HTTP {r.status_code}'}
             if self.endpoint == 'openai_chat':
-                # 对指定 model 发 1x1 小图真实请求, 验证 model 可调用
-                # (小图 + max_tokens=8, 开销可忽略)
-                tiny_png = base64.b64decode(
-                    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE'
-                    'QVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+                # 纯文本 ping 验证 model 可调用 (无图最鲁棒:
+                # 避开小图/低 max_tokens 被网关拒绝的问题)
+                headers = {'Content-Type': 'application/json'}
+                if self.api_key:
+                    headers['Authorization'] = f'Bearer {self.api_key}'
+                url = self.base_url
+                if not url.endswith('/chat/completions'):
+                    url += '/chat/completions'
                 try:
-                    self._openai_chat(tiny_png, 'image/png', '',
-                                      max_tokens=8)
-                    return {'ok': True,
-                            'detail': f'model 可调用: {self.model}'}
-                except Exception as e:
-                    msg = str(e)[:200]
-                    if 'HTTP 404' in msg:
+                    r = requests.post(url, headers=headers, timeout=30, json={
+                        'model': self.model,
+                        'messages': [{'role': 'user',
+                                      'content': 'ping'}],
+                        'max_tokens': 4,
+                        'stream': False,
+                    })
+                    if r.status_code == 200:
+                        return {'ok': True,
+                                'detail': f'model 可调用: {self.model}'}
+                    detail = ''
+                    try:
+                        err = r.json().get('error') or {}
+                        detail = err.get('message') or r.text[:200]
+                    except ValueError:
+                        detail = r.text[:200]
+                    # 部分视觉服务强制要图 (如本机 paddle-vl): 退回小图探测
+                    if r.status_code == 400 and detail and any(
+                            k in detail.lower() for k in
+                            ('图像', 'image', 'base64')):
+                        try:
+                            tiny_png = base64.b64decode(
+                                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAA'
+                                'fFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQA'
+                                'AAABJRU5ErkJggg==')
+                            self._openai_chat(tiny_png, 'image/png', '')
+                            return {'ok': True,
+                                    'detail': f'model 可调用: {self.model}'}
+                        except Exception as e2:
+                            return {'ok': False, 'detail': str(e2)[:250]}
+                    if r.status_code == 404:
                         return {'ok': False,
-                                'detail': f'model 不存在: {self.model}'}
-                    return {'ok': False, 'detail': msg}
+                                'detail': f'model 不存在: {self.model} '
+                                          f'({detail})' if detail
+                                else f'model 不存在: {self.model}'}
+                    return {'ok': False,
+                            'detail': f'HTTP {r.status_code}: {detail}'
+                            if detail else f'HTTP {r.status_code}'}
+                except requests.RequestException as e:
+                    return {'ok': False, 'detail': str(e)[:250]}
             if self.endpoint == 'aistudio_job':
                 # aistudio 无免费探活端点: 只验证 token 已配置,
                 # 真实任务首次调用时才验证有效性 (避免测试也烧配额)
