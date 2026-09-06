@@ -1278,15 +1278,38 @@ async def api_docs_query(
                       ORDER BY d.{sort_col} {order_dir}
                       LIMIT ? OFFSET ?"""
             rows = conn.execute(sql, params + [limit, offset]).fetchall()
+
+            # OCR 页状态聚合 (表可能未迁移, 防御)
+            state_map = {}
+            doc_ids = [r["id"] for r in rows]
+            if doc_ids:
+                try:
+                    ph = ",".join("?" * len(doc_ids))
+                    for sr in conn.execute(
+                            f"SELECT doc_id, "
+                            f"SUM(status='done') AS dn, "
+                            f"SUM(status='error') AS en "
+                            f"FROM ocr_page_state WHERE doc_id IN ({ph}) "
+                            f"GROUP BY doc_id", doc_ids):
+                        state_map[sr["doc_id"]] = {
+                            "done": sr["dn"] or 0, "error": sr["en"] or 0}
+                except sqlite3.OperationalError:
+                    pass
         finally:
             conn.close()
+
+        docs = []
+        for r in rows:
+            d = dict(r)
+            d["ocr_state"] = state_map.get(d["id"])
+            docs.append(d)
 
         return {
             "total": total,
             "page": page,
             "limit": limit,
             "pages": (total + limit - 1) // limit if limit > 0 else 0,
-            "docs": [dict(r) for r in rows],
+            "docs": docs,
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})

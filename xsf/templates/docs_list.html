@@ -42,6 +42,9 @@ td.cite{font-family:"SFMono-Regular",Consolas,monospace;font-size:0.78rem;color:
 td.title{font-weight:600;}
 td .meta{color:var(--text-muted);font-size:0.75rem;}
 td .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:0.72rem;background:#eee;margin-right:4px;}
+.ocr-badge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:10px;font-size:0.72rem;cursor:help;white-space:nowrap;}
+.ocr-badge.err{background:#f9e8e8;color:#a03030;border:1px solid #e0b0b0;}
+.ocr-badge.part{background:#e8f2f8;color:#2c7da0;border:1px solid #b0d0e0;}
 td .badge.book{background:#e8eef4;color:#3d5a80;}
 td .badge.article{background:#e8f4e8;color:#27ae60;}
 td .badge.manuscript{background:#f9f2e6;color:#b38b00;}
@@ -315,6 +318,18 @@ function typeBadge(bibType){
   return '<span class="badge ' + cls + '">' + label + '</span>';
 }
 
+function ocrBadge(d){
+  if(d.doc_type !== 'ocr' || !d.ocr_state) return '';
+  const st = d.ocr_state;
+  if(st.error > 0){
+    return '<div class="ocr-badge err" title="有 ' + st.error + ' 页 OCR 失败。点「重OCR」只补失败页，已完成页不会重做。">⚠ ' + st.error + ' 页未成</div>';
+  }
+  if(st.done > 0 && d.page_count && st.done < d.page_count){
+    return '<div class="ocr-badge part" title="OCR 完成部分页后中断。点「重OCR」续跑，已完成页不会重做。">OCR ' + st.done + '/' + d.page_count + '</div>';
+  }
+  return '';
+}
+
 async function reocrDoc(docId, btn){
   if(!confirm('确定对整个文献重新 OCR（逐页处理，耗时较长）？将覆盖现有识别文本。\n任务在后台运行，可随时取消，关浏览器不中断。')) return;
   btn.disabled = true;
@@ -454,7 +469,7 @@ function renderTable(docs){
         '<div class="meta">' + escapeHtml(d.author || '') + '</div>' +
         '<div>' + tags + '</div></td>' +
       '<td>' + typeBadge(d.bib_type) + '</td>' +
-      '<td>' + (d.page_count || '-') + '</td>' +
+      '<td>' + (d.page_count || '-') + ocrBadge(d) + '</td>' +
       '<td>' + fmtDate(d.created_at) + '</td>' +
       '<td class="actions">' +
         '<a href="/collections/' + collEnc + '/doc/' + d.id + '/proofread">校对</a>' +
