@@ -542,14 +542,8 @@ async def api_delete_ocr_provider(pid: str):
 
 @app.post("/api/ocr-config/default")
 async def api_set_ocr_default(id: str = Form(...)):
-    from .config import get_ocr_provider_cfg, set_default_ocr_provider
+    from .config import set_default_ocr_provider
     try:
-        cfg = get_ocr_provider_cfg(id)
-        if cfg.get('endpoint') == 'openai_chat':
-            return JSONResponse(
-                {"error": "openai_chat 无坐标输出, 不能做默认入库引擎"},
-                status_code=400,
-            )
         set_default_ocr_provider(id)
     except KeyError:
         return JSONResponse({"error": f"provider 不存在: {id}"},

@@ -61,17 +61,47 @@ class VLApiAdapter:
     # ── structured 路径 ──────────────────────────────
 
     def ocr(self, pdf_path):
-        """结构化 OCR: 文件 → pages 列表 (paddle_http / aistudio_job)。"""
+        """结构化 OCR: 文件 → pages 列表。
+
+        paddle_http/aistudio_job: 真结构化 (bbox+label)。
+        openai_chat: 每页渲染 PNG → 整页纯文本 → 伪 pages 结构
+        (block_label='text', block_bbox=None) — 逐页对照形态, 无块坐标。
+        """
         if self.endpoint == 'aistudio_job':
             from .aistudio_api import ocr_file_aistudio
             return ocr_file_aistudio(pdf_path, token=self.api_key,
                                      model=self.model)
         if self.endpoint == 'openai_chat':
-            raise NotImplementedError(
-                'openai_chat 是纯文本端点, 不产 block 坐标; '
-                '首次入库/画框重OCR 需要 paddle_http 或 aistudio_job')
+            return self._pdf_to_pages(pdf_path)
         return ocr_file(pdf_path, self._ocr_url(), api_key=self.api_key,
                         model=self.model)
+
+    def _pdf_to_pages(self, pdf_path):
+        """openai_chat: PDF 逐页渲染 → 整页文本 → 伪 pages 结构。"""
+        import pymupdf
+
+        prompt = ('逐页转录图片中全部文字，按阅读顺序输出纯文本，'
+                  '不要添加任何解释或标注')
+        pages = []
+        with pymupdf.open(pdf_path) as doc:
+            for i, page in enumerate(doc):
+                pix = page.get_pixmap(dpi=150)
+                png = pix.tobytes('png')
+                text = self._openai_chat(png, 'image/png', prompt)
+                text = (text or '').strip()
+                if not text:
+                    continue
+                pages.append({
+                    'page_index': i,
+                    'width': pix.width,
+                    'height': pix.height,
+                    'parsing_res_list': [{
+                        'block_label': 'text',
+                        'block_content': text,
+                        'block_bbox': None,
+                    }],
+                })
+        return pages
 
     # ── plain 路径 ───────────────────────────────────
 

@@ -182,10 +182,6 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
                     continue
 
                 # 块粒度: 一块一行记录 (行内 \n 保留, bbox 即块框) — 2026-09-06 批次2
-                text = text.strip()
-                if not text:
-                    continue
-
                 block_num += 1
                 bbox_json = json.dumps(bbox) if bbox else None
                 suspect = detect_suspect(text, label, bbox_json, page_w, page_h)

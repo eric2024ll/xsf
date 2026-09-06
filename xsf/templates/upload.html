@@ -380,7 +380,7 @@ function onTypeChange() {
   if (t === 'aistudio_job') {
     hint.innerHTML = 'aistudio 内置三阶段协议 (提交→轮询→取结果)，只需填 token。单文件 &lt; 100 页。';
   } else if (t === 'openai_chat') {
-    hint.innerHTML = 'OpenAI 兼容 <code>/v1/chat/completions</code> 视觉端点 (Ollama / vLLM / LM Studio / 本机 paddle-vl)。Base URL 填到 <code>…/v1</code>，Model 必填。<b>纯文本输出无坐标，不能做默认入库引擎</b>，用于整页对照与分栏裁切。';
+    hint.innerHTML = 'OpenAI 兼容 <code>/v1/chat/completions</code> 视觉端点 (Ollama / vLLM / LM Studio / 云端 API / 本机 paddle-vl)。Base URL 填到 <code>…/v1</code>，Model 必填。整页纯文本 OCR（逐页对照，无块坐标/高亮/栏重组），可做默认引擎。';
   } else {
     hint.innerHTML = '结构化契约：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code> (base_url 自动补 <code>/ocr</code>)。上传 OCR / 画框重 OCR 使用默认服务（点选列表项切换）。';
   }
@@ -410,7 +410,7 @@ function renderProviders() {
       '<div class="meta">' +
       '<div class="pname">' + escapeHtml(p.name) + (isDef ? ' <span class="badge-def">默认</span>' : '') +
       ' <span class="badge-def" style="color:var(--text-muted)">' + epLabel + '</span>' +
-      (!p.structured ? ' <span style="color:var(--warn,#c0392b);font-size:0.75rem;">(无坐标，不可做默认)</span>' : '') + '</div>' +
+      (!p.structured ? ' <span style="color:var(--warn,#c0392b);font-size:0.75rem;">(整页纯文本, 无块坐标)</span>' : '') + '</div>' +
       '<div class="purl">' + (p.endpoint === 'aistudio_job' ? 'aistudio 云端 (内置)' : escapeHtml(p.url)) + '</div>' +
       '<div class="pinfo">' +
       (p.has_key ? '<span class="badge-ok">🔑 已设密钥</span> · ' : '') +
@@ -425,8 +425,6 @@ function renderProviders() {
   }).join('');
 }
 async function setDefault(pid) {
-  var p = _providers.filter(function(x) { return x.id === pid; })[0];
-  if (p && !p.structured) { ocrStatusEl('✗ 该服务无坐标输出 (openai_chat)，不能做默认入库引擎', 'err'); loadProviders(); return; }
   try {
     var fd = new FormData(); fd.append('id', pid);
     var r = await fetch('/api/ocr-config/default', { method: 'POST', body: fd });
