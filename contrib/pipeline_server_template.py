@@ -36,8 +36,10 @@ import pymupdf
 from fastapi import FastAPI, UploadFile
 
 CONFIG = {
-    "det_model_dir": "",       # 微调检测模型目录, 空 = paddleocr 默认
-    "rec_model_dir": "",       # 微调识别模型目录 (3.x 字典放模型目录内, 勿单传)
+    "det_model_name": "PP-OCRv6_medium_det",  # 官方模型名 (本地缓存即用)
+    "rec_model_name": "PP-OCRv6_medium_rec",  # 换自训练时置空并填 *_model_dir
+    "det_model_dir": "",       # 微调检测模型目录, 空 = 用官方模型名
+    "rec_model_dir": "",       # 微调识别模型目录 (3.x 字典放模型目录内)
     "render_dpi": 300,         # 页面渲染精度, 与 xsf 重 OCR 默认一致
     "device": "cpu",           # cpu / gpu:0 (GPU 与 VL 服务同卡时慎用)
     "lang": "ch",              # 识别语言 (小语种换对应 lang 或自训练模型)
@@ -49,13 +51,17 @@ app = FastAPI(title="xsf pipeline OCR adapter")
 
 
 def _load_engine():
-    """加载管线引擎。模型路径为空时用官方预训练 (冒烟用), 生产填微调路径."""
+    """加载管线引擎。官方模型名直用本地缓存; 微调模型填 *_model_dir."""
     from paddleocr import PaddleOCR
     kwargs = {}
     if CONFIG["det_model_dir"]:
         kwargs["det_model_dir"] = CONFIG["det_model_dir"]
+    elif CONFIG["det_model_name"]:
+        kwargs["text_detection_model_name"] = CONFIG["det_model_name"]
     if CONFIG["rec_model_dir"]:
         kwargs["rec_model_dir"] = CONFIG["rec_model_dir"]
+    elif CONFIG["rec_model_name"]:
+        kwargs["text_recognition_model_name"] = CONFIG["rec_model_name"]
     return PaddleOCR(
         lang=CONFIG["lang"],
         device=CONFIG["device"],
