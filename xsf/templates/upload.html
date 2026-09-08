@@ -405,9 +405,10 @@ function renderProviders() {
     var isDef = p.id === _defaultPid;
     var epLabel = {paddle_http:'结构化', aistudio_job:'aistudio', openai_chat:'OpenAI'}[p.endpoint] || p.endpoint || '';
     return '<div class="provider-item' + (isDef ? ' is-default' : '') + '">' +
-      '<input type="radio" name="defProvider" class="radio" ' + (isDef ? 'checked' : '') +
+      '<input type="radio" name="defProvider" class="radio" id="def-' + p.id + '"' + (isDef ? ' checked' : '') +
       ' title="设为默认" onchange="setDefault(\'' + p.id + '\')">' +
       '<div class="meta">' +
+      '<label for="def-' + p.id + '" style="cursor:pointer;" title="点击设为默认">' +
       '<div class="pname">' + escapeHtml(p.name) + (isDef ? ' <span class="badge-def">默认</span>' : '') +
       ' <span class="badge-def" style="color:var(--text-muted)">' + epLabel + '</span>' +
       (!p.structured ? ' <span style="color:var(--warn,#c0392b);font-size:0.75rem;">(整页纯文本, 无块坐标)</span>' : '') + '</div>' +
@@ -416,7 +417,7 @@ function renderProviders() {
       (p.has_key ? '<span class="badge-ok">🔑 已设密钥</span> · ' : '') +
       (p.model ? 'model: ' + escapeHtml(p.model) + ' · ' : '') +
       (p.updated_at ? escapeHtml(p.updated_at) : '') +
-      '</div></div>' +
+      '</div></label></div>' +
       '<div class="pops">' +
       '<button onclick="testProvider(\'' + p.id + '\',this)">测试</button>' +
       '<button onclick="editProvider(\'' + p.id + '\')">编辑</button>' +
@@ -429,7 +430,12 @@ async function setDefault(pid) {
     var fd = new FormData(); fd.append('id', pid);
     var r = await fetch('/api/ocr-config/default', { method: 'POST', body: fd });
     var data = await r.json();
-    if (data.ok) { _defaultPid = pid; renderProviders(); ocrStatusEl('✓ 默认已切换: ' + pid, 'ok'); }
+    if (data.ok) {
+      _defaultPid = pid;
+      const p = _providers.find(x => x.id === pid);
+      ocrStatusEl('✓ 默认已切换: ' + (p ? p.name : pid) + ' (' + pid + ')', 'ok');
+      renderProviders();
+    }
     else { ocrStatusEl('✗ ' + (data.error || '设置失败'), 'err'); loadProviders(); }
   } catch (e) { ocrStatusEl('✗ 网络错误: ' + e.message, 'err'); loadProviders(); }
 }

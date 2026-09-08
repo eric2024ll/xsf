@@ -45,6 +45,7 @@ td .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:0.72
 .ocr-badge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:10px;font-size:0.72rem;cursor:help;white-space:nowrap;}
 .ocr-badge.err{background:#f9e8e8;color:#a03030;border:1px solid #e0b0b0;}
 .ocr-badge.part{background:#e8f2f8;color:#2c7da0;border:1px solid #b0d0e0;}
+.ocr-pages{font-size:0.68rem;color:#a03030;margin-top:2px;max-width:9rem;}
 td .badge.book{background:#e8eef4;color:#3d5a80;}
 td .badge.article{background:#e8f4e8;color:#27ae60;}
 td .badge.manuscript{background:#f9f2e6;color:#b38b00;}
@@ -322,7 +323,10 @@ function ocrBadge(d){
   if(d.doc_type !== 'ocr' || !d.ocr_state) return '';
   const st = d.ocr_state;
   if(st.error > 0){
-    return '<div class="ocr-badge err" title="有 ' + st.error + ' 页 OCR 失败。点「重OCR」只补失败页，已完成页不会重做。">⚠ ' + st.error + ' 页未成</div>';
+    const errs = st.errors || [];
+    const shown = errs.slice(0, 6).join(', ') + (errs.length > 6 ? ', …' : '');
+    return '<div class="ocr-badge err" title="失败页: ' + errs.join(', ') + '。点「重OCR」只补失败页，已完成页不会重做。">⚠ ' + st.error + ' 页未成</div>' +
+           (shown ? '<div class="ocr-pages err">' + shown + '</div>' : '');
   }
   if(st.done > 0 && d.page_count && st.done < d.page_count){
     return '<div class="ocr-badge part" title="OCR 完成部分页后中断。点「重OCR」续跑，已完成页不会重做。">OCR ' + st.done + '/' + d.page_count + '</div>';
@@ -330,8 +334,32 @@ function ocrBadge(d){
   return '';
 }
 
+let _ocrEngine = undefined;  // undefined=未取, null=未知, string=引擎名
+async function getOcrEngineName(){
+  if(_ocrEngine !== undefined) return _ocrEngine;
+  try{
+    const r = await fetch('/api/ocr-config');
+    const data = await r.json();
+    if(!data.error){
+      const p = (data.providers||[]).find(x => x.id === data.default);
+      _ocrEngine = p ? p.name : null;
+    } else { _ocrEngine = null; }
+  }catch(e){ _ocrEngine = null; }
+  return _ocrEngine;
+}
+
 async function reocrDoc(docId, btn){
-  if(!confirm('确定对整个文献重新 OCR（逐页处理，耗时较长）？将覆盖现有识别文本。\n任务在后台运行，可随时取消，关浏览器不中断。')) return;
+  const d = state.docs.find(x => x.id === docId);
+  const st = (d && d.ocr_state) || null;
+  const engine = (await getOcrEngineName()) || '未知引擎';
+  let msg = '确定对整个文献重新 OCR？\n使用引擎: ' + engine;
+  if(st && st.error > 0 && st.errors && st.errors.length){
+    msg += '\n失败页 ' + st.errors.join(', ') + ' 将重试，已完成页自动跳过。';
+  } else {
+    msg += '\n已完成页自动跳过，只补缺失/失败页。';
+  }
+  msg += '\n任务在后台运行，关浏览器不中断。';
+  if(!confirm(msg)) return;
   btn.disabled = true;
   btn.textContent = '启动中…';
   try{

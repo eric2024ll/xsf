@@ -1288,11 +1288,16 @@ async def api_docs_query(
                     for sr in conn.execute(
                             f"SELECT doc_id, "
                             f"SUM(status='done') AS dn, "
-                            f"SUM(status='error') AS en "
+                            f"SUM(status='error') AS en, "
+                            f"GROUP_CONCAT(CASE WHEN status='error' "
+                            f"THEN page_num END) AS ep "
                             f"FROM ocr_page_state WHERE doc_id IN ({ph}) "
                             f"GROUP BY doc_id", doc_ids):
+                        errs = sorted(
+                            int(x) for x in (sr["ep"] or "").split(",") if x)
                         state_map[sr["doc_id"]] = {
-                            "done": sr["dn"] or 0, "error": sr["en"] or 0}
+                            "done": sr["dn"] or 0, "error": sr["en"] or 0,
+                            "errors": errs}
                 except sqlite3.OperationalError:
                     pass
         finally:
