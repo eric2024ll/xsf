@@ -41,7 +41,7 @@ CONFIG = {
     "det_model_dir": "",       # 微调检测模型目录, 空 = 用官方模型名
     "rec_model_dir": "",       # 微调识别模型目录 (3.x 字典放模型目录内)
     "render_dpi": 300,         # 页面渲染精度, 与 xsf 重 OCR 默认一致
-    "device": "cpu",           # cpu / gpu:0 (GPU 与 VL 服务同卡时慎用)
+    "device": "cpu",           # 实测 gpu:0 与 VL 同卡 OOM (14+1.7GB 推理峰值>16GB, ResourceExhaustedError)
     "lang": "ch",              # 识别语言 (小语种换对应 lang 或自训练模型)
     "host": "0.0.0.0",
     "port": 8095,
