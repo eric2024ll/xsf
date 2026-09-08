@@ -30,6 +30,11 @@ HTTP 契约 (与 xsf/ocr/vl_api.py 的 paddle_http 端点一致):
 """
 
 import os
+
+# paddle 显存池贪婪预留 (默认占满整卡), 独占 GPU 时限池防推理期 OOM;
+# 必须在 paddle 首次 import 前设置 (本模板 paddleocr 惰性加载, 顶部安全)
+os.environ.setdefault("FLAGS_fraction_of_gpu_memory_to_use", "0.3")
+
 import tempfile
 
 import pymupdf
@@ -41,7 +46,7 @@ CONFIG = {
     "det_model_dir": "",       # 微调检测模型目录, 空 = 用官方模型名
     "rec_model_dir": "",       # 微调识别模型目录 (3.x 字典放模型目录内)
     "render_dpi": 300,         # 页面渲染精度, 与 xsf 重 OCR 默认一致
-    "device": "cpu",           # 实测 gpu:0 与 VL 同卡 OOM (14+1.7GB 推理峰值>16GB, ResourceExhaustedError)
+    "device": "cpu",           # cpu / gpu:0 (gpu 需独占: 与 llama-server/VL 同卡会 OOM; 池限 0.3 已内置)
     "lang": "ch",              # 识别语言 (小语种换对应 lang 或自训练模型)
     "host": "0.0.0.0",
     "port": 8095,
