@@ -46,7 +46,8 @@ CONFIG = {
     "det_model_dir": "",       # 微调检测模型目录, 空 = 用官方模型名
     "rec_model_dir": "",       # 微调识别模型目录 (3.x 字典放模型目录内)
     "render_dpi": 300,         # 页面渲染精度, 与 xsf 重 OCR 默认一致
-    "device": "cpu",           # cpu / gpu:0 (gpu 需独占: 与 llama-server/VL 同卡会 OOM; 池限 0.3 已内置)
+    "device": "gpu:0",         # cpu / gpu:0; GPU 实测 1.9s/页 显存 4.6GB (池限 0.3 生效,
+                               # 可与 paddleocr-vl 共存); llama-server (14GB) 开启前须先停本服务
     "lang": "ch",              # 识别语言 (小语种换对应 lang 或自训练模型)
     "host": "0.0.0.0",
     "port": 8095,
