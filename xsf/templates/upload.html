@@ -192,7 +192,7 @@
       <div class="field">
         <label>端点类型</label>
         <select id="pfType" onchange="onTypeChange()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;">
-          <option value="paddle_http">PaddleHTTP 结构化（本地 GPU / 自建 VL 服务）</option>
+          <option value="paddle_http">PaddleHTTP 结构化（本地 GPU / 自建 VL 服务 / 自训练管线）</option>
           <option value="aistudio_job">aistudio 云端（内置，免 URL）</option>
           <option value="openai_chat">OpenAI 兼容对话（Ollama / vLLM / LM Studio 等）</option>
         </select>
@@ -389,7 +389,7 @@ function onTypeChange() {
   } else if (t === 'openai_chat') {
     hint.innerHTML = 'OpenAI 兼容 <code>/v1/chat/completions</code> 视觉端点 (Ollama / vLLM / LM Studio / 云端 API / 本机 paddle-vl)。Base URL 填到 <code>…/v1</code>，Model 必填。整页纯文本 OCR（无块坐标/高亮），画框/栏重 OCR 走裁切直送，可做默认引擎。';
   } else {
-    hint.innerHTML = '结构化契约：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code> (base_url 自动补 <code>/ocr</code>)。上传 OCR / 画框重 OCR 使用默认服务（点选列表项切换）。';
+    hint.innerHTML = '结构化契约：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code> (base_url 自动补 <code>/ocr</code>)。上传 OCR / 画框重 OCR 使用默认服务（点选列表项切换）。自训练管线 (小语种 det+rec) 见 <code>contrib/pipeline_server_template.py</code>。';
   }
 }
 var _providers = [], _defaultPid = null;
