@@ -37,9 +37,10 @@ from fastapi import FastAPI, UploadFile
 
 CONFIG = {
     "det_model_dir": "",       # 微调检测模型目录, 空 = paddleocr 默认
-    "rec_model_dir": "",       # 微调识别模型目录
-    "rec_char_dict_path": "",  # 自定义字典 (小语种字符集必填)
+    "rec_model_dir": "",       # 微调识别模型目录 (3.x 字典放模型目录内, 勿单传)
     "render_dpi": 300,         # 页面渲染精度, 与 xsf 重 OCR 默认一致
+    "device": "cpu",           # cpu / gpu:0 (GPU 与 VL 服务同卡时慎用)
+    "lang": "ch",              # 识别语言 (小语种换对应 lang 或自训练模型)
     "host": "0.0.0.0",
     "port": 8095,
 }
@@ -50,13 +51,18 @@ app = FastAPI(title="xsf pipeline OCR adapter")
 def _load_engine():
     """加载管线引擎。模型路径为空时用官方预训练 (冒烟用), 生产填微调路径."""
     from paddleocr import PaddleOCR
+    kwargs = {}
+    if CONFIG["det_model_dir"]:
+        kwargs["det_model_dir"] = CONFIG["det_model_dir"]
+    if CONFIG["rec_model_dir"]:
+        kwargs["rec_model_dir"] = CONFIG["rec_model_dir"]
     return PaddleOCR(
-        det_model_dir=CONFIG["det_model_dir"] or None,
-        rec_model_dir=CONFIG["rec_model_dir"] or None,
-        rec_char_dict_path=CONFIG["rec_char_dict_path"] or None,
+        lang=CONFIG["lang"],
+        device=CONFIG["device"],
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,
+        **kwargs,
     )
 
 
