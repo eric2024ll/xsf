@@ -197,7 +197,8 @@ def _next_provider_id(providers: list[dict]) -> str:
 
 def save_ocr_provider(name: str, url: str = None, pid: str = None,
                        api_key: str = None, model: str = None,
-                       endpoint: str = 'paddle_http') -> dict:
+                       endpoint: str = 'paddle_http',
+                       prompt: str = '') -> dict:
     """新增 (pid 为空) / 编辑 (pid 已存在) provider (v3, 统一 vl_api).
 
     endpoint:
@@ -205,6 +206,7 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
       'aistudio_job' (aistudio 云端, api_key=token)
       'openai_chat'  (OpenAI 兼容视觉端点, 需 base_url; Ollama/vLLM/LM Studio)
     api_key 传 None/空 且为编辑 → 保留旧值。
+    prompt: openai_chat 专属自定义转录 prompt (可空=用内置默认; 其他 endpoint 忽略)。
     返回写入后的完整 provider dict。
     """
     ENDPOINTS = ('paddle_http', 'aistudio_job', 'openai_chat')
@@ -238,6 +240,10 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
             target['api_key'] = api_key.strip()
         if model is not None:
             target['model'] = model.strip() or None
+        if ep == 'openai_chat':
+            target['prompt'] = (prompt or '').strip()
+        else:
+            target.pop('prompt', None)
         target['updated_at'] = datetime.now().isoformat(timespec='seconds')
         result = dict(target)
     else:
@@ -253,6 +259,8 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
         }
         if api_key:
             entry['api_key'] = api_key.strip()
+        if ep == 'openai_chat':
+            entry['prompt'] = (prompt or '').strip()
         providers.append(entry)
         result = dict(entry)
 

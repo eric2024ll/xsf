@@ -485,6 +485,8 @@ async def api_get_ocr_config():
             'url': p.get('base_url', p.get('url', '')),
             'model': p.get('model') or '',
             'structured': p.get('endpoint', 'paddle_http') != 'openai_chat',
+            'prompt': p.get('prompt') or '',
+            'has_prompt': bool((p.get('prompt') or '').strip()),
             'has_key': bool(p.get('api_key')),
             'updated_at': p.get('updated_at') or p.get('created_at'),
         })
@@ -499,13 +501,15 @@ async def api_save_ocr_provider(name: str = Form(...), url: str = Form(''),
                                 id: str = Form(None),
                                 api_key: str = Form(None),
                                 model: str = Form(None),
-                                endpoint: str = Form('paddle_http')):
+                                endpoint: str = Form('paddle_http'),
+                                prompt: str = Form('')):
     """新增/编辑 provider (v3 vl_api)。api_key 留空且为编辑 → 保留旧值。"""
     from .config import save_ocr_provider
     try:
         p = save_ocr_provider(name=name, url=url, pid=id,
                               api_key=(api_key or '').strip() or None,
-                              model=model, endpoint=endpoint)
+                              model=model, endpoint=endpoint,
+                              prompt=prompt or '')
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except KeyError as e:
@@ -2281,15 +2285,17 @@ async def edit_page(
 # ── 手工分栏重新 OCR ────────────────────────────────────
 
 def _reocr_regions_for_page(provider, src, page_num: int, region_list: list):
-    """分栏重 OCR 共享逻辑: 整页上下文 OCR + region 几何过滤.
+    """分栏重 OCR 共享逻辑: 按 provider 能力分派两条路径.
 
     region 坐标在 150dpi 页面像素空间 (与 page_image/bbox overlay 一致)。
-    整页按 300dpi 渲染构造单页 PDF (与整本重 OCR 相同几何 — 窄高裁切会
-    触发 PaddleOCR-VL 缩放不稳, 导致空白/幻觉, 见 2026-08-24 调查),
-    OCR 一次后只保留 bbox 落入某 region 的文字块 (中心点在 region 内,
-    或与 region 重叠面积 ≥ 块面积 50%), 坐标换算回 150dpi 空间。
+    - structured (paddle_http/aistudio_job): 整页按 300dpi 渲染构造单页 PDF
+      (与整本重 OCR 相同几何 — 窄高裁切会触发 PaddleOCR-VL 缩放不稳,
+      导致空白/幻觉, 见 2026-08-24 调查), OCR 一次后只保留 bbox 落入某
+      region 的文字块 (中心点在 region 内, 或与 region 重叠面积 ≥ 块面积
+      50%), 坐标换算回 150dpi 空间。block 按 (region 框选顺序, OCR 原始
+      顺序) 排列。
+    - plain (openai_chat): 裁切直送 _reocr_regions_plain。
     返回 (new_blocks, page_w, page_h, n_regions);
-    block 按 (region 框选顺序, OCR 原始顺序) 排列。
     无有效 region 时抛 ValueError; 调用方保证 page_num 在 1..len(src) 内。
     """
     import tempfile
@@ -2314,6 +2320,12 @@ def _reocr_regions_for_page(provider, src, page_num: int, region_list: list):
 
     if not valid_regions:
         raise ValueError("没有有效的裁切区域")
+
+    # 纯文本引擎 (openai_chat) 无 block_bbox, 几何过滤无从归属 —
+    # 走裁切直送: 每 region 裁图 → ocr_image_plain → 每 region 一块
+    if not getattr(provider, "structured", True):
+        return _reocr_regions_plain(provider, page_obj, page_w, page_h,
+                                    valid_regions)
 
     # 整页构造单页 PDF, 一次 OCR (页面尺寸=300dpi 像素数, 同 _run_reocr_doc)
     # 防御: 超大页面 300dpi 渲染可能 OOM, 按面积封顶自适应降 dpi (下限 150)
@@ -2389,6 +2401,47 @@ def _reocr_regions_for_page(provider, src, page_num: int, region_list: list):
 
     assigned.sort(key=lambda t: (t[0], t[1]))
     new_blocks = [b for _, _, b in assigned]
+    return new_blocks, page_w, page_h, len(valid_regions)
+
+
+def _reocr_regions_plain(provider, page_obj, page_w: int, page_h: int,
+                         valid_regions: list):
+    """裁切直送路径 (openai_chat 等纯文本引擎, .structured == False)。
+
+    每 region: 150dpi 坐标 → 页面 pt → clip 裁图 (300dpi, 超大面积
+    自适应降 dpi 同几何路径) → PNG → provider.ocr_image_plain 纯文本。
+    每 region 产一块 (bbox=region 本身 150dpi, label='text'),
+    顺序=框选顺序; 空结果 region 跳过。
+    返回 (new_blocks, page_w, page_h, n_regions) — 与几何过滤路径同构。
+    """
+    new_blocks = []
+    for (x0, y0, x1, y1) in valid_regions:
+        # 150dpi 页面像素 → 页面 pt 坐标, 交页 rect 防越界
+        clip = pymupdf.Rect(x0 * 72.0 / 150.0, y0 * 72.0 / 150.0,
+                            x1 * 72.0 / 150.0, y1 * 72.0 / 150.0)
+        clip = clip & page_obj.rect
+        if clip.is_empty:
+            continue
+        dpi = 300
+        est = clip.width * clip.height * (dpi / 72.0) ** 2
+        if est > 0:
+            max_area_px = 40_000_000  # 同几何路径封顶
+            if est > max_area_px:
+                dpi = max(150, int(dpi * (max_area_px / est) ** 0.5))
+        try:
+            pix = page_obj.get_pixmap(dpi=dpi, clip=clip)
+            png = pix.tobytes("png")
+        except Exception:
+            continue
+        text = provider.ocr_image_plain(png, "image/png")
+        text = (text or "").strip()
+        if not text:
+            continue
+        new_blocks.append({
+            "block_label": "text",
+            "bbox": [x0, y0, x1, y1],
+            "lines": [text],
+        })
     return new_blocks, page_w, page_h, len(valid_regions)
 
 

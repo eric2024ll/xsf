@@ -213,6 +213,10 @@
         <label>Model（openai_chat 必填，如 qwen2.5-vl）</label>
         <input type="text" id="pfModel" placeholder="结构化端点可留空（用服务默认）">
       </div>
+      <div class="field" id="pfPromptRow" style="display:none;">
+        <label>转录 Prompt（留空用内置默认；逐字转录古籍可微调）</label>
+        <textarea id="pfPrompt" rows="5" placeholder="留空 = 内置默认（逐字转录 / 竖排右起逐列 / [?] [缺损] [疑作:甲|乙] 疑字标记）" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;font-family:inherit;resize:vertical;"></textarea>
+      </div>
       <div class="hint" id="pfHint">
         通用类型契约：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code>。本地模型先包装成 HTTP 服务再添加。
         上传 OCR 始终使用默认服务（点选列表项切换）。
@@ -368,6 +372,7 @@ function resetProviderForm() {
   document.getElementById('pfUrl').value = '';
   document.getElementById('pfKey').value = '';
   document.getElementById('pfModel').value = '';
+  document.getElementById('pfPrompt').value = '';
   document.getElementById('providerFormTitle').textContent = '添加 OCR 服务';
   document.getElementById('pfCancelBtn').style.display = 'none';
   onTypeChange();
@@ -375,12 +380,14 @@ function resetProviderForm() {
 function onTypeChange() {
   var t = document.getElementById('pfType').value;
   var isAi = t === 'aistudio_job';
+  var isOpenai = t === 'openai_chat';
   document.getElementById('pfUrlRow').style.display = isAi ? 'none' : '';
+  document.getElementById('pfPromptRow').style.display = isOpenai ? '' : 'none';
   var hint = document.getElementById('pfHint');
   if (t === 'aistudio_job') {
     hint.innerHTML = 'aistudio 内置三阶段协议 (提交→轮询→取结果)，只需填 token。单文件 &lt; 100 页。';
   } else if (t === 'openai_chat') {
-    hint.innerHTML = 'OpenAI 兼容 <code>/v1/chat/completions</code> 视觉端点 (Ollama / vLLM / LM Studio / 云端 API / 本机 paddle-vl)。Base URL 填到 <code>…/v1</code>，Model 必填。整页纯文本 OCR（逐页对照，无块坐标/高亮/栏重组），可做默认引擎。';
+    hint.innerHTML = 'OpenAI 兼容 <code>/v1/chat/completions</code> 视觉端点 (Ollama / vLLM / LM Studio / 云端 API / 本机 paddle-vl)。Base URL 填到 <code>…/v1</code>，Model 必填。整页纯文本 OCR（无块坐标/高亮），画框/栏重 OCR 走裁切直送，可做默认引擎。';
   } else {
     hint.innerHTML = '结构化契约：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code> (base_url 自动补 <code>/ocr</code>)。上传 OCR / 画框重 OCR 使用默认服务（点选列表项切换）。';
   }
@@ -416,6 +423,7 @@ function renderProviders() {
       '<div class="pinfo">' +
       (p.has_key ? '<span class="badge-ok">🔑 已设密钥</span> · ' : '') +
       (p.model ? 'model: ' + escapeHtml(p.model) + ' · ' : '') +
+      (p.has_prompt ? '<span title="自定义转录 prompt">✎ prompt</span> · ' : '') +
       (p.updated_at ? escapeHtml(p.updated_at) : '') +
       '</div></label></div>' +
       '<div class="pops">' +
@@ -460,6 +468,7 @@ function editProvider(pid) {
   document.getElementById('pfUrl').value = p.url || '';
   document.getElementById('pfKey').value = '';
   document.getElementById('pfModel').value = p.model || '';
+  document.getElementById('pfPrompt').value = p.prompt || '';
   onTypeChange();
   document.getElementById('providerFormTitle').textContent = '编辑: ' + p.name;
   document.getElementById('pfCancelBtn').style.display = '';
@@ -491,6 +500,7 @@ async function saveProvider() {
     var fd = new FormData();
     fd.append('name', name); fd.append('url', url); fd.append('endpoint', type);
     fd.append('api_key', key); fd.append('model', model);
+    fd.append('prompt', document.getElementById('pfPrompt').value);
     if (id) fd.append('id', id);
     var r = await fetch('/api/ocr-config/provider', { method: 'POST', body: fd });
     var data = await r.json();

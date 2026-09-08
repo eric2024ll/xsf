@@ -21,6 +21,17 @@ import requests
 from .http_api import ocr_file, HTTP_TIMEOUT, MAX_RETRIES, \
     RETRY_BASE_WAIT, RETRYABLE_STATUS
 
+# openai_chat 纯文本转录默认 prompt (用户自定义 prompt 留空时的回退值;
+# 可在 OCR 设置中按文献类型改写, 疑字标记体系与校对界面约定一致)
+DEFAULT_PLAIN_PROMPT = """逐字转录图中全部文字为纯文本，规则：
+1. 竖排：从最右列起，逐列自上而下转录，每列转为一行，列序从右到左；横排按自然行序
+2. 逐字照录：不增、不删、不注释、不翻译、不校对补正
+3. 疑字标记：无法辨认→[?]；原件缺损/污损→[缺损]；疑为某字→[疑作:甲|乙]；疑有脱文→[疑脱]
+4. 异体字、俗字、避讳字照原样转录，不转通行字；数字、西文、假名照原样保留
+5. 表格：逐行转录，单元格间用 " | " 分隔，表头在最前
+6. 眉批、夹注转录后以（批：…）标注；印章文字以（印：…）标注，置于所在位置
+7. 只输出转录文本，不输出任何说明"""
+
 
 class VLApiAdapter:
     """vl_api 统一适配器。
@@ -36,6 +47,7 @@ class VLApiAdapter:
         self.base_url = (cfg.get('base_url') or '').rstrip('/')
         self.model = cfg.get('model')
         self.api_key = cfg.get('api_key')
+        self.prompt = (cfg.get('prompt') or '').strip()
         self.name = cfg.get('name') or cfg.get('id', 'vl_api')
         if self.endpoint not in ('paddle_http', 'aistudio_job', 'openai_chat'):
             raise RuntimeError(f'未知 vl_api endpoint: {self.endpoint}')
@@ -80,14 +92,12 @@ class VLApiAdapter:
         """openai_chat: PDF 逐页渲染 → 整页文本 → 伪 pages 结构。"""
         import pymupdf
 
-        prompt = ('逐页转录图片中全部文字，按阅读顺序输出纯文本，'
-                  '不要添加任何解释或标注')
         pages = []
         with pymupdf.open(pdf_path) as doc:
             for i, page in enumerate(doc):
                 pix = page.get_pixmap(dpi=150)
                 png = pix.tobytes('png')
-                text = self._openai_chat(png, 'image/png', prompt)
+                text = self._openai_chat(png, 'image/png')
                 text = (text or '').strip()
                 if not text:
                     continue
@@ -144,7 +154,7 @@ class VLApiAdapter:
                     {'type': 'image_url',
                      'image_url': {'url': f'data:{mime};base64,{b64}'}},
                     {'type': 'text',
-                     'text': prompt or '请识别图中全部文字, 按阅读顺序输出'},
+                     'text': prompt or self.prompt or DEFAULT_PLAIN_PROMPT},
                 ],
             }],
             'stream': False,
