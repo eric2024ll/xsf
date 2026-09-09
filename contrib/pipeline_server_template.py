@@ -46,7 +46,8 @@ CONFIG = {
     "det_model_dir": "",       # 微调检测模型目录, 空 = 用官方模型名
     "rec_model_dir": "",       # 微调识别模型目录 (3.x 字典放模型目录内)
     "render_dpi": 300,         # 页面渲染精度, 与 xsf 重 OCR 默认一致
-    "device": "gpu:0",         # cpu / gpu:0; GPU 实测 1.9s/页 显存 4.6GB (池限 0.3 生效,
+    "device": "gpu:0",         # 默认 GPU, 无 GPU/初始化失败自动回退 cpu (15-40s/页, 保可用不保延迟);
+                               # PP_DEVICE 可强制指定。GPU 实测 1.9s/页 显存 4.6GB (池限 0.3 生效,
                                # 可与 paddleocr-vl 共存); llama-server (14GB) 开启前须先停本服务
     "lang": "ch",              # 识别语言 (小语种换对应 lang 或自训练模型)
     "host": "0.0.0.0",
@@ -57,7 +58,13 @@ app = FastAPI(title="xsf pipeline OCR adapter")
 
 
 def _load_engine():
-    """加载管线引擎。官方模型名直用本地缓存; 微调模型填 *_model_dir."""
+    """加载管线引擎。官方模型名直用本地缓存; 微调模型填 *_model_dir.
+
+    设备策略: 默认 CONFIG['device'] (gpu:0); 无 CUDA 设备直接回退 cpu,
+    GPU 初始化失败 (如显存被 llama-server 占满) 亦回退 cpu; PP_DEVICE
+    环境变量可强制指定 (cpu / gpu:0 / 非法值可演练回退路径)。
+    """
+    global _ACTIVE_DEVICE
     from paddleocr import PaddleOCR
     kwargs = {}
     if CONFIG["det_model_dir"]:
@@ -68,17 +75,42 @@ def _load_engine():
         kwargs["rec_model_dir"] = CONFIG["rec_model_dir"]
     elif CONFIG["rec_model_name"]:
         kwargs["text_recognition_model_name"] = CONFIG["rec_model_name"]
-    return PaddleOCR(
-        lang=CONFIG["lang"],
-        device=CONFIG["device"],
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=False,
-        **kwargs,
-    )
+
+    def build(device):
+        return PaddleOCR(
+            lang=CONFIG["lang"],
+            device=device,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            **kwargs,
+        )
+
+    device = os.environ.get("PP_DEVICE", CONFIG["device"])
+    if device.startswith("gpu"):
+        try:
+            import paddle
+            no_gpu = paddle.device.cuda.device_count() == 0
+        except Exception:
+            no_gpu = False  # 预检失败不拦, 交给初始化异常层兜底
+        if no_gpu:
+            print("[ppocr] 无 CUDA 设备, 回退 cpu", flush=True)
+            _ACTIVE_DEVICE = "cpu"
+            return build("cpu")
+    try:
+        eng = build(device)
+        _ACTIVE_DEVICE = device
+        return eng
+    except Exception as e:
+        if device.startswith("gpu"):
+            print(f"[ppocr] GPU 初始化失败 ({e!r}), 回退 cpu", flush=True)
+            _ACTIVE_DEVICE = "cpu"
+            return build("cpu")
+        raise
 
 
 _ENGINE = None
+_ACTIVE_DEVICE = None
 
 
 def _run_pipeline(image_path: str):
@@ -165,7 +197,8 @@ def pages_from_pdf(pdf_path: str, run_line_ocr=_run_pipeline):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    # device: 引擎惰性加载, 首次 OCR 请求后为实际设备 (gpu:0 / cpu), 此前为 not-loaded
+    return {"status": "ok", "device": _ACTIVE_DEVICE or "not-loaded"}
 
 
 @app.post("/ocr")
