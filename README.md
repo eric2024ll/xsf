@@ -1,18 +1,19 @@
 # 小書房 (xsf)
 
-> 主题研究文献池检索系统 — histflow 感知层上游工具
+> 人文社科学者本地文献管理和检索平台
 
-把散落在各处的 PDF 变成**可检索、可定位、可校对**的文本池：丢进书架，自动入库、自动 OCR、全文检索、图文对照校对。以 Web『小書房』为主入口，CLI / MCP / Windows 便携版随行。
+把散落在各处的 PDF 变成**可检索、可定位、可校对**的文本池：丢进书架，自动入库、自动 OCR、全文检索、图文对照校对。以 Web『小書房』为主入口，CLI / MCP / Windows 便携版随行。数据完全留在本机，不依赖任何云服务。
 
 ---
 
 ## 功能
 
-- **多书架管理**：按研究主题分 collection（如「民族研究」「两岸三交」「晚清乡土志」），可单架搜索也可跨架搜索，Web 上创建/重命名/删除。
-- **双通道解析**：born-digital PDF 用 PyMuPDF 秒级提取立即可见；扫描件走 OCR 队列回填。2026-09-04 起 PDF 上传一律排 OCR 队列（不区分 born-digital，`XSF_SCAN_OCR=0` 可关），确保检索层始终有全文。
+- **多书架管理**：按研究主题分 collection，可单架搜索也可跨架搜索，Web 上创建/重命名/删除。
+- **双通道解析**：born-digital PDF 用 PyMuPDF 秒级提取立即可见；扫描件走 OCR 队列回填。PDF 上传一律排 OCR 队列（`XSF_SCAN_OCR=0` 可关），确保检索层始终有全文。
 - **文件夹投放自动入库**：把 PDF/MD 丢进 `{书架}/uploads/`（SMB/NFS/rsync 均可），后台线程自动扫描入库 + 排 OCR 队列，见下文专节。
 - **中文全文检索**：FTS5 + jieba 分词，短语匹配；搜索结果**按文档分组**，文档内分页 + load-more，跨文档通读不割裂。
 - **OCR 校对工作台**：图文对照页，块粒度编辑；**栏系统**定义页面阅读区域（横排/竖右起/竖左起）后按栏重组、手工分栏重 OCR；页级断点续跑（done/error 状态）；疑点标记 `suspect`；失败页码明示；文献列表带 OCR 页状态徽标。
+- **智能校对**：OCR 候选云双通道分歧点校对——第二引擎自动对齐比对，或粘贴/上传整篇人工录入文本（自动页映射），逐点产出「实质异文 / 异体字对 / 页码」分类的分歧表，定位到原文行；分歧点自动写入疑点标记。
 - **批量元数据**：批量 设为/添加/移除 来源标签（原始史料/研究文献/工具书 + 自定义）；自动书目匹配（match-bib）；批量改元数据（batch-patch）；导出 .bib / .md / 归档。
 - **行级回溯**：命中定位到「页-段」后，可查看上下数行原文，便于核对与摘录。
 - **认证**：`XSF_AUTH_TOKEN` 设密码后所有页面需登录。
@@ -22,17 +23,17 @@
 
 ## 快速开始
 
-> 标准环境是**本机 GPU 机 `~/xsf/`**（开发 + 部署一体）。WSL（`~/projects/xsf/`）与阿里云为辅助环境，详见文末「开发与部署」。
-
 ### 1. 安装
 
 ```bash
-cd ~/xsf
+git clone <repo-url> xsf && cd xsf
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .            # Web + CLI
 pip install -e ".[mcp]"     # 需要 MCP 时
 ```
+
+要求 Python 3.10+。不想装环境可直接用 [Windows 便携版](#windows-便携版)。
 
 ### 2. 指定数据目录（可选）
 
@@ -50,17 +51,17 @@ export XSF_DATA=/path/to/data
 xsf init
 
 # born-digital PDF
-xsf add /path/to/云南茶业考.pdf -c 民族研究 \
+xsf add /path/to/book.pdf -c 书架名 \
   --cite-key zhang2010yunnan \
   --title "云南茶业考" \
   --author "张某"
 
 # 扫描件 (走默认 OCR provider)
-xsf add /path/to/scan.pdf -c 民族研究 --ocr
-xsf add /path/to/scan.pdf -c 民族研究 --ocr --provider p1   # 指定 provider
+xsf add /path/to/scan.pdf -c 书架名 --ocr
+xsf add /path/to/scan.pdf -c 书架名 --ocr --provider p1   # 指定 provider
 ```
 
-`--cite-key` 用于与 histflow 写作层的 pandoc 引用 `[@cite_key, p.XX]` 对齐；可留空，Web 详情页可补录。
+`--cite-key` 用于书目引用对齐（如 pandoc 的 `[@cite_key, p.XX]`）；可留空，Web 详情页可补录。
 
 ### 4. 搜索与回溯
 
@@ -79,8 +80,8 @@ xsf stats
 | 命令 | 说明 | 示例 |
 |------|------|------|
 | `xsf init` | 初始化数据库与目录 | `xsf init` |
-| `xsf add <pdf> -c <书架> [--cite-key ...] [--title ...] [--author ...] [--ocr] [--provider <id>]` | 导入 PDF | `xsf add book.pdf -c 民族研究 --cite-key wu1963xibei` |
-| `xsf search <query> [-c <书架>] [-n <条数>]` | 全文搜索 | `xsf search 茶马古道 -c 民族研究` |
+| `xsf add <pdf> -c <书架> [--cite-key ...] [--title ...] [--author ...] [--ocr] [--provider <id>]` | 导入 PDF | `xsf add book.pdf -c 书架名 --cite-key wu1963xibei` |
+| `xsf search <query> [-c <书架>] [-n <条数>]` | 全文搜索 | `xsf search 茶马古道 -c 书架名` |
 | `xsf context <doc_id> <page> <block> [-r <半径>]` | 查看上下文 | `xsf context 1 3 2 -r 2` |
 | `xsf remove <doc_id>` | 删除文献 | `xsf remove 1` |
 | `xsf stats` | 统计书架与文献 | `xsf stats` |
@@ -89,29 +90,27 @@ xsf stats
 
 ## Web 界面（主入口）
 
-`uvicorn xsf.api:app --port 8090` 起服务（标准部署用 systemd，见「开发与部署」）。
+`uvicorn xsf.api:app --port 8090` 起服务（常驻部署建议 systemd，见「部署」）。
 
 - **书架页** `/`：全库统计 + 书架列表 + 最近文献
 - **搜索页** `/search`：跨书架分组搜索
 - **文献列表** `/collections/{c}/docs/list`：筛选、OCR 页状态徽标、扫描角标、批量标签
 - **上传页** `/collections/{c}/upload`：单传/批量，OCR 复选（默认勾选）
 - **预览** `/collections/{c}/doc/{id}/preview`：纯文本页/块/行
-- **校对页** `/collections/{c}/doc/{id}/proofread`：图文对照、行编辑、分栏重 OCR
+- **校对页** `/collections/{c}/doc/{id}/proofread`：图文对照、行编辑、分栏重 OCR、智能校对
 - **OCR 设置**：provider 自助添加/切换默认/连通测试
-
-完整端点表（书架/文献/批量导入导出 API）见仓库 `AGENTS.md`。
 
 ---
 
 ## OCR 体系
 
-### 统一 vl_api 架构（2026-09-06 v3 重构）
+### 统一 vl_api 架构
 
 所有 provider 统一为 `type: 'vl_api'`，按 **endpoint profile** 区分三种接入方式，能力二分 **structured / plain**：
 
 | endpoint profile | 接入 | 能力 | 说明 |
 |------------------|------|------|------|
-| `paddle_http` | 本地 GPU / 自建服务（如 `~/paddleocr-vl/server.py` :8091） | structured | `parsing_res_list` 坐标契约，支持图文校对、画框重 OCR |
+| `paddle_http` | 本地 GPU / 自建服务 | structured | `parsing_res_list` 坐标契约，支持图文校对、画框重 OCR |
 | `aistudio_job` | AI Studio 云端 | structured | 内置三阶段协议（提交→轮询→取结果），只填 token |
 | `openai_chat` | OpenAI 兼容 chat API（qwen 等 VL 模型） | plain | 整页图直送、纯文本入库，可作默认引擎；对已有画框可裁切图片重 OCR 直送 |
 
@@ -122,12 +121,12 @@ xsf stats
 
 ### 本地 GPU 模型
 
-- **PaddleOCR-VL-1.6**：`~/paddleocr-vl/server.py`，systemd `paddleocr-vl.service`（:8091），以 `paddle_http` profile 接入
-- **自训练 PP-OCRv6 管线**：`contrib/`，pipeline 模板默认启用本地缓存，GPU 独占实测通过（默认 `gpu:0`）；设备双层回退 GPU→CPU（无 CUDA 直落 + 初始化异常兜底），`PP_DEVICE` 可覆盖，`/health` 暴露实际设备
+- **PaddleOCR-VL**：自建 HTTP 服务（如 systemd 常驻 :8091），以 `paddle_http` profile 接入
+- **自训练管线**：`contrib/` 提供 pipeline 模板，支持本地模型缓存、GPU 独占（默认 `gpu:0`）、设备双层回退 GPU→CPU（无 CUDA 直落 + 初始化异常兜底），`PP_DEVICE` 可覆盖，`/health` 暴露实际设备
 
 ---
 
-## 文件夹投放自动入库（2026-09-04 起）
+## 文件夹投放自动入库
 
 把 PDF/MD 直接丢进 `{书架}/uploads/`，后台线程每 `XSF_SCAN_INTERVAL` 秒轮询 diff，新文件自动入库：
 
@@ -143,11 +142,11 @@ xsf stats
 
 ```
 ~/xsf-data/                       # 由 XSF_DATA 指定，默认 ~/xsf-data
-├── db/                             # 数据库（本地磁盘，不放 OSS）
-│   ├── 民族研究/xsf.db             #   每个 collection 独立 SQLite + FTS5
-│   └── 历史理论/xsf.db
+├── db/                             # 数据库（本地磁盘，不放网络盘）
+│   ├── 书架A/xsf.db                #   每个 collection 独立 SQLite + FTS5
+│   └── 书架B/xsf.db
 ├── collections/                    # 书架目录
-│   ├── 两岸三交/uploads/            #   源文件按书架分目录 (2026-09-04 起)
+│   ├── 书架A/uploads/              #   源文件按书架分目录
 │   │   ├── 云南茶业考.pdf
 │   │   └── 茶马古道.md
 │   └── _orphan/                    #   迁移时无 DB 引用的遗留文件
@@ -156,14 +155,14 @@ xsf stats
 
 - DB 内只存 `filename`（不含绝对路径），迁移时无需修改 DB 内容。
 - 源文件按书架分目录（`collections/{书架}/uploads/`，与 `db/{书架}/xsf.db` 对称），跨书架同名文件互不干扰。历史迁移工具：`scripts/migrate_uploads_per_collection.py`。
-- 代码目录（`~/xsf/`）只放程序与配置，不存文献或数据库。
+- 代码目录只放程序与配置，不存文献或数据库。
 
 | 环境变量 | 默认 | 说明 |
 |----------|------|------|
 | `XSF_AUTH_TOKEN` | 空 | Web 登录密码；未设则无认证（开发模式） |
 | `XSF_DATA` | `~/xsf-data` | 数据根目录 |
-| `XSF_DB_DIR` | `XSF_DATA/db/` | 数据库目录，**必须本地磁盘**——OSS 不支持 SQLite 文件锁 |
-| `XSF_COLLECTIONS_DIR` | `XSF_DATA/collections/` | 源文件目录，服务器可指 OSS 挂载路径 |
+| `XSF_DB_DIR` | `XSF_DATA/db/` | 数据库目录，**必须本地磁盘**——网络盘不支持 SQLite 文件锁 |
+| `XSF_COLLECTIONS_DIR` | `XSF_DATA/collections/` | 源文件目录，可指 NAS / OSS 挂载路径 |
 | `XSF_OCR_METHOD` | 配置文件 default | 默认 OCR provider id |
 | `XSF_SCAN_INTERVAL` | `120` | 扫描轮询间隔秒，`0` 关闭整个扫描 |
 | `XSF_SCAN_STABLE_SEC` | `60` | 文件稳定阈值秒（mtime 距今小于此值跳过） |
@@ -194,7 +193,6 @@ xsf stats
 ### 导出
 
 ```bash
-cd ~/xsf && source .venv/bin/activate
 python scripts/collection_io.py export <collection> [-o output.tar.gz]
 ```
 
@@ -209,21 +207,9 @@ python scripts/collection_io.py import <collection> <archive.tar.gz> \
 
 | 选项 | 说明 |
 |------|------|
-| `--db-only` | 只导入 DB，跳过源文件（OSS 手动迁移场景） |
+| `--db-only` | 只导入 DB，跳过源文件（源文件手动同步场景） |
 | `--conflict overwrite` | 同名源文件覆盖（默认 skip） |
 | `--force` | 覆盖已存在的 collection DB |
-
-> 兼容：导入时同时接受 `xsf.db` 与旧名 `jiage.db`（2026-08 改名前的归档）。
-
-### OSS 服务器场景
-
-```bash
-# 1. 先只导 DB
-python scripts/collection_io.py import 两岸三交 backup.tar.gz --db-only
-
-# 2. 源文件手动 rsync 到 OSS 挂载路径 (按书架分目录)
-rsync -av uploads/ /mnt/oss/sources/xsf/collections/<collection>/uploads/
-```
 
 ---
 
@@ -241,7 +227,7 @@ rsync -av uploads/ /mnt/oss/sources/xsf/collections/<collection>/uploads/
 
 ```bash
 # 构建 (GitHub Actions, 推荐): Actions → windows-portable → Run workflow
-#   或 push tag: git tag v0.1.0 && git push origin v0.1.0  (自动附到 release)
+#   或 push tag: git tag v0.1.1 && git push origin v0.1.1  (自动附到 release)
 
 # 本地复现 (Windows + Python 3.12):
 pip install -e ".[desktop,build,mcp]"
@@ -254,8 +240,6 @@ pwsh packaging/make_portable.ps1     # → dist/xsf-portable-win64-<ver>.zip
 - 单实例：8090 已有服务时只开浏览器
 - OCR：不内置本地引擎，Web「OCR 设置」配远程 provider（paddle_http 内网 GPU / aistudio_job 云端 / openai_chat API）
 
-设计依据：histflow-plan `system/tools/18-windows-portable.md`。
-
 ---
 
 ## MCP 接入
@@ -264,65 +248,48 @@ pwsh packaging/make_portable.ps1     # → dist/xsf-portable-win64-<ver>.zip
 
 ---
 
-## 开发与部署
+## 部署
 
-### 多机架构
+### systemd 常驻（Linux）
 
-| 角色 | 位置 | 用途 |
-|------|------|------|
-| **本机 GPU 机（标准）** | `~/xsf/` | 开发 + 部署一体：写代码、git commit/push、systemd 常驻 Web（:8090）+ 本地 OCR（:8091） |
-| **GitHub** | `git@github.com:eric2024ll/xsf.git`（私有） | 版本控制中转 |
-| **WSL 开发机（备用）** | `~/projects/xsf/` | 备用开发环境（uv venv），改动经 GitHub 同步 |
-| **阿里云服务器（可选）** | `root@47.93.199.96:~/xsf/` | 实测、OCR 跑批；collections 可挂 OSS |
+```ini
+# /etc/systemd/system/xsf.service
+[Unit]
+Description=xsf 文献池
+After=network.target
 
-### 本机标准流程
+[Service]
+WorkingDirectory=/opt/xsf
+Environment=XSF_DATA=/opt/xsf-data
+EnvironmentFile=/opt/xsf/.env
+ExecStart=/opt/xsf/.venv/bin/uvicorn xsf.api:app --host 127.0.0.1 --port 8090
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ```bash
-cd ~/xsf
-git add -A && git commit -m "feat: ..."   # agent 不自行 push
-.venv/bin/pip install -e .                # 仅依赖变更时
-sudo systemctl restart xsf                # systemd xsf.service (:8090)
-journalctl -u xsf -f                      # 实时日志
-# 本地 OCR: systemd paddleocr-vl.service (:8091)
+sudo systemctl daemon-reload && sudo systemctl enable --now xsf
+journalctl -u xsf -f        # 实时日志
 ```
+
+服务只监听本机回环即满足单机使用；如需局域网访问改 `--host 0.0.0.0` 并自行注意安全（设 `XSF_AUTH_TOKEN` + 防火墙）。
 
 ### 依赖
 
 运行：PyMuPDF（PDF 提取）、jieba（分词）、requests（OCR client）、fastapi + uvicorn + jinja2 + python-multipart（Web）、pypinyin（排序）、opencc-python-reimplemented（繁简归一）。
 可选：`[mcp]`（MCP server）、`[desktop]`（托盘 GUI）、`[build]`（PyInstaller 打包）。
 
-### 验证清单（改代码后手动跑）
+### 改动后验证
 
 ```bash
-.venv/bin/xsf stats                       # DB 可读
+xsf stats                                  # DB 可读
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8090/   # Web 存活
 # OCR 冒烟: Web 上传一页扫描件 → 校对页看断点与徽标
 ```
 
 ---
-
-## 架构与定位
-
-小書房是 histflow 研究循环中**感知层的上游工具**：
-
-```
-文献池 (xsf)            L1 感知层
-   ↓ 检索、定位、校对
-阅读 / 摘录 / 摘要 / 综述  →  histflow 写作
-   ↓ 发现缺口
-回到 xsf 补充文献
-```
-
-它不负责笔记管理、文献综述或写作；只解决一个问题：**把 PDF 快速找出来、定位到页与段、核到原文行**。设计决策在 histflow-plan（`/home/eric/workspace/mem/histflow-plan/`），本仓库负责实现与反哺。
-
-## 现状与下一步
-
-- **v0.1.1**（2026-09-19）：智能校对——OCR 候选云双通道分歧点校对（第二引擎自动选择 / 人工录入页映射）、校对面板可拖拽 + 正文定位；自训练 OCR 管线接入模板（GPU 双层回退）、栏系统与块粒度批次、画框重 OCR 裁切直送 + 自定义 prompt、文献列表 OCR 状态徽标；整页编辑 block_label 保留等修复
-- **v0.1.0**（2026-09-05 版本号重置）：首个正式便携版；Web / CLI / MCP / Windows 便携版四入口齐备
-- 已完成：多书架 Web 管理、FTS 检索 + 分组视图、OCR 多 provider（vl_api 三 profile）、校对工作台（块粒度 + 栏系统 + 页级断点 + 疑点标记）、文件夹自动入库 + 自动 OCR、批量标签 / 书目匹配 / 导入导出、认证
-- 下一步：与 histflow L1 条目格式联动（导出 `摘录/摘要/综述/线索`）；语料契约（COLLECTION/manifest）与书架元数据的 bib 双键对齐
-
-> 历史：2026-08-15 由 `jiage` 全面改名 `xsf`（仓库/包/CLI/环境变量/db 文件名）。
 
 ## License
 
