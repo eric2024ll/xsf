@@ -2205,30 +2205,12 @@ async function confirmMapping(tid) {
 }
 
 function jumpLine(lineId, segText) {
-  // 主路径: 左侧 bbox 框 (默认 display:none, 需先开「显示全部框」)
-  const el = document.getElementById('bbox-' + lineId);
-  if (el) {
-    const wrap = document.getElementById('imageWrap');
-    if (wrap && !wrap.classList.contains('show-all') && typeof toggleShowAllBoxes === 'function') {
-      toggleShowAllBoxes();
-    }
-    el.scrollIntoView({behavior: 'smooth', block: 'center'});
-    flashEl(el);
-    return;
-  }
-  // 兜底: 按分歧文本在右侧正文临时高亮
-  if (segText && highlightInPageText(segText)) return;
-  smartToast('未找到可定位的行 (该行无 bbox 且正文未匹配到文本)');
+  // 简单方案: 正文查找 + 原生选区高亮 (跨节点安全, 零 DOM 污染)
+  if (segText && locateInPageText(segText)) return;
+  smartToast('正文中未匹配到该文本: ' + (segText || '(空)'));
 }
 
-function flashEl(el) {
-  if (!el.style) return;
-  const old = el.style.boxShadow;
-  el.style.boxShadow = '0 0 0 3px #e67e22';
-  setTimeout(() => { el.style.boxShadow = old; }, 2000);
-}
-
-function highlightInPageText(text) {
+function locateInPageText(text) {
   const box = document.getElementById('pageText');
   if (!box || !text) return false;
   const norm = s => s.replace(/\s+/g, '');
@@ -2242,27 +2224,20 @@ function highlightInPageText(text) {
     if (!startNode) { startNode = n; startOff = 0; buf = ''; }
     const t = n.textContent;
     for (let i = 0; i < t.length; i++) {
-      const ch = t[i];
-      if (/\s/.test(ch)) continue;
-      buf += ch;
+      if (/\s/.test(t[i])) continue;
+      buf += t[i];
       if (buf.length === target.length) {
         if (buf === target) {
           const r = document.createRange();
           r.setStart(startNode, startOff);
           r.setEnd(n, i + 1);
-          const mark = document.createElement('mark');
-          mark.style.background = '#e67e22';
-          try { r.surroundContents(mark); } catch (e) { return false; }
-          mark.scrollIntoView({behavior: 'smooth', block: 'center'});
-          setTimeout(() => {
-            const p = mark.parentNode;
-            while (mark.firstChild) p.insertBefore(mark.firstChild, mark);
-            mark.remove();
-            p.normalize();
-          }, 2000);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(r);
+          const el = r.startContainer.parentElement;
+          if (el) el.scrollIntoView({behavior: 'smooth', block: 'center'});
           return true;
         }
-        // 从下一个节点重新开始找
         buf = ''; startNode = null;
         break;
       }
