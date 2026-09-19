@@ -2083,18 +2083,61 @@ async function runSmartCheck(channel = 'engine') {
   panel.style.display = 'block';
   document.getElementById('smartList').innerHTML = '';
   document.getElementById('smartAgree').textContent = '';
+  if (channel === 'engine') {
+    const ok = await pickProviderAndRun();
+    if (ok) btn.disabled = false;
+    return;
+  }
+  startSmartCheck(channel);
+}
+
+async function pickProviderAndRun() {
+  const listEl = document.getElementById('smartList');
+  smartToast('获取 OCR 服务列表…');
+  let providers = [];
+  try {
+    const r = await fetch(SMART_BASE + '/providers');
+    providers = (await r.json()).providers || [];
+  } catch (e) { smartToast('获取失败: ' + e); return false; }
+  if (!providers.length) {
+    smartToast('无可用 OCR 服务 (需 openai_chat / paddle_http 且端点存活)');
+    return false;
+  }
+  if (providers.length === 1) {
+    startSmartCheck('engine', providers[0].id);
+    return true;
+  }
+  smartToast('');
+  listEl.innerHTML = `
+    <div style="margin-bottom:6px;">选择第二引擎转录服务:</div>
+    ${providers.map(p => `
+      <label style="display:block; margin:4px 0; cursor:pointer;">
+        <input type="radio" name="smartProv" value="${p.id}" ${p.default ? 'checked' : ''}>
+        ${escHtml(p.name)} <span style="color:var(--text-muted,#888);">(${p.id})</span>
+        ${p.default ? '<span style="color:var(--text-muted,#888);"> · 默认</span>' : ''}
+      </label>`).join('')}
+    <button onclick="startSmartCheckFromPick()" style="width:100%; margin-top:6px; padding:5px; cursor:pointer; border:1px solid var(--border,#ccc); border-radius:4px; background:var(--bg-secondary,#f5f5f5);">开始校对</button>`;
+  return true;
+}
+
+function startSmartCheckFromPick() {
+  const sel = document.querySelector('input[name=smartProv]:checked');
+  if (!sel) { smartToast('请先选择一个服务'); return; }
+  document.getElementById('smartList').innerHTML = '';
+  startSmartCheck('engine', sel.value);
+}
+
+function startSmartCheck(channel, providerId) {
+  const btn = document.getElementById('smartCheckBtn');
   smartToast('后台生成候选转录并与存量对齐… (约 10 秒/页, 候选已缓存则秒回)');
   btn.disabled = true;
-  try {
-    const body = new FormData();
-    body.append('channel', channel);
-    const r = await fetch(SMART_BASE, {method: 'POST', body});
-    await pollSmart();
-  } catch (e) {
-    smartToast('请求失败: ' + e);
-  } finally {
-    btn.disabled = false;
-  }
+  const body = new FormData();
+  body.append('channel', channel);
+  if (providerId) body.append('provider_id', providerId);
+  fetch(SMART_BASE, {method: 'POST', body})
+    .then(() => pollSmart())
+    .catch(e => smartToast('请求失败: ' + e))
+    .finally(() => { btn.disabled = false; });
 }
 
 async function pollSmart() {

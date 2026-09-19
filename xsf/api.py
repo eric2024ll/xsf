@@ -2330,6 +2330,16 @@ def _smart_status(collection, doc_id, page_num):
     return out
 
 
+@app.get("/collections/{collection}/doc/{doc_id}/proofread/{page_num}/smart-check/providers")
+async def smart_check_providers(collection: str, doc_id: int, page_num: int):
+    """引擎通道可用的 OCR provider (支持整图 plain 且存活)。"""
+    from .ocr.registry import list_plain_providers
+    try:
+        return {"providers": list_plain_providers()}
+    except Exception:
+        return {"providers": []}
+
+
 @app.get("/collections/{collection}/doc/{doc_id}/proofread/{page_num}/smart-check/status")
 async def smart_check_status(collection: str, doc_id: int, page_num: int):
     return _smart_status(collection, doc_id, page_num)

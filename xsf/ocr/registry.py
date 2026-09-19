@@ -56,6 +56,19 @@ def _endpoint_alive(cfg) -> bool:
         return False
 
 
+def list_plain_providers():
+    """支持整图 plain 且端点存活的 provider 列表 [{id, name, default}]。"""
+    from ..config import get_default_ocr_provider_id
+    default = get_default_ocr_provider_id()
+    out = []
+    for p in get_ocr_providers():
+        if p['endpoint'] == 'aistudio_job' or not _endpoint_alive(p):
+            continue
+        out.append({'id': p['id'], 'name': p.get('name', p['id']),
+                    'default': p['id'] == default})
+    return out
+
+
 def get_plain_provider(method=None) -> VLApiAdapter:
     """取支持整图纯文本路径 (ocr_image_plain) 的 adapter。
 
