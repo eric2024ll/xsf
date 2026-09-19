@@ -1,6 +1,6 @@
 [project]
 name = "xsf"
-version = "0.1.0"
+version = "0.1.1"
 description = "小書房 — 文献池检索系统"
 requires-python = ">=3.11"
 dependencies = [

@@ -227,6 +227,14 @@ rsync -av uploads/ /mnt/oss/sources/xsf/collections/<collection>/uploads/
 
 ---
 
+## 升级注意事项
+
+- **数据与程序分离**：覆盖解压 / 重装不动数据——数据在 `XSF_DATA`（`db/*.db` + 上传的 PDF/图片文件），程序目录里只有 `.env` 和 `ocr-config.json`（含 api_key）需要自己留意。
+- **升级前备份**：停服务 → 备份 `$XSF_DATA/db/` 下全部 `*.db` + 上传/文献目录（或 Web 端「导出归档 tar.gz」）+ `.env`、`ocr-config.json`。
+- **Schema 迁移是单向的**：新版首次访问数据库会自动建新表/补列（v0.1.1 起含智能校对三表 `ocr_candidates` / `manual_transcripts` / `transcript_pages`）。**升级后请勿直接换回旧版 exe**——需回退时先还原备份。
+- **升级后验证**：`xsf stats` 能正常打开、Web 校对页出现「智能校对」按钮即为正常。
+- 便携版用户：zip 文件名即版本号，覆盖前先核对。
+
 ## Windows 便携版
 
 免安装 zip（双击 `小書房.exe` → 起服务 + 开浏览器 + 托盘常驻），详见 `packaging/README-使用说明.txt`（随 zip 分发）。
@@ -309,6 +317,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8090/   # Web 存活
 
 ## 现状与下一步
 
+- **v0.1.1**（2026-09-19）：智能校对——OCR 候选云双通道分歧点校对（第二引擎自动选择 / 人工录入页映射）、校对面板可拖拽 + 正文定位；自训练 OCR 管线接入模板（GPU 双层回退）、栏系统与块粒度批次、画框重 OCR 裁切直送 + 自定义 prompt、文献列表 OCR 状态徽标；整页编辑 block_label 保留等修复
 - **v0.1.0**（2026-09-05 版本号重置）：首个正式便携版；Web / CLI / MCP / Windows 便携版四入口齐备
 - 已完成：多书架 Web 管理、FTS 检索 + 分组视图、OCR 多 provider（vl_api 三 profile）、校对工作台（块粒度 + 栏系统 + 页级断点 + 疑点标记）、文件夹自动入库 + 自动 OCR、批量标签 / 书目匹配 / 导入导出、认证
 - 下一步：与 histflow L1 条目格式联动（导出 `摘录/摘要/综述/线索`）；语料契约（COLLECTION/manifest）与书架元数据的 bib 双键对齐

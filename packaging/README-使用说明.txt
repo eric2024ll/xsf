@@ -48,6 +48,12 @@
 - 杀毒软件误报: PyInstaller 打包的 exe 偶被误报, 可加排除项或提交误报申诉
 - 端口全部被占: 设 XSF_PORT 换起始端口
 - 中文乱码: PowerShell 执行 chcp 65001 后再跑 xsf.exe
-- 升级: 覆盖解压即可, 数据在 %USERPROFILE%\xsf-data\ 不受影响
+- 升级: 覆盖解压即可, 数据在 %USERPROFILE%\xsf-data\ 不受影响。
+  但注意:
+  1) 升级前建议停服备份 %USERPROFILE%\xsf-data\db\ 下全部 .db
+     (以及本目录的 .env / ocr-config.json);
+  2) 新版首次访问会自动做数据库迁移 (建新表/补列), 此过程单向——
+     升级后请勿直接换回旧版 exe, 需回退时先还原备份;
+  3) 升级后验证: 双击能起服务 + 校对页出现「智能校对」按钮。
 
 版本: 见 zip 文件名 | 主页: github.com/eric2024ll/xsf (私有)
