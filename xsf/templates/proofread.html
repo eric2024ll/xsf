@@ -2213,37 +2213,29 @@ function jumpLine(lineId, segText) {
 function locateInPageText(text) {
   const box = document.getElementById('pageText');
   if (!box || !text) return false;
-  const norm = s => s.replace(/\s+/g, '');
-  const target = norm(text);
+  const target = text.replace(/\s+/g, '');
   if (!target) return false;
+  // 收集非空白字符流 (保留 node/offset 以便建 Range)
   const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
-  let node, buf = '', startNode = null, startOff = 0;
-  const nodes = [];
-  while ((node = walker.nextNode())) nodes.push(node);
-  for (const n of nodes) {
-    if (!startNode) { startNode = n; startOff = 0; buf = ''; }
+  const chars = [];
+  let n;
+  while ((n = walker.nextNode())) {
     const t = n.textContent;
-    for (let i = 0; i < t.length; i++) {
-      if (/\s/.test(t[i])) continue;
-      buf += t[i];
-      if (buf.length === target.length) {
-        if (buf === target) {
-          const r = document.createRange();
-          r.setStart(startNode, startOff);
-          r.setEnd(n, i + 1);
-          const sel = window.getSelection();
-          sel.removeAllRanges();
-          sel.addRange(r);
-          const el = r.startContainer.parentElement;
-          if (el) el.scrollIntoView({behavior: 'smooth', block: 'center'});
-          return true;
-        }
-        buf = ''; startNode = null;
-        break;
-      }
-    }
+    for (let i = 0; i < t.length; i++)
+      if (!/\s/.test(t[i])) chars.push({node: n, off: i, ch: t[i]});
   }
-  return false;
+  const idx = chars.map(c => c.ch).join('').indexOf(target);
+  if (idx < 0) return false;
+  const first = chars[idx], last = chars[idx + target.length - 1];
+  const r = document.createRange();
+  r.setStart(first.node, first.off);
+  r.setEnd(last.node, last.off + 1);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+  const el = r.startContainer.parentElement;
+  if (el) el.scrollIntoView({behavior: 'smooth', block: 'center'});
+  return true;
 }
 </script>
 
