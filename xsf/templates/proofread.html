@@ -812,6 +812,7 @@ mark {
         <button onclick="zoomSetPct(1)" title="实际尺寸 (150dpi)">1:1</button>
         {% if not is_guest %}
         <button class="reocr-btn" id="reocrToggle" onclick="toggleReocrMode()">框选重OCR</button>
+        <button class="reocr-btn" id="smartCheckBtn" onclick="runSmartCheck()">智能校对</button>
         {% endif %}
         <button id="showAllBoxes" onclick="toggleShowAllBoxes()">显示全部框</button>
         <span class="hint">滚轮缩放 · 拖拽平移</span>
@@ -2021,6 +2022,179 @@ resumeReocrRange();
 {% endif %}
 
 <div class="toast" id="toast"></div>
+
+<!-- 智能校对分歧侧栏 -->
+<div id="smartPanel" style="display:none; position:fixed; right:16px; top:64px; width:340px; max-height:70vh; overflow:auto; background:var(--bg-primary,#fff); border:1px solid var(--border,#ccc); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,.15); z-index:900; padding:12px; font-size:.82rem;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+    <strong>智能校对 <span id="smartAgree" style="font-weight:400; color:var(--text-muted,#888);"></span></strong>
+    <button onclick="document.getElementById('smartPanel').style.display='none'" style="border:none; background:none; cursor:pointer; font-size:1rem;">×</button>
+  </div>
+  <div id="smartStatus" style="color:var(--text-muted,#888);"></div>
+  <div id="smartList"></div>
+  <hr style="border:none; border-top:1px solid var(--border,#ddd); margin:10px 0;">
+  <details>
+    <summary style="cursor:pointer;">人工录入文本</summary>
+    <div style="margin-top:8px;">
+      <input id="smartTrName" placeholder="录入名称 (可选)" style="width:100%; box-sizing:border-box; margin-bottom:6px; padding:4px; border:1px solid var(--border,#ccc); border-radius:4px;">
+      <textarea id="smartTrText" rows="5" placeholder="粘贴整篇/多页录入文本 (不必按页切)…" style="width:100%; box-sizing:border-box; margin-bottom:6px; padding:4px; border:1px solid var(--border,#ccc); border-radius:4px; font-family:inherit;"></textarea>
+      <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
+        <input type="file" id="smartTrFile" accept=".txt,.md,.markdown" style="font-size:.75rem;">
+      </div>
+      <button onclick="uploadTranscript()" style="width:100%; padding:5px; cursor:pointer; border:1px solid var(--border,#ccc); border-radius:4px; background:var(--bg-secondary,#f5f5f5);">上传并生成页映射</button>
+      <div id="smartTrMsg" style="margin-top:6px; color:var(--text-muted,#888);"></div>
+      <div id="smartMapping"></div>
+    </div>
+  </details>
+</div>
+
+<script>
+const SMART_BASE = `/collections/{{ collection }}/doc/{{ doc.id }}/proofread/{{ page_num }}/smart-check`;
+
+function smartToast(msg) {
+  const el = document.getElementById('smartStatus');
+  if (el) el.textContent = msg;
+}
+
+async function runSmartCheck(channel = 'engine') {
+  const panel = document.getElementById('smartPanel');
+  const btn = document.getElementById('smartCheckBtn');
+  panel.style.display = 'block';
+  document.getElementById('smartList').innerHTML = '';
+  document.getElementById('smartAgree').textContent = '';
+  smartToast('后台生成候选转录并与存量对齐… (约 10 秒/页, 候选已缓存则秒回)');
+  btn.disabled = true;
+  try {
+    const body = new FormData();
+    body.append('channel', channel);
+    const r = await fetch(SMART_BASE, {method: 'POST', body});
+    await pollSmart();
+  } catch (e) {
+    smartToast('请求失败: ' + e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function pollSmart() {
+  const r = await fetch(SMART_BASE + '/status');
+  const j = await r.json();
+  const list = document.getElementById('smartList');
+  if (j.state === 'running') {
+    smartToast('对齐中…');
+    setTimeout(pollSmart, 2000);
+    return;
+  }
+  if (j.state === 'unsupported' || j.state === 'rejected' || j.state === 'error' || j.state === 'idle') {
+    smartToast({unsupported: '该页无竖排文本块 (表格/图版页), 不适用智能校对',
+                rejected: '拒写库: ' + (j.reason || '对齐自检未通过'),
+                error: '失败: ' + (j.reason || '未知'),
+                idle: '尚未运行'}[j.state]);
+    return;
+  }
+  // done
+  smartToast('');
+  document.getElementById('smartAgree').textContent =
+    `一致率 ${(j.agree * 100).toFixed(1)}% · 来源 ${j.source === 'manual' ? '人工录入' : '第二引擎'}`;
+  const divs = j.divergences || [];
+  if (!divs.length) { list.innerHTML = '<div style="color:var(--text-muted,#888)">无分歧 ✓</div>'; return; }
+  const kindLabel = {substantive: ['实质异文', '#c0392b'], variant: ['异体字对', '#7f8c8d']};
+  list.innerHTML = divs.map((d, i) => {
+    const [label, color] = kindLabel[d.kind] || [d.kind, '#333'];
+    const jump = d.line_ids && d.line_ids.length
+      ? `<button style="border:1px solid var(--border,#ccc); background:none; border-radius:4px; cursor:pointer; padding:1px 6px;" onclick="jumpLine(${d.line_ids[0]})">定位</button>` : '';
+    return `<div style="border-left:3px solid ${color}; padding:4px 8px; margin:6px 0;">
+      <div><span style="color:${color}; font-weight:600;">${label}</span> ${jump}</div>
+      <div>A(存量): <b>${escHtml(d.seg_a) || 'Ø'}</b></div>
+      <div>B(候选): <b style="color:${color}">${escHtml(d.seg_b) || 'Ø'}</b></div>
+    </div>`;
+  }).join('');
+}
+
+function escHtml(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+const TR_BASE = `/collections/{{ collection }}/doc/{{ doc.id }}/transcripts`;
+
+async function uploadTranscript() {
+  const msg = document.getElementById('smartTrMsg');
+  const mapBox = document.getElementById('smartMapping');
+  const name = document.getElementById('smartTrName').value.trim();
+  const text = document.getElementById('smartTrText').value;
+  const fileEl = document.getElementById('smartTrFile');
+  if (!text.trim() && !(fileEl.files && fileEl.files.length)) {
+    msg.textContent = '请粘贴文本或选择 .txt / .md 文件';
+    return;
+  }
+  msg.textContent = '上传中…';
+  mapBox.innerHTML = '';
+  try {
+    const fd = new FormData();
+    if (name) fd.append('name', name);
+    if (fileEl.files && fileEl.files.length) fd.append('file', fileEl.files[0]);
+    else fd.append('text', text);
+    const r = await fetch(TR_BASE, {method: 'POST', body: fd});
+    const j = await r.json();
+    if (!r.ok || !j.ok) { msg.textContent = '上传失败: ' + (j.error || j.detail || r.status); return; }
+    msg.textContent = `已存为录入 #${j.transcript_id}「${j.name}」, 生成映射中…`;
+    const mr = await fetch(`${TR_BASE}/${j.transcript_id}/mapping`);
+    const mj = await mr.json();
+    if (!mr.ok || !mj.ok) {
+      msg.textContent = '页映射失败: ' + (mj.reason || mj.error || mr.status) + ' (录入已保存, 可修改文本后重试)';
+      return;
+    }
+    const pages = mj.pages || [];
+    const rows = pages.map(p =>
+      `<label style="display:block; margin:2px 0;"><input type="checkbox" checked onchange="this.dataset.conf=this.checked?'1':'0'" data-page="${p.page_num}" data-cs="${p.char_start}" data-ce="${p.char_end}" data-conf="${p.confidence}"> p${p.page_num} 置信 ${p.confidence}${p.low ? ' ⚠低' : ''}</label>`
+    ).join('');
+    mapBox.innerHTML = `
+      <div style="margin-top:6px;">识别覆盖 ${mj.pages_covered}/${mj.pages_total} 页, 勾选确认归属:</div>
+      <div style="max-height:140px; overflow:auto; margin:4px 0;">${rows}</div>
+      <button onclick="confirmMapping(${j.transcript_id})" style="width:100%; padding:5px; cursor:pointer; border:1px solid var(--border,#ccc); border-radius:4px; background:var(--bg-secondary,#f5f5f5);">确认映射并校对当前页</button>`;
+    msg.textContent = '';
+  } catch (e) {
+    msg.textContent = '请求失败: ' + e;
+  }
+}
+
+async function confirmMapping(tid) {
+  const msg = document.getElementById('smartTrMsg');
+  const checked = [...document.querySelectorAll('#smartMapping input[type=checkbox]:checked')];
+  if (!checked.length) { msg.textContent = '至少勾选一页'; return; }
+  msg.textContent = '写入映射…';
+  try {
+    const r = await fetch(`${TR_BASE}/${tid}/mapping/confirm`, {
+      method: 'POST',
+      body: (() => { const fd = new FormData();
+        fd.append('pages', JSON.stringify(checked.map(c => ({
+          page_num: +c.dataset.page, char_start: +c.dataset.cs,
+          char_end: +c.dataset.ce, confidence: +c.dataset.conf,
+        }))));
+        return fd; })(),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) { msg.textContent = '确认失败: ' + (j.error || j.detail || r.status); return; }
+    msg.textContent = `映射已确认 ${j.pages} 页, 开始人工通道校对…`;
+    runSmartCheck('manual');
+  } catch (e) {
+    msg.textContent = '请求失败: ' + e;
+  }
+}
+
+function jumpLine(lineId) {
+  const el = document.getElementById('bbox-' + lineId);
+  const ta = document.getElementById('line-' + lineId) || document.querySelector(`[data-line-id="${lineId}"]`);
+  const target = ta || el;
+  if (target) {
+    target.scrollIntoView({behavior: 'smooth', block: 'center'});
+    if (target.style) {
+      const old = target.style.boxShadow;
+      target.style.boxShadow = '0 0 0 3px #e67e22';
+      setTimeout(() => { target.style.boxShadow = old; }, 2000);
+    }
+  }
+}
+</script>
 
 </body>
 </html>

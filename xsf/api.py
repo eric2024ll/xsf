@@ -926,6 +926,33 @@ async def api_remove(collection: str, doc_id: int):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.post("/collections/{collection}/docs/purge-missing")
+async def api_purge_missing(collection: str, request: Request):
+    """批量清理「投放文件已消失」的文献 (2026-09-19, B 方案: 报告+一键清理).
+
+    执行时重新计算缺失清单 (不用扫描周期的陈旧状态); >100 条需 ?confirm=1
+    (防目录挪走/挂载脱落导致一键清库).
+    """
+    try:
+        from .folder_scan import _missing
+        missing = _missing(collection)
+        if len(missing) > 100 and request.query_params.get('confirm') != '1':
+            return JSONResponse(status_code=409, content={
+                "error": f"缺失 {len(missing)} 条 (>100), 疑似目录不可用; "
+                         f"确认无误请加 ?confirm=1 重试"})
+        purged, skipped = [], []
+        for m in missing:
+            try:
+                remove_doc(m['id'], collection)
+                purged.append(m['filename'])
+            except Exception:
+                skipped.append(m['filename'])
+        return {"status": "ok", "purged": purged,
+                "purged_count": len(purged), "skipped": skipped}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.patch("/collections/{collection}/doc/{doc_id}")
 async def api_update_doc(collection: str, doc_id: int,
                          source_tags: str = Form(None),
@@ -2236,6 +2263,214 @@ async def edit_line(
         return {"ok": True}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── 智能校对 (双通道分歧校对, pqa design/client/19) ─────────
+
+@app.post("/collections/{collection}/doc/{doc_id}/proofread/{page_num}/smart-check")
+async def smart_check(
+    collection: str,
+    doc_id: int,
+    page_num: int,
+    channel: str = Form("engine"),        # engine | manual
+    transcript_id: int = Form(None),
+    provider_id: str = Form(None),
+):
+    """页级智能校对: 生成第二候选转录并与存量对齐, 分歧写 suspect diff。
+
+    engine 通道后台执行 (~10s/页), 轮询 status; manual 通道同步返回。
+    """
+    from . import smartcheck
+    from .ocr.registry import get_provider
+
+    state = smartcheck._get(collection, doc_id, page_num)
+    if state and state.get("state") == "running":
+        return JSONResponse(status_code=202, content={"state": "running"})
+
+    smartcheck.pop(collection, doc_id, page_num)
+    smartcheck._set(collection, doc_id, page_num, state="running")
+
+    if channel == "manual":
+        if not transcript_id:
+            smartcheck._set(collection, doc_id, page_num, state="error",
+                            reason="缺少 transcript_id")
+            return JSONResponse(status_code=400,
+                                content={"state": "error", "reason": "缺少 transcript_id"})
+        smartcheck.run_check(collection, doc_id, page_num, "manual",
+                             transcript_id=transcript_id)
+        return _smart_status(collection, doc_id, page_num)
+
+    try:
+        provider = get_provider(provider_id)
+    except RuntimeError as e:
+        smartcheck._set(collection, doc_id, page_num, state="error",
+                        reason=str(e))
+        return JSONResponse(status_code=400,
+                            content={"state": "error", "reason": str(e)})
+
+    def _run():
+        try:
+            smartcheck.run_check(collection, doc_id, page_num, "engine",
+                                 provider=provider)
+        except Exception as e:  # 兜底, 防 job 永远卡 running
+            logger.exception("smart-check 失败")
+            smartcheck._set(collection, doc_id, page_num,
+                            state="error", reason=str(e))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return JSONResponse(status_code=202, content={"state": "running"})
+
+
+def _smart_status(collection, doc_id, page_num):
+    from . import smartcheck
+    job = smartcheck._get(collection, doc_id, page_num)
+    if job is None:
+        return {"state": "idle"}
+    out = {k: v for k, v in job.items() if k != "provider"}
+    return out
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/proofread/{page_num}/smart-check/status")
+async def smart_check_status(collection: str, doc_id: int, page_num: int):
+    return _smart_status(collection, doc_id, page_num)
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/transcripts")
+async def upload_transcript(
+    collection: str,
+    doc_id: int,
+    name: str = Form(None),
+    text: str = Form(None),
+    file: UploadFile = File(None),
+):
+    """上传人工录入文本 (粘贴 / .txt / .md)。生成新记录, 永不覆盖旧记录。"""
+    if file is not None:
+        raw = await file.read()
+        suffix = (file.filename or "").lower()
+        if not suffix.endswith((".txt", ".md", ".markdown")):
+            return JSONResponse(status_code=400,
+                                content={"error": "仅支持 .txt / .md 文件"})
+        if not name:
+            name = Path(file.filename).stem
+        # .md 剥常见标记 (# 标记、强调星号、链接括号保留文字)
+        if suffix != ".txt":
+            raw = re.sub(r"^#{1,6}\s*", "", raw.decode("utf-8", "replace"),
+                         flags=re.M)
+            raw = re.sub(r"\*\*?([^*]+)\*\*?", r"\1", raw)
+            text = raw
+        else:
+            text = raw.decode("utf-8", "replace")
+    else:
+        if not text:
+            return JSONResponse(status_code=400,
+                                content={"error": "text 与 file 至少给一个"})
+        name = name or f"录入 {time.strftime('%m-%d %H:%M')}"
+
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            "INSERT INTO manual_transcripts (doc_id, name, text) VALUES (?,?,?)",
+            (doc_id, name, text),
+        )
+        conn.commit()
+        return {"ok": True, "transcript_id": cur.lastrowid, "name": name}
+    finally:
+        conn.close()
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/transcripts/{transcript_id}/mapping")
+async def transcript_mapping(collection: str, doc_id: int, transcript_id: int):
+    """预对齐提案: 人工全文 ↔ OCR 页锚点映射 (含置信度)。"""
+    from .collate import map_pages
+
+    conn = get_conn(collection)
+    try:
+        tr = conn.execute(
+            "SELECT text FROM manual_transcripts WHERE id = ? AND doc_id = ?",
+            (transcript_id, doc_id),
+        ).fetchone()
+        if tr is None:
+            return JSONResponse(status_code=404,
+                                content={"error": "录入文本不存在"})
+        rows = conn.execute(
+            """SELECT page_num, text FROM lines
+               WHERE doc_id = ? AND block_label = 'vertical_text'
+               ORDER BY page_num, block_num, line_num""",
+            (doc_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    page_texts: dict = {}
+    for r in rows:
+        page_texts.setdefault(r["page_num"], "")
+        page_texts[r["page_num"]] += r["text"]
+
+    result = map_pages(page_texts, tr["text"])
+    if result["ok"]:
+        # 存提案 (confirmed=0), 不覆盖已确认映射
+        conn = get_conn(collection)
+        try:
+            for p in result["pages"]:
+                conn.execute(
+                    "INSERT OR IGNORE INTO transcript_pages "
+                    "(transcript_id, page_num, char_start, char_end, confidence) "
+                    "VALUES (?,?,?,?,?)",
+                    (transcript_id, p["page_num"], p["char_start"],
+                     p["char_end"], p["confidence"]),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    return result
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/transcripts/{transcript_id}/mapping/confirm")
+async def confirm_mapping(
+    collection: str,
+    doc_id: int,
+    transcript_id: int,
+    pages: str = Form(...),      # JSON: [{"page_num","char_start","char_end"}]
+):
+    """确认 (可含人工修正) 页映射。"""
+    try:
+        items = json.loads(pages)
+        assert isinstance(items, list)
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "pages 须为 JSON 数组"})
+    conn = get_conn(collection)
+    try:
+        conn.execute("DELETE FROM transcript_pages WHERE transcript_id = ?",
+                     (transcript_id,))
+        for p in items:
+            conn.execute(
+                "INSERT INTO transcript_pages "
+                "(transcript_id, page_num, char_start, char_end, confidence, confirmed) "
+                "VALUES (?,?,?,?,?,1)",
+                (transcript_id, p["page_num"], p.get("char_start"),
+                 p.get("char_end"), p.get("confidence", 1.0)),
+            )
+        conn.commit()
+        return {"ok": True, "pages": len(items)}
+    finally:
+        conn.close()
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/transcripts")
+async def list_transcripts(collection: str, doc_id: int):
+    conn = get_conn(collection)
+    try:
+        rows = conn.execute(
+            """SELECT id, name, created_at,
+                      (SELECT COUNT(*) FROM transcript_pages tp
+                        WHERE tp.transcript_id = manual_transcripts.id
+                          AND tp.confirmed = 1) AS confirmed_pages
+               FROM manual_transcripts WHERE doc_id = ? ORDER BY id DESC""",
+            (doc_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {"transcripts": [dict(r) for r in rows]}
 
 
 @app.post("/collections/{collection}/doc/{doc_id}/page/{page_num}/edit")

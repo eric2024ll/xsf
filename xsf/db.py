@@ -158,6 +158,42 @@ def _migrate(conn):
     if "linked_pdf" not in doc_cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_pdf TEXT DEFAULT NULL")
 
+    # 智能校对 (P4, 2026-09-19): 候选缓存 + 人工录入 + 页映射
+    # 设计: pqa design/client/19-smart-proofread.md
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ocr_candidates (
+            id INTEGER PRIMARY KEY,
+            doc_id INTEGER NOT NULL,
+            page_num INTEGER NOT NULL,
+            provider TEXT NOT NULL,
+            model_ver TEXT,
+            text TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(doc_id, page_num, provider)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS manual_transcripts (
+            id INTEGER PRIMARY KEY,
+            doc_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS transcript_pages (
+            id INTEGER PRIMARY KEY,
+            transcript_id INTEGER NOT NULL REFERENCES manual_transcripts(id),
+            page_num INTEGER NOT NULL,
+            char_start INTEGER,
+            char_end INTEGER,
+            confidence REAL,
+            confirmed INTEGER DEFAULT 0,
+            UNIQUE(transcript_id, page_num)
+        )
+    """)
+
 
 def init_db(collection: str):
     """初始化单个 collection 的 DB（建表 + 迁移）"""
