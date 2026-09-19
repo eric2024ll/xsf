@@ -2122,8 +2122,9 @@ async function pollSmart() {
   const kindLabel = {substantive: ['实质异文', '#c0392b'], variant: ['异体字对', '#7f8c8d']};
   list.innerHTML = divs.map((d, i) => {
     const [label, color] = kindLabel[d.kind] || [d.kind, '#333'];
+    const seg = escHtml(d.seg_a || d.seg_b || '');
     const jump = d.line_ids && d.line_ids.length
-      ? `<button style="border:1px solid var(--border,#ccc); background:none; border-radius:4px; cursor:pointer; padding:1px 6px;" onclick="jumpLine(${d.line_ids[0]})">定位</button>` : '';
+      ? `<button style="border:1px solid var(--border,#ccc); background:none; border-radius:4px; cursor:pointer; padding:1px 6px;" data-seg="${seg}" onclick="jumpLine(${d.line_ids[0]}, this.dataset.seg)">定位</button>` : '';
     return `<div style="border-left:3px solid ${color}; padding:4px 8px; margin:6px 0;">
       <div><span style="color:${color}; font-weight:600;">${label}</span> ${jump}</div>
       <div>A(存量): <b>${escHtml(d.seg_a) || 'Ø'}</b></div>
@@ -2133,7 +2134,7 @@ async function pollSmart() {
 }
 
 function escHtml(s) {
-  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 const TR_BASE = `/collections/{{ collection }}/doc/{{ doc.id }}/transcripts`;
@@ -2203,18 +2204,71 @@ async function confirmMapping(tid) {
   }
 }
 
-function jumpLine(lineId) {
+function jumpLine(lineId, segText) {
+  // 主路径: 左侧 bbox 框 (默认 display:none, 需先开「显示全部框」)
   const el = document.getElementById('bbox-' + lineId);
-  const ta = document.getElementById('line-' + lineId) || document.querySelector(`[data-line-id="${lineId}"]`);
-  const target = ta || el;
-  if (target) {
-    target.scrollIntoView({behavior: 'smooth', block: 'center'});
-    if (target.style) {
-      const old = target.style.boxShadow;
-      target.style.boxShadow = '0 0 0 3px #e67e22';
-      setTimeout(() => { target.style.boxShadow = old; }, 2000);
+  if (el) {
+    const wrap = document.getElementById('imageWrap');
+    if (wrap && !wrap.classList.contains('show-all') && typeof toggleShowAllBoxes === 'function') {
+      toggleShowAllBoxes();
+    }
+    el.scrollIntoView({behavior: 'smooth', block: 'center'});
+    flashEl(el);
+    return;
+  }
+  // 兜底: 按分歧文本在右侧正文临时高亮
+  if (segText && highlightInPageText(segText)) return;
+  smartToast('未找到可定位的行 (该行无 bbox 且正文未匹配到文本)');
+}
+
+function flashEl(el) {
+  if (!el.style) return;
+  const old = el.style.boxShadow;
+  el.style.boxShadow = '0 0 0 3px #e67e22';
+  setTimeout(() => { el.style.boxShadow = old; }, 2000);
+}
+
+function highlightInPageText(text) {
+  const box = document.getElementById('pageText');
+  if (!box || !text) return false;
+  const norm = s => s.replace(/\s+/g, '');
+  const target = norm(text);
+  if (!target) return false;
+  const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+  let node, buf = '', startNode = null, startOff = 0;
+  const nodes = [];
+  while ((node = walker.nextNode())) nodes.push(node);
+  for (const n of nodes) {
+    if (!startNode) { startNode = n; startOff = 0; buf = ''; }
+    const t = n.textContent;
+    for (let i = 0; i < t.length; i++) {
+      const ch = t[i];
+      if (/\s/.test(ch)) continue;
+      buf += ch;
+      if (buf.length === target.length) {
+        if (buf === target) {
+          const r = document.createRange();
+          r.setStart(startNode, startOff);
+          r.setEnd(n, i + 1);
+          const mark = document.createElement('mark');
+          mark.style.background = '#e67e22';
+          try { r.surroundContents(mark); } catch (e) { return false; }
+          mark.scrollIntoView({behavior: 'smooth', block: 'center'});
+          setTimeout(() => {
+            const p = mark.parentNode;
+            while (mark.firstChild) p.insertBefore(mark.firstChild, mark);
+            mark.remove();
+            p.normalize();
+          }, 2000);
+          return true;
+        }
+        // 从下一个节点重新开始找
+        buf = ''; startNode = null;
+        break;
+      }
     }
   }
+  return false;
 }
 </script>
 
