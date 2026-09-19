@@ -2484,6 +2484,17 @@ async def edit_page(
     try:
         conn = get_conn(collection)
         try:
+            # 继承该页原有正文块标签 (整页重写无法逐行映射,
+            # 但标签决定检索过滤/智能校对等下游行为, 不能洗成 NULL)
+            row = conn.execute(
+                """SELECT block_label FROM lines
+                   WHERE doc_id = ? AND page_num = ?
+                     AND block_label IS NOT NULL
+                     AND block_label NOT IN ('number', 'footer', 'doc_title')
+                   ORDER BY id LIMIT 1""",
+                (doc_id, page_num),
+            ).fetchone()
+            carry_label = row["block_label"] if row else None
             conn.execute(
                 "DELETE FROM lines WHERE doc_id = ? AND page_num = ?",
                 (doc_id, page_num),
@@ -2499,9 +2510,10 @@ async def edit_page(
                 if not bt.strip():
                     continue
                 conn.execute(
-                    """INSERT INTO lines(doc_id, page_num, block_num, line_num, text)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (doc_id, page_num, bn, 1, bt),
+                    """INSERT INTO lines(doc_id, page_num, block_num, line_num,
+                                         block_label, text)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (doc_id, page_num, bn, 1, carry_label, bt),
                 )
                 conn.execute(
                     """INSERT INTO blocks_fts(doc_id, page_num, block_num, text)

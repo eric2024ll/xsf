@@ -44,8 +44,9 @@ def pop(collection, doc_id, page_num):
 def build_page_sequence(collection, doc_id, page_num):
     """页竖排文本 → (归一字符列表, 逐字 line_id 列表)。
 
-    只取 vertical_text 块 (版心/表格由 block_label 自然排除)。
-    返回 None 表示该页无竖排块 (表格页/图版页 → unsupported)。
+    优先取 vertical_text 块; 无则回退到整页编辑遗留的无标签行
+    (edit_page 重写会丢 block_label), 但始终排除 number/footer/doc_title。
+    返回 None 表示该页无可用正文块 (表格页/图版页 → unsupported)。
     """
     conn = get_conn(collection)
     try:
@@ -55,6 +56,15 @@ def build_page_sequence(collection, doc_id, page_num):
                ORDER BY block_num, line_num""",
             (doc_id, page_num),
         ).fetchall()
+        if not rows:
+            rows = conn.execute(
+                """SELECT id, text, block_label FROM lines
+                   WHERE doc_id = ? AND page_num = ?
+                     AND (block_label IS NULL OR block_label NOT IN
+                          ('number', 'footer', 'doc_title', 'table'))
+                   ORDER BY block_num, line_num""",
+                (doc_id, page_num),
+            ).fetchall()
     finally:
         conn.close()
     if not rows:
