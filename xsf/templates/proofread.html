@@ -2025,7 +2025,7 @@ resumeReocrRange();
 
 <!-- 智能校对分歧侧栏 -->
 <div id="smartPanel" style="display:none; position:fixed; right:16px; top:64px; width:340px; max-height:70vh; overflow:auto; background:var(--bg-primary,#fff); border:1px solid var(--border,#ccc); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,.15); z-index:900; padding:12px; font-size:.82rem;">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+  <div id="smartPanelHead" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; cursor:move; user-select:none;">
     <strong>智能校对 <span id="smartAgree" style="font-weight:400; color:var(--text-muted,#888);"></span></strong>
     <button onclick="document.getElementById('smartPanel').style.display='none'" style="border:none; background:none; cursor:pointer; font-size:1rem;">×</button>
   </div>
@@ -2049,6 +2049,28 @@ resumeReocrRange();
 
 <script>
 const SMART_BASE = `/collections/{{ collection }}/doc/{{ doc.id }}/proofread/{{ page_num }}/smart-check`;
+
+// 面板拖拽: 按标题栏移动 (fixed 定位, 切换为 left/top)
+(function () {
+  const panel = document.getElementById('smartPanel');
+  const head = document.getElementById('smartPanelHead');
+  let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+  head.addEventListener('pointerdown', (e) => {
+    if (e.target.tagName === 'BUTTON') return;
+    dragging = true;
+    const r = panel.getBoundingClientRect();
+    ox = r.left; oy = r.top; sx = e.clientX; sy = e.clientY;
+    panel.style.left = ox + 'px'; panel.style.top = oy + 'px';
+    panel.style.right = 'auto';
+    head.setPointerCapture(e.pointerId);
+  });
+  head.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    panel.style.left = Math.max(0, ox + e.clientX - sx) + 'px';
+    panel.style.top = Math.max(0, oy + e.clientY - sy) + 'px';
+  });
+  head.addEventListener('pointerup', () => { dragging = false; });
+})();
 
 function smartToast(msg) {
   const el = document.getElementById('smartStatus');
