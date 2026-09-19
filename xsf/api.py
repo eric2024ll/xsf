@@ -2281,7 +2281,7 @@ async def smart_check(
     engine 通道后台执行 (~10s/页), 轮询 status; manual 通道同步返回。
     """
     from . import smartcheck
-    from .ocr.registry import get_provider
+    from .ocr.registry import get_plain_provider
 
     state = smartcheck._get(collection, doc_id, page_num)
     if state and state.get("state") == "running":
@@ -2301,7 +2301,7 @@ async def smart_check(
         return _smart_status(collection, doc_id, page_num)
 
     try:
-        provider = get_provider(provider_id)
+        provider = get_plain_provider(provider_id)
     except RuntimeError as e:
         smartcheck._set(collection, doc_id, page_num, state="error",
                         reason=str(e))
