@@ -1,14 +1,14 @@
 # AGENTS.md — xsf
 
-> histflow-plan 设计的代码落地仓库. 本文件定义**本机 GPU 机开发 + 部署一体**的标准流程 (WSL / 阿里云为备用).
-> 设计依据: histflow-plan `system/tools/14-ocr-pipeline.md`
+> histflow-plan / pqa 设计的代码落地仓库. 本文件定义**本机 GPU 机开发 + 部署一体**的标准流程 (WSL / 阿里云为备用).
+> 设计依据: pqa `design/client/14-ocr-pipeline.md`（2026-09-19 自 histflow-plan 移交，mem vault 内路径 `/mnt/d/workspace/mem/pqa/`）
 
 ## 项目定位
 
 xsf 是史学研究工具链的**感知层上游**——把 PDF 变成可检索的文本池，以 Web『小書房』(FastAPI) 为主入口、CLI 为辅.
 
-- **设计来源**: histflow-plan (`/mnt/d/workspace/mem/histflow-plan/`). 两库分工与关系方向的权威定义见其 `schema.md` §与外部系统/仓库的关系；本文件只聚焦 xsf 的开发与部署.
-- **原则**: 设计决策在 histflow-plan; 代码与数据实验在 xsf; Bug/约束反馈回 histflow 修订设计
+- **设计来源**: histflow-plan（体系/方法论）+ pqa（L0 语料层设计，`/mnt/d/workspace/mem/pqa/design/`，2026-09-19 起小书房设计文档统一管理于此）+ litsearch（L1-L2 检索执行体策划，`/mnt/d/workspace/mem/litsearch/`，2026-09-20 起；对 xsf API 的消费契约见其 `design/02-分层契约.md`）. 各库分工与关系方向的权威定义见各自 `schema.md`；本文件只聚焦 xsf 的开发与部署.
+- **原则**: 设计决策在 mem vault 记录（体系设计在 histflow-plan，L0 语料层设计在 pqa，L1-L2 检索执行体策划在 litsearch）; 代码与数据实验在 xsf; Bug/约束反馈回相应设计库修订（检索能力问题按层归口: 语料层→pqa `design/20-检索问题库.md` X 组, 策略层→litsearch `design/20-检索问题库-L组.md`）
 - **数据分离**: 代码在本仓库, 数据在 `~/xsf-data/` (`XSF_DATA` 环境变量可覆盖)
 
 ## 多机架构
@@ -134,7 +134,7 @@ uvicorn xsf.api:app --host 0.0.0.0 --port 8090
 
 ## Windows 便携版打包
 
-> 设计依据: histflow-plan `system/tools/18-windows-portable.md`. CLI + skill + MCP 全保留, 零 API 改动.
+> 设计依据: pqa `design/client/18-windows-portable.md`. CLI + skill + MCP 全保留, 零 API 改动.
 
 - **构建**: GitHub Actions `windows-portable` workflow (workflow_dispatch 手动触发, 或 push tag `v*` 自动构建并附 release)
 - **本地复现** (Windows + Python 3.12): `pip install -e ".[desktop,build,mcp]"` → `pyinstaller packaging/xsf.spec --noconfirm` → `pwsh packaging/make_portable.ps1`
@@ -350,5 +350,5 @@ systemctl restart xsf
 - 中文思考、中文回复; commit message 用英文
 - **不自行 push**: 写完代码后 commit, 报告 hash, 提示用户手动 push
 - **不自行跑 OCR 测试** (省 token): 给出验证命令让用户执行
-- 代码改动遵循 histflow-plan 的设计文档 (`system/tools/14-ocr-pipeline.md` 是 OCR 直接依据)
+- 代码改动遵循 pqa 的设计文档 (`design/client/14-ocr-pipeline.md` 是 OCR 直接依据)
 - 发现的设计问题 (新 block_label / 坐标问题等) 反馈到 histflow-plan 设计文档
