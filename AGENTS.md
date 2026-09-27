@@ -32,7 +32,6 @@ xsf 是史学研究工具链的**感知层上游**——把 PDF 变成可检索�
 - **Web**: systemd `xsf.service` — `uvicorn xsf.api:app --host 0.0.0.0 --port 8090`, `EnvironmentFile=/home/eric/xsf/.env`
 - **数据**: `~/xsf-data/` (`.env` 里 `XSF_DATA` 指定; db/collections/ocr-config.json 都在此)
 - **本地 OCR**: systemd `paddleocr-vl.service` (:8091, `~/paddleocr-vl/server.py`), Web「OCR 设置」里以 generic_http provider 接入
-- **认证**: `.env` 里 `XSF_AUTH_TOKEN` 设密码, 所有页面需登录
 
 ### git 流程 (标准)
 
@@ -101,7 +100,6 @@ uvicorn xsf.api:app --host 0.0.0.0 --port 8090
 
 **页面 (HTML)**
 - `/` 书架页 (全库统计 + 书架列表 + 最近文献; 记 `last_collection` cookie 供下次回归)
-- `/login` `/logout` 登录 / 退出
 - `/search` 跨书架搜索页
 - `/collections/{c}/docs/list` 文献列表页
 - `/collections/{c}/upload` 资料上传页
@@ -229,14 +227,10 @@ EOF
 
 ```bash
 cat > /root/xsf/.env << 'EOF'
-XSF_AUTH_TOKEN=<用户自设密码>
 XSF_COLLECTIONS_DIR=/mnt/oss/sources/xsf/collections
 EOF
 chmod 600 /root/xsf/.env
 ```
-
-> **XSF_AUTH_TOKEN**: 设为你的登录密码. 留空或不设则无认证（开发模式）.
-> 设了之后访问任何页面都需先登录 (`/login`).
 
 > **⚠ DB 存储位置**: xsf.db 必须在**本地磁盘** (`XSF_DB_DIR`, 默认 `~/xsf-data/db/`),
 > 不能放 OSS (ossfs 不支持 SQLite 文件锁, 会报 `disk I/O error`).
@@ -266,17 +260,8 @@ systemctl start xsf
 #### 4. 验证
 
 ```bash
-# 无 token 时（开发模式）直接访问 / 返回 200
+# 直接访问 / 返回 200 (本地客户端, 无认证)
 curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/
-
-# 有 token 时访问 / 重定向到 /login (303)
-curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/
-
-# 登录获取 cookie
-curl -s -X POST http://localhost:8090/login -d 'password=<你的密码>' -c /tmp/xsf_cookie -w '%{http_code}\n'
-
-# 带 cookie 访问
-curl -s -b /tmp/xsf_cookie http://localhost:8090/ -o /dev/null -w '%{http_code}\n'
 ```
 
 ### OCR 实测注意事项
@@ -290,7 +275,6 @@ curl -s -b /tmp/xsf_cookie http://localhost:8090/ -o /dev/null -w '%{http_code}\
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
-| `XSF_AUTH_TOKEN` | 可选 | Web 登录密码. 未设则无认证（开发模式）; 设了则所有页面需登录 |
 | `XSF_DATA` | 可选 | 数据根目录, 默认 `~/xsf-data/` |
 | `XSF_DB_DIR` | 可选 | **数据库目录(本地磁盘!)**, 默认 `XSF_DATA/db/`. ossfs 不支持 SQLite 文件锁, 服务器上**不要**指向 OSS |
 | `XSF_COLLECTIONS_DIR` | 可选 | 源文件+上传目录, 默认 `XSF_DATA/collections/`; 服务器指向 OSS `/mnt/oss/sources/xsf/collections/` |
@@ -337,7 +321,6 @@ systemctl restart xsf
 | 包名 / CLI | `jiage` / `jiage` | `xsf` / `xsf` |
 | 环境变量 | `JIAGE_DATA` 等 5 个 | `XSF_DATA` 等 5 个 (**不识别旧名**) |
 | DB 文件 | `db/{collection}/jiage.db` | `db/{collection}/xsf.db` (导入兼容旧名) |
-| 登录 cookie | `jiage_auth` | `xsf_auth` (改名后需重新登录) |
 | GitHub | `eric2024ll/jiage` | `eric2024ll/xsf` (旧 URL redirect) |
 
 **遗留 follow-up**:

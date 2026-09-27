@@ -299,8 +299,3 @@ def set_default_ocr_provider(pid: str) -> None:
     cfg['default'] = pid
     cfg['updated_at'] = datetime.now().isoformat(timespec='seconds')
     _write_ocr_config(cfg)
-
-
-def get_auth_token() -> str | None:
-    """XSF_AUTH_TOKEN 环境变量。未设返回 None（开发模式，跳过认证）。"""
-    return os.environ.get('XSF_AUTH_TOKEN') or None

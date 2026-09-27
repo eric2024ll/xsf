@@ -7,7 +7,6 @@ MCP server, 背后走 xsf FTS5 关键词检索 (毫秒级, 零 LLM 成本).
 
 环境变量:
     XSF_BASE_URL     xsf Web 基址 (默认 http://localhost:8090)
-    XSF_AUTH_TOKEN   xsf 登录密码 (未设则无认证)
 """
 
 import os
@@ -20,12 +19,10 @@ mcp = MCPServer("xsf-search")
 
 _XSF_BASE = (os.environ.get('XSF_BASE_URL')
              or 'http://localhost:8090').rstrip('/')
-_AUTH_TOKEN = os.environ.get('XSF_AUTH_TOKEN') or None
 
 
 def _xsf_get(path: str, **kw) -> requests.Response:
-    cookies = {'xsf_auth': _AUTH_TOKEN} if _AUTH_TOKEN else None
-    return requests.get(f'{_XSF_BASE}{path}', cookies=cookies,
+    return requests.get(f'{_XSF_BASE}{path}',
                         timeout=kw.pop('timeout', 30), **kw)
 
 

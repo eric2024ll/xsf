@@ -12,8 +12,7 @@
 4. 8090 端口被占时自动顺延 (8091-8099), 实际端口见托盘提示
 
 【配置 (.env)】
-- 想设登录密码 / 改数据目录: 复制 .env.example 为 .env, 放在本目录, 按注释修改
-- XSF_AUTH_TOKEN=密码   → 所有页面需登录
+- 想改数据目录: 复制 .env.example 为 .env, 放在本目录, 按注释修改
 - XSF_DATA=D:\my-xsf    → 数据目录 (默认 %USERPROFILE%\xsf-data)
 - XSF_HOST=0.0.0.0      → 允许局域网访问 (需自行放行 Windows 防火墙, 有安全风险)
 - XSF_PORT=8090         → 起始端口
@@ -36,8 +35,7 @@
 
 【AI skill / MCP 接入】
 - skill (HTTP API): 服务地址链首选项本机 127.0.0.1:8090, 本地服务天然命中。
-  将 skill 目录 (xsf_api.py 所在) 复制到 %USERPROFILE%\.agents\skills\xsf\,
-  并设环境变量 XSF_ENV 指向本目录的 .env (读 XSF_AUTH_TOKEN)。
+  将 skill 目录 (xsf_api.py 所在) 复制到 %USERPROFILE%\.agents\skills\xsf\。
 - MCP: 本目录的 xsf-mcp.exe 可作为 MCP server 接入 (stdio)。
 
 【数据迁移 (Linux ↔ Windows)】

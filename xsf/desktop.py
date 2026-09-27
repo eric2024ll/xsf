@@ -62,7 +62,7 @@ def _alert(msg: str, title: str = '小書房') -> None:
 
 
 def _port_serving(port: int) -> bool:
-    """端口上是否已有 HTTP 服务响应 (任意状态码都算, 含登录重定向)."""
+    """端口上是否已有 HTTP 服务响应 (任意状态码都算)."""
     try:
         urllib.request.urlopen(f'http://127.0.0.1:{port}/', timeout=1.5)
         return True
