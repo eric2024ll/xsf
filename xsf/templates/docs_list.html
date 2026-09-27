@@ -89,7 +89,10 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
 <div class="container">
   <div class="top-bar">
     {% if scan_status and scan_status.enabled %}
-    <span class="scan-badge" title="文件夹自动扫描 (每{{ scan_status.interval if scan_status.interval is defined else '?' }}s){% if scan_status.new %}&#10;本轮新增: {{ scan_status.new|join('、') }}{% endif %}{% if scan_status.dup_total %}&#10;跳过重复 ({{ scan_status.dup_total }}): {{ scan_status.dups|join('、') }}{% endif %}{% if scan_status.cross_warn %}&#10;跨书架同名: {% for w in scan_status.cross_warn %}{{ w.filename }} → {{ w.also_in|join('、') }}{% if not loop.last %}; {% endif %}{% endfor %}{% endif %}{% if scan_status.pending_ocr %}&#10;待OCR ({{ scan_status.pending_ocr|length }}): {% for d in scan_status.pending_ocr[:8] %}{{ d.filename }}{% if not loop.last %}、{% endif %}{% endfor %}{% if scan_status.pending_ocr|length > 8 %} 等{% endif %}{% endif %}{% if scan_status.errors %}&#10;错误: {% for e in scan_status.errors %}{{ e.filename }}: {{ e.error }}{% if not loop.last %}; {% endif %}{% endfor %}{% endif %}">⟳ {{ scan_status.last_run or '…' }}{% if scan_status.added %} · +{{ scan_status.added }}{% endif %}{% if scan_status.dup_total %} · 重复{{ scan_status.dup_total }}{% endif %}{% if scan_status.ocr_enabled %} · OCR{% if scan_status.ocr_running %} {{ scan_status.ocr_running }}中{% endif %}{% if scan_status.ocr_queued %} {{ scan_status.ocr_queued }}待{% endif %} · 待OCR {{ scan_status.pending_ocr|length }}{% endif %}</span>
+    <span class="scan-badge" title="文件夹自动扫描 (每{{ scan_status.interval if scan_status.interval is defined else '?' }}s){% if scan_status.new %}&#10;本轮新增: {{ scan_status.new|join('、') }}{% endif %}{% if scan_status.dup_total %}&#10;跳过重复 ({{ scan_status.dup_total }}): {{ scan_status.dups|join('、') }}{% endif %}{% if scan_status.cross_warn %}&#10;跨书架同名: {% for w in scan_status.cross_warn %}{{ w.filename }} → {{ w.also_in|join('、') }}{% if not loop.last %}; {% endif %}{% endfor %}{% endif %}{% if scan_status.pending_ocr %}&#10;待OCR ({{ scan_status.pending_ocr|length }}): {% for d in scan_status.pending_ocr[:8] %}{{ d.filename }}{% if not loop.last %}、{% endif %}{% endfor %}{% if scan_status.pending_ocr|length > 8 %} 等{% endif %}{% endif %}{% if scan_status.errors %}&#10;错误: {% for e in scan_status.errors %}{{ e.filename }}: {{ e.error }}{% if not loop.last %}; {% endif %}{% endfor %}{% endif %}{% if scan_status.missing_total %}&#10;投放文件已删除 ({{ scan_status.missing_total }}): {{ scan_status.missing|join('、') }}{% if scan_status.missing_total > 10 %} 等{% endif %}{% endif %}">⟳ {{ scan_status.last_run or '…' }}{% if scan_status.added %} · +{{ scan_status.added }}{% endif %}{% if scan_status.dup_total %} · 重复{{ scan_status.dup_total }}{% endif %}{% if scan_status.ocr_enabled %} · OCR{% if scan_status.ocr_running %} {{ scan_status.ocr_running }}中{% endif %}{% if scan_status.ocr_queued %} {{ scan_status.ocr_queued }}待{% endif %} · 待OCR {{ scan_status.pending_ocr|length }}{% endif %}{% if scan_status.missing_total %} · 缺失{{ scan_status.missing_total }}{% endif %}</span>
+    {% if scan_status.missing_total and request.state.role != 'guest' %}
+    <button class="btn" onclick="purgeMissing(event)" style="border-color:var(--warn,#c90);color:var(--warn,#c90);">清理缺失 {{ scan_status.missing_total }}</button>
+    {% endif %}
     {% endif %}
     <div class="top-bar-right" id="statsSummary"></div>
   </div>
@@ -455,6 +458,27 @@ async function reocrCancel(docId){
     if(d.error){showMsg('取消失败: '+d.error,'err'); return;}
     showMsg('已请求取消','ok');
   }catch(e){ showMsg('取消请求失败: '+e.message,'err'); }
+}
+
+async function purgeMissing(ev){
+  if(!confirm('确定清理所有「投放文件已删除」的文献？将同时删除其 PDF/识别文本，不可恢复。')) return;
+  try{
+    const r = await fetch('/collections/'+encodeURIComponent(collection)+'/docs/purge-missing', {method:'POST'});
+    if(r.status === 409){
+      const d = await r.json();
+      if(!confirm(d.error + '\n仍要继续？')) return;
+      const r2 = await fetch('/collections/'+encodeURIComponent(collection)+'/docs/purge-missing?confirm=1', {method:'POST'});
+      const d2 = await r2.json();
+      if(d2.error){showMsg('清理失败: '+d2.error,'err'); return;}
+      showMsg('已清理 '+d2.purged_count+' 条','ok'); loadPage(state.page); return;
+    }
+    const data = await r.json();
+    if(data.error){showMsg('清理失败: '+data.error,'err'); return;}
+    showMsg('已清理 '+data.purged_count+' 条'+(data.skipped.length?' (跳过 '+data.skipped.length+')':''),'ok');
+    loadPage(state.page);
+  }catch(e){
+    showMsg('清理请求失败: '+e.message,'err');
+  }
 }
 
 async function deleteDoc(docId, btn){

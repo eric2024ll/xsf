@@ -23,6 +23,10 @@ MAX_RETRIES = 3
 RETRY_BASE_WAIT = 2
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 HTTP_TIMEOUT = 900  # 大 PDF 本地 GPU 推理可达数分钟
+# 503 (服务忙) 快速失败: 固定短等待 + 独立次数上限, 避免排队风暴时
+# 每页原地拉锯 MAX_RETRIES × (排队 120s + 退避), 页 error 交给断点补跑
+BUSY_WAIT = 60
+BUSY_MAX_ATTEMPTS = 2
 
 
 def _is_retryable(exc):
@@ -74,11 +78,23 @@ def ocr_file(path, url, api_key=None, model=None, timeout=HTTP_TIMEOUT):
         form["model"] = model
 
     last_exc = None
+    busy_attempts = 0
     for attempt in range(MAX_RETRIES):
         try:
             with open(path, "rb") as f:
                 r = requests.post(url, headers=headers, data=form,
                                   files={"file": f}, timeout=timeout)
+            if r.status_code == 503:
+                busy_attempts += 1
+                if busy_attempts >= BUSY_MAX_ATTEMPTS:
+                    raise requests.HTTPError(
+                        f"HTTP 503: OCR 服务持续忙 (已尝试 "
+                        f"{busy_attempts} 次), 本页落 error 待断点补跑"
+                    )
+                print(f"  [ocr] HTTP 503 服务忙, {BUSY_WAIT}s 后重试 "
+                      f"({busy_attempts}/{BUSY_MAX_ATTEMPTS})")
+                time.sleep(BUSY_WAIT)
+                continue
             if r.status_code in RETRYABLE_STATUS:
                 wait = RETRY_BASE_WAIT * (2 ** attempt)
                 print(f"  [ocr] HTTP {r.status_code}, "

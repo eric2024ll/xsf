@@ -146,6 +146,22 @@ def _ingest_new(collection: str) -> tuple[list, list, list]:
     return new_records, errors, dups
 
 
+def _missing(collection: str) -> list:
+    """反向 diff: DB 有记录但投放目录中文件已消失. 只报告不删除 (2026-09-19 决策,
+    库是事实源, 删原件≠删记录; 清理走 purge-missing 接口人工确认)."""
+    updir = _upload_dir(collection)
+    try:
+        rows = _query(
+            collection, 'SELECT id, filename FROM documents WHERE filename != \'\'')
+    except Exception:
+        return []
+    present: set = set()
+    if updir.is_dir():
+        present = {f.name for f in updir.iterdir() if f.is_file()}
+    return [{'id': r['id'], 'filename': r['filename']}
+            for r in rows if r['filename'] not in present]
+
+
 def _query(collection: str, sql: str, params=()):
     conn = get_conn(collection)
     try:
@@ -195,6 +211,7 @@ def _scan_cycle() -> None:
         cross_warn = [
             {'filename': r['filename'], 'also_in': r['cross']}
             for r in new_records if r.get('cross')]
+        missing = _missing(coll)
         with _status_lock:
             _status[coll] = {
                 'last_run': time.strftime('%H:%M:%S'),
@@ -204,6 +221,8 @@ def _scan_cycle() -> None:
                 'dups': dups[:5],
                 'cross_warn': cross_warn[:3],
                 'pending_ocr': pending,
+                'missing': [m['filename'] for m in missing[:10]],
+                'missing_total': len(missing),
                 'errors': [
                     {'filename': e['filename'], 'error': e['error']}
                     for e in errors[:3]],
