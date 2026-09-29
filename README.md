@@ -228,7 +228,7 @@ python scripts/collection_io.py import <collection> <archive.tar.gz> \
 #   或 push tag: git tag v0.1.1 && git push origin v0.1.1  (自动附到 release)
 
 # 本地复现 (Windows + Python 3.12):
-pip install -e ".[desktop,build,mcp]"
+pip install -e ".[desktop,build,office,mcp]"
 pyinstaller packaging/xsf.spec --noconfirm
 pwsh packaging/make_portable.ps1     # → dist/xsf-portable-win64-<ver>.zip
 ```

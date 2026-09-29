@@ -19,13 +19,21 @@ jobs:
           python-version: '3.12'
 
       - name: 安装依赖
-        run: pip install -e ".[desktop,build,mcp]"
+        run: pip install -e ".[desktop,build,office,mcp]"
 
       - name: FTS5 自检
         run: python -c "import sqlite3, tempfile, os; db = os.path.join(tempfile.mkdtemp(), 't.db'); c = sqlite3.connect(db); c.execute('CREATE VIRTUAL TABLE t USING fts5(x)'); c.close(); print('FTS5 OK')"
 
       - name: PyInstaller 打包
         run: pyinstaller packaging/xsf.spec --noconfirm
+
+      - name: 便携版冒烟 (frozen office 链路)
+        shell: pwsh
+        run: |
+          python packaging/make_smoke_docx.py smoke.docx
+          dist/xsf-portable/xsf.exe add smoke.docx -c _ci_smoke
+          $out = dist/xsf-portable/xsf.exe search "冒烟" -c _ci_smoke | Out-String
+          if ($out -notmatch '条结果') { throw "frozen office 链路未命中: $out" }
 
       - name: 组装便携版 zip
         shell: pwsh

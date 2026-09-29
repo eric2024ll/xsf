@@ -2,7 +2,7 @@
 # 小書房 Windows 便携版打包 (PyInstaller onedir, 多入口共享 _internal)
 #
 # 构建 (Windows, 仓库根目录):
-#   pip install -e ".[desktop,build,mcp]"
+#   pip install -e ".[desktop,build,office,mcp]"
 #   pyinstaller packaging/xsf.spec --noconfirm
 # 产物: dist/xsf-portable/  (小書房.exe + xsf.exe + xsf-mcp.exe + _internal/)
 # 组装 zip: pwsh packaging/make_portable.ps1
@@ -35,7 +35,7 @@ def make_analysis(script: str):
         pathex=[str(root)],
         binaries=[],
         datas=extra_datas + pkg_datas,
-        hiddenimports=['pystray._win32'],
+        hiddenimports=['pystray._win32', 'anydoc'],
         hookspath=[],
         runtime_hooks=[],
         excludes=['tkinter', 'matplotlib', 'numpy', 'pytest'],

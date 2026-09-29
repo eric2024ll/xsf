@@ -196,7 +196,7 @@ def main():
 
     sub.add_parser('init', help='初始化数据库')
 
-    p_add = sub.add_parser('add', help='添加PDF')
+    p_add = sub.add_parser('add', help='添加 PDF / Word 文档')
     p_add.add_argument('file', help='PDF文件路径')
     p_add.add_argument('-c', '--collection', required=True, help='书架名')
     p_add.add_argument('--cite-key', help='关联 cite_key')
