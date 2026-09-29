@@ -40,7 +40,7 @@ from .bib_utils import (
 )
 from .ingest import (
     ingest_pdf, ingest_scanned_pdf, ingest_markdown, ingest_image,
-    remove_doc, _tokenize,
+    ingest_office, _OFFICE_EXTS, remove_doc, _tokenize,
 )
 from .reocr import (
     _reocr_lock, _reocr_jobs, _reocr_get, _reocr_set,
@@ -577,7 +577,8 @@ async def api_context(collection: str, doc_id: int, page: int,
 # ── 上传 ──────────────────────────────────────────────
 
 _SUPPORTED_IMG_EXT = {'jpg', 'jpeg', 'png', 'webp', 'bmp', 'tiff', 'tif', 'gif'}
-_SUPPORTED_EXT = {'pdf', 'md', 'markdown'} | _SUPPORTED_IMG_EXT
+_OFFICE_EXT = {e.lstrip('.') for e in _OFFICE_EXTS}
+_SUPPORTED_EXT = {'pdf', 'md', 'markdown'} | _SUPPORTED_IMG_EXT | _OFFICE_EXT
 
 
 def _file_ext(filename: str) -> str:
@@ -619,10 +620,11 @@ async def api_add(
     ocr: bool = Form(False),
     source_tags: str = Form('["primary"]'),
 ):
-    """批量上传：支持 pdf / md / 图片（图片自动 OCR）。
+    """批量上传：支持 pdf / md / word / 图片（图片自动 OCR）。
 
     - pdf：born-digital 解析；ocr=True 则走 PaddleOCR-VL（前端默认勾选）
     - md/markdown：按段落解析入库（doc_type='markdown'）
+    - doc/docx/docm：anydoc 转 Markdown 入库（doc_type='office'）
     - 图片（jpg/png/...）：包成单页 PDF 后强制 OCR（doc_type='ocr'）
     - source_tags: JSON 数组字符串，如 '["primary","档案"]'
     返回 {status, results, skipped, errors}：
@@ -643,7 +645,7 @@ async def api_add(
             if ext not in _SUPPORTED_EXT:
                 errors.append({
                     "filename": fname,
-                    "error": f"不支持的类型 .{ext or '?'}（支持 pdf/md/图片）",
+                    "error": f"不支持的类型 .{ext or '?'}（支持 pdf/md/word/图片）",
                 })
                 continue
 
@@ -676,6 +678,8 @@ async def api_add(
                     ingest_func = ingest_scanned_pdf if ocr else ingest_pdf
                 elif ext in ('md', 'markdown'):
                     ingest_func = ingest_markdown
+                elif ext in _OFFICE_EXT:
+                    ingest_func = ingest_office
                 else:  # 图片：强制 OCR
                     ingest_func = ingest_image
 

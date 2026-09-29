@@ -26,7 +26,7 @@ import pymupdf
 
 from .config import get_collections_dir, get_upload_path, list_collections
 from .db import get_conn
-from .ingest import ingest_pdf, ingest_markdown
+from .ingest import ingest_pdf, ingest_markdown, ingest_office, _OFFICE_EXTS
 from .reocr import (
     _reocr_get, _reocr_jobs, _reocr_lock, _run_reocr_doc, pop_job,
     register_job,
@@ -34,7 +34,7 @@ from .reocr import (
 
 logger = logging.getLogger("xsf.scan")
 
-_SCAN_EXTS = {'.pdf', '.md', '.markdown'}
+_SCAN_EXTS = {'.pdf', '.md', '.markdown'} | _OFFICE_EXTS
 _IGNORE_SUFFIXES = ('.tmp', '.part', '.partial', '.crdownload', '.swp')
 MAX_OCR_ATTEMPTS = 3
 _DUP_REPORT_WINDOW = 3600   # mtime 距今小于此值的重复文件才报「跳过重复」(秒)
@@ -124,6 +124,9 @@ def _ingest_new(collection: str) -> tuple[list, list, list]:
             if f.suffix.lower() == '.pdf':
                 r = ingest_pdf(f, collection=collection)
                 r['ext'] = 'pdf'
+            elif f.suffix.lower() in _OFFICE_EXTS:
+                r = ingest_office(f, collection=collection)
+                r['ext'] = 'office'
             else:
                 r = ingest_markdown(f, collection=collection)
                 r['ext'] = 'md'

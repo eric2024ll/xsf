@@ -116,7 +116,7 @@ uvicorn xsf.api:app --host 0.0.0.0 --port 8090
 
 **文献操作 API**
 - `GET /collections/{c}/docs` 文献列表(简)　`/docs/query` 分页筛选
-- `POST /collections/{c}/add` 上传 (pdf/md/图片, 可 OCR)
+- `POST /collections/{c}/add` 上传 (pdf/md/word/图片, 可 OCR; word=doc/docx/docm 经 anydoc 转 Markdown)
 - `DELETE` / `PATCH /collections/{c}/doc/{id}` 删除 / 改元数据
 - `POST /collections/{c}/doc/{id}/link-pdf` 关联 PDF
 - `GET /collections/{c}/doc/{id}/content` 文献内容(页/块/行)

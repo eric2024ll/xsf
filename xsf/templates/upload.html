@@ -126,7 +126,7 @@
     <form class="upload-form" id="uploadForm">
       <div class="field">
         <label>文件（可多选：PDF / MD / 图片）</label>
-        <input type="file" id="fileInput" accept=".pdf,.md,.markdown,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.gif" multiple required>
+        <input type="file" id="fileInput" accept=".pdf,.md,.markdown,.doc,.docx,.docm,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.gif" multiple required>
         <div class="file-list" id="fileList"></div>
       </div>
       <div class="field">
@@ -237,7 +237,7 @@
 var currentCollection = {{ collection | tojson }};
 var _TAG_LABELS = {primary:'原始史料', secondary:'研究文献', reference:'工具书'};
 var _uploadTags = ['primary'];
-var _ACCEPT_EXT = new Set(['pdf','md','markdown','jpg','jpeg','png','webp','bmp','tif','tiff','gif']);
+var _ACCEPT_EXT = new Set(['pdf','md','markdown','doc','docx','docm','jpg','jpeg','png','webp','bmp','tif','tiff','gif']);
 
 function escapeHtml(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 function tagLabel(t){return _TAG_LABELS[t]||t;}

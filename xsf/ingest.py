@@ -281,6 +281,99 @@ def ingest_markdown(md_path: str | Path, collection: str,
     }
 
 
+_OFFICE_EXTS = {'.doc', '.docx', '.docm'}
+
+
+def _office_to_markdown(path: Path) -> str:
+    """anydoc 转 GitHub-Flavored Markdown（Word 三件套）。
+
+    import 优先（pyproject [office] 可选组），CLI 兜底（PATH 上的 anydoc），
+    两者皆无时报错引导安装；转换失败（加密/损坏/超大）抛 RuntimeError。
+    """
+    try:
+        import anydoc
+    except ImportError:
+        anydoc = None
+
+    if anydoc is not None:
+        try:
+            return anydoc.to_markdown(str(path))
+        except anydoc.ConvertError as e:
+            raise RuntimeError(f"anydoc 转换失败: {e}") from e
+
+    import shutil
+    import subprocess
+    cli = shutil.which('anydoc')
+    if not cli:
+        # systemd 服务 PATH 不含 ~/.local/bin (本机 anydoc CLI 安装位)
+        candidate = Path.home() / '.local' / 'bin' / 'anydoc'
+        if candidate.is_file():
+            cli = str(candidate)
+    if not cli:
+        raise RuntimeError(
+            "未安装 anydoc（Word 转换依赖）: "
+            "pip install firecrawl-anydoc 或将 anydoc CLI 加入 PATH")
+
+    try:
+        r = subprocess.run([cli, str(path)], capture_output=True,
+                           text=True, timeout=300)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("anydoc 转换超时 (300s)，文件过大或异常") from e
+    if r.returncode != 0:
+        msg = r.stderr.strip().removeprefix('anydoc:').strip() \
+            or f'退出码 {r.returncode}'
+        raise RuntimeError(f"anydoc 转换失败: {msg}")
+    return r.stdout
+
+
+def ingest_office(office_path: str | Path, collection: str,
+                  cite_key: str = None, title: str = None,
+                  author: str = None,
+                  source_tags: str = '["primary"]') -> dict:
+    """Word 文档（.doc/.docx/.docm）入库。anydoc 转 Markdown 后复用
+    ingest_markdown 的行/块管线（ingest_image 同款「转格式再复用」手法）。
+
+    doc_type='office'，page_count=1（无页概念），filename 记原文件名。
+    原文件照常存 uploads/；转换文本只进 DB 不落盘（2026-09-29 决策）。
+    """
+    import os
+    import tempfile
+
+    office_path = Path(office_path)
+    md_text = _office_to_markdown(office_path)
+
+    fd, tmp_md = tempfile.mkstemp(suffix='.md')
+    os.close(fd)
+    Path(tmp_md).write_text(md_text, encoding='utf-8')
+
+    try:
+        result = ingest_markdown(
+            tmp_md,
+            collection=collection,
+            cite_key=cite_key,
+            title=title or office_path.stem,
+            author=author,
+            source_tags=source_tags,
+        )
+        doc_id = result['doc_id']
+        conn = get_conn(collection)
+        try:
+            conn.execute(
+                "UPDATE documents SET filename = ?, doc_type = 'office' "
+                "WHERE id = ?",
+                (office_path.name, doc_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        result['filename'] = office_path.name
+        result['doc_type'] = 'office'
+    finally:
+        os.unlink(tmp_md)
+
+    return result
+
+
 def ingest_image(img_path: str | Path, collection: str,
                  cite_key: str = None, title: str = None,
                  author: str = None,
