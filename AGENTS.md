@@ -46,7 +46,7 @@ git push origin main              # agent 不自行 push, 报 hash 由用户手�
 
 ```bash
 cd ~/xsf
-.venv/bin/pip install -e .        # 仅依赖变更 (pyproject.toml 改了) 才需要
+.venv/bin/python -m pip install -e .   # 仅依赖变更 (pyproject.toml 改了) 才需要; 本机 venv 无 pip 二进制, 首次需 ensurepip 引导
 sudo systemctl restart xsf
 journalctl -u xsf -f              # 实时日志
 ```
@@ -289,7 +289,7 @@ curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/
 # === 本机 GPU 机 (标准) ===
 cd ~/xsf
 git add -A && git commit -m "<type>: <描述>"          # git 流程
-.venv/bin/pip install -e .                            # 依赖变更时
+.venv/bin/python -m pip install -e .                   # 依赖变更时
 .venv/bin/xsf init                                   # 初始化 DB
 .venv/bin/xsf add <pdf> -c <col>                     # born-digital PDF
 .venv/bin/xsf add <pdf> -c <col> --ocr               # 扫描件 OCR (PaddleOCR-VL)
