@@ -130,8 +130,8 @@ cd ~/xsf
 
 - **构建**: GitHub Actions `windows-portable` workflow (workflow_dispatch 手动触发, 或 push tag `v*` 自动构建并附 release)
 - **本地复现** (Windows + Python 3.12): `pip install -e ".[desktop,build,office,mcp]"` → `pyinstaller packaging/xsf.spec --noconfirm` → `pwsh packaging/make_portable.ps1`
-- **产物**: `dist/xsf-portable-win64-<ver>.zip` — `小書房.exe` (托盘 GUI, windowed) + `xsf.exe` (CLI) + `xsf-mcp.exe` 共享 `_internal/`, 附 `.env.example` / `README-使用说明.txt` / `add-to-path.bat`
-- **`.env` 加载**: `xsf/env.py` — 环境变量 > exe 旁 `.env` > exe 上级 `.env` ($XSF_ENV 显式指定); Linux systemd 部署不受影响 (只填缺失键)
+- **产物**: `dist/xsf-portable-win64-<ver>.zip` — `小書房.exe` (托盘 GUI, windowed) + `xsf.exe` (CLI) + `xsf-mcp.exe` 共享 `_internal/`, 附 `env.example.txt` / `README-使用说明.txt` / `add-to-path.bat`
+- **配置文件加载**: `xsf/env.py` — 环境变量 > `$XSF_ENV` 显式 > exe 旁 `.env`/`env.txt` > exe 上级 `.env`/`env.txt` > 包根 `.env`/`env.txt` (同级 `.env` 优先; `env.txt` 为 Windows 便携版通道——资源管理器无法手工建点开头文件名; 托盘菜单「编辑配置文件」可程序生成; Linux systemd 部署不受影响, 只填缺失键)
 - **托盘启动器**: `xsf/desktop.py` — 绑 127.0.0.1 (XSF_HOST 可改), 端口 8090 起顺延 (XSF_PORT), 单实例检测, pystray 托盘
 - **OCR**: 便携版不内置本地引擎, 走远程 provider (generic_http 内网 GPU / aistudio 云端)
 - **Word 上传**: 0.2.1 起内置 anydoc (Rust 核心随包, hiddenimports 收集), 便携版即传即转; CI 冒烟: `packaging/make_smoke_docx.py` → frozen exe add → search 断言

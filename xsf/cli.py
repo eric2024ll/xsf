@@ -216,8 +216,8 @@ def cmd_doctor(args):
             return '默认'
         if key in env_vals:
             if os.environ[key] == env_vals[key]:
-                return f'.env: {env_file}'
-            return '环境变量 (覆盖 .env)'
+                return f'配置: {env_file}'
+            return '环境变量 (覆盖配置文件)'
         return '环境变量'
 
     print(f'  XSF_DATA         = {get_data_dir()}  [{src("XSF_DATA")}]')
@@ -227,7 +227,7 @@ def cmd_doctor(args):
     except OSError as e:
         coll_dir = f'(不可达: {e})'
     print(f'  XSF_COLLECTIONS  = {coll_dir}  [{src("XSF_COLLECTIONS_DIR")}]')
-    print(f'  .env: {env_file or "未找到"}')
+    print(f'  配置文件: {env_file or "未找到 (.env / env.txt)"}')
 
     print('\n== 书架 (db/) ==')
     db_dir = get_db_dir()

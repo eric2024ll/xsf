@@ -19,7 +19,7 @@ foreach ($f in @('小書房.exe', 'xsf.exe', 'xsf-mcp.exe', '_internal')) {
 $version = (python -c "import importlib.metadata as m; print(m.version('xsf'))").Trim()
 $zip = Join-Path $repo "$DistDir/xsf-portable-win64-$version.zip"
 
-Copy-Item (Join-Path $repo '.env.example') $coll -Force
+Copy-Item (Join-Path $repo 'packaging/env.example.txt') $coll -Force
 Copy-Item (Join-Path $PSScriptRoot 'README-使用说明.txt') $coll -Force
 Copy-Item (Join-Path $PSScriptRoot 'add-to-path.bat') $coll -Force
 

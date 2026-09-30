@@ -17,7 +17,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-from .env import load_env
+from .env import find_env_file, load_env
 
 POLL_INTERVAL = 0.2
 START_TIMEOUT = 20.0
@@ -171,6 +171,47 @@ def _open_browser(url: str) -> None:
         pass  # headless / 无默认浏览器不致命, 服务照常
 
 
+def _edit_config(icon=None, _item=None):
+    """记事本打开配置文件; 不存在时从模板生成 (exe 旁 env.txt).
+
+    Windows 资源管理器无法手工创建点开头的文件名, 由程序代劳;
+    env 仅进程启动时读取, 保存后需重启小書房生效.
+    """
+    path = find_env_file()
+    if path is None:
+        base = (Path(sys.executable).parent
+                if getattr(sys, 'frozen', False)
+                else Path(__file__).resolve().parents[1])
+        path = base / ('env.txt' if os.name == 'nt' else '.env')
+        template = base / 'env.example.txt'
+        try:
+            content = (template.read_text('utf-8')
+                       if template.is_file()
+                       else ('# 小書房配置 (保存后重启小書房生效)\n'
+                             '# XSF_DATA=D:\\my-xsf\n'
+                             '# XSF_HOST=127.0.0.1\n'
+                             '# XSF_PORT=8090\n'))
+            path.write_text(content, encoding='utf-8')
+        except OSError as e:
+            _alert(f'配置文件无法创建: {e}')
+            return
+    _log(f'编辑配置文件: {path}')
+    try:
+        if os.name == 'nt':
+            os.startfile(path, 'edit')          # 关联编辑器 (默认记事本)
+        else:
+            import subprocess
+            subprocess.Popen(['xdg-open', str(path)])
+    except OSError as e:
+        _alert(f'无法打开编辑器: {e}\n配置文件位于: {path}')
+        return
+    try:
+        if icon is not None:
+            icon.notify('保存后请退出并重新启动小書房生效', '配置文件')
+    except Exception:
+        pass  # notify 不可用不致命
+
+
 def _run_tray(server, url: str) -> None:
     """托盘常驻; 托盘不可用 (无 pystray / 无显示后端) 时退化为阻塞等待."""
     icon = None
@@ -186,6 +227,7 @@ def _run_tray(server, url: str) -> None:
 
         menu = pystray.Menu(
             pystray.MenuItem(f'打开小書房 ({url})', _open, default=True),
+            pystray.MenuItem('编辑配置文件 (保存后重启生效)', _edit_config),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('退出', _quit),
         )

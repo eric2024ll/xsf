@@ -14,8 +14,12 @@
    个端口并各用各的浏览器页面 —— 浏览器停着旧地址时看到的不是新实例,
    书架列表对不上请跑 xsf doctor 对比各端口。
 
-【配置 (.env)】
-- 想改数据目录: 复制 .env.example 为 .env, 放在本目录, 按注释修改
+【配置 (env.txt)】
+- 想改数据目录等配置: 复制本目录的 env.example.txt, 改名为 env.txt,
+  去掉要用的行前面的 # 并修改, 重启小書房生效
+- 或直接用托盘菜单「编辑配置文件」: 自动生成 env.txt 并用记事本打开
+- (Windows 资源管理器不允许改名为点开头的 .env, 故用 env.txt;
+  .env 也认, 效果相同)
 - XSF_DATA=D:\my-xsf    → 数据目录 (默认 %USERPROFILE%\xsf-data)
 - XSF_HOST=0.0.0.0      → 允许局域网访问 (需自行放行 Windows 防火墙, 有安全风险)
 - XSF_PORT=8090         → 起始端口
