@@ -49,7 +49,7 @@ from .reocr import (
 from .folder_scan import get_scan_status, start_scan_threads, shutdown_scan
 from .suspect import detect_suspect
 
-_VERSION = "0.2.1"
+_VERSION = "0.2.2"
 
 _BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))

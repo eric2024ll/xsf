@@ -35,6 +35,13 @@ jobs:
           $out = dist/xsf-portable/xsf.exe search "冒烟" -c _ci_smoke | Out-String
           if ($out -notmatch '条结果') { throw "frozen office 链路未命中: $out" }
 
+      - name: 便携版 doctor 自检 (frozen 可跑性)
+        shell: pwsh
+        run: |
+          $out = dist/xsf-portable/xsf.exe doctor | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "doctor 退出码 $LASTEXITCODE" }
+          Write-Host $out
+
       - name: 组装便携版 zip
         shell: pwsh
         run: pwsh packaging/make_portable.ps1
