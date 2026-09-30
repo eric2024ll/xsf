@@ -1,6 +1,6 @@
 # AGENTS.md — xsf
 
-> histflow-plan / pqa 设计的代码落地仓库. 本文件定义**本机 GPU 机开发 + 部署一体**的标准流程 (WSL / 阿里云为备用).
+> histflow-plan / pqa 设计的代码落地仓库. 本文件定义**本机 GPU 机开发 + 部署一体**的标准流程 (WSL 为备用).
 > 设计依据: pqa `design/client/14-ocr-pipeline.md`（2026-09-19 自 histflow-plan 移交，mem vault 内路径 `/mnt/d/workspace/mem/pqa/`）
 
 ## 项目定位
@@ -18,15 +18,15 @@ xsf 是史学研究工具链的**感知层上游**——把 PDF 变成可检索�
 | **本机 GPU 机 (标准)** | `~/xsf/` | **开发 + 部署一体**: 写代码、git commit/push、systemd 常驻 Web (:8090) + 本地 OCR (:8091) |
 | **GitHub** | `git@github.com:eric2024ll/xsf.git` (私有, SSH) | 版本控制中转 |
 | **WSL 开发机 (备用)** | `~/projects/xsf/` | 备用开发环境, 改动经 GitHub 同步 |
-| **阿里云服务器 (可选)** | `root@47.93.199.96:~/xsf/` | 实测、OCR 跑批 |
 
 > 2026-08-15 由 `jiage` 全面改名 `xsf`. GitHub 旧 URL 自动 redirect;
-> WSL `~/projects/jiage/` 与阿里云 `~/jiage/` 尚待各自迁移 (见 §改名记录).
+> WSL `~/projects/jiage/` 尚待迁移 (见 §改名记录).
+> 2026-09-30 阿里云服务器已退租停用, 云部署叙事移除 (OCR aistudio 云端 provider 不受影响).
 
 ## 本机标准流程 (开发 + 部署一体)
 
 > **2026-08-21 用户裁定**: 本机 GPU 机 (`~/xsf/`) 为标准开发部署环境,
-> 写代码、commit、push、重启服务全在本机完成; WSL 与阿里云降为辅助.
+> 写代码、commit、push、重启服务全在本机完成; WSL 降为辅助.
 
 - **代码**: `~/xsf/` (git clone, venv 同目录, 标准 pip venv)
 - **Web**: systemd `xsf.service` — `uvicorn xsf.api:app --host 0.0.0.0 --port 8090`, `EnvironmentFile=/home/eric/xsf/.env`
@@ -88,12 +88,6 @@ cd ~/projects/xsf
 # 本机开发模式 (auto-reload, 停 systemd 后用)
 cd ~/xsf
 .venv/bin/uvicorn xsf.api:app --reload --port 8090
-
-# 阿里云服务器 (绑外网)
-cd ~/xsf
-source .venv/bin/activate
-uvicorn xsf.api:app --host 0.0.0.0 --port 8090
-# → 浏览器访问 http://47.93.199.96:8090
 ```
 
 端点 (按功能分组，`{c}` = collection):
@@ -143,142 +137,14 @@ uvicorn xsf.api:app --host 0.0.0.0 --port 8090
 - **Word 上传**: 0.2.1 起内置 anydoc (Rust 核心随包, hiddenimports 收集), 便携版即传即转; CI 冒烟: `packaging/make_smoke_docx.py` → frozen exe add → search 断言
 - **数据迁移**: Web 导出/导入归档, 或 `scripts/collection_io.py`
 
-## 阿里云服务器部署 (可选: 实测/OCR 跑批)
-
-> **服务器**: `47.93.199.96` (阿里云轻量 2核4G)
-> **Python**: 3.12.3 (`/usr/bin/python3`, **仅 python3 无 python**), pip 24.0
-
-### 首次设置 (一次性)
-
-```bash
-# 1. SSH 登录 (如非 root 用户请替换)
-ssh root@47.93.199.96
-
-# 2. 配置 GitHub SSH key (如未配置)
-ssh-keygen -t ed25519 -C "xsf-server"
-cat ~/.ssh/id_ed25519.pub
-# → 复制输出, 添加到 GitHub → Settings → SSH and GPG keys → New SSH key
-
-# 3. clone 仓库
-cd ~ && git clone git@github.com:eric2024ll/xsf.git
-
-# 4. 创建 venv + 安装
-cd ~/xsf
-sudo apt install python3.12-venv -y    # Debian/Ubuntu 前置依赖 (ensurepip)
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-
-# 5. 配置 OSS 数据存储 (collections 上 OSS, xsf.db 留本地)
-#    uploads 按书架分目录, 程序会自动创建 <collections>/{书架}/uploads/, 这里只建根目录
-mkdir -p /mnt/oss/sources/xsf/collections
-echo 'export XSF_COLLECTIONS_DIR=/mnt/oss/sources/xsf/collections' >> ~/.bashrc
-source ~/.bashrc
-
-# 6. 验证安装
-xsf init       # 初始化 ~/xsf-data/ 目录结构
-xsf stats      # 应显示空库
-```
-
-### 日常更新 (本地 push 后)
-
-```bash
-# 1. 服务器拉取最新代码
-ssh root@47.93.199.96
-cd ~/xsf && git pull origin main
-
-# 2. 依赖变更时重新安装 (pyproject.toml 改了才需要)
-source .venv/bin/activate
-pip install -e .
-
-# 3. 重启 systemd 服务
-systemctl restart xsf
-
-# 4. 查看日志
-journalctl -u xsf -f
-```
-
-### systemd 服务部署 (推荐)
-
-> 用 systemd 管理 uvicorn 进程，实现开机自启 + 崩溃自动重启.
-
-#### 1. 创建服务文件
-
-```bash
-cat > /etc/systemd/system/xsf.service << 'EOF'
-[Unit]
-Description=xsf Web Service
-After=network.target ossfs2-sources.service
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root/xsf
-EnvironmentFile=/root/xsf/.env
-ExecStart=/root/xsf/.venv/bin/uvicorn xsf.api:app --host 0.0.0.0 --port 8090
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-#### 2. 创建 .env 文件 (chmod 600)
-
-```bash
-cat > /root/xsf/.env << 'EOF'
-XSF_COLLECTIONS_DIR=/mnt/oss/sources/xsf/collections
-EOF
-chmod 600 /root/xsf/.env
-```
-
-> **⚠ DB 存储位置**: xsf.db 必须在**本地磁盘** (`XSF_DB_DIR`, 默认 `~/xsf-data/db/`),
-> 不能放 OSS (ossfs 不支持 SQLite 文件锁, 会报 `disk I/O error`).
-
-#### 3. 部署命令
-
-```bash
-# 首次
-systemctl daemon-reload
-systemctl enable xsf
-systemctl start xsf
-systemctl status xsf          # 确认 active (running)
-
-# 查看日志
-journalctl -u xsf -f          # 实时跟踪
-journalctl -u xsf --since "1 hour ago"  # 最近1小时
-
-# 更新代码后
-cd /root/xsf && git pull origin main && .venv/bin/pip install -e .
-systemctl restart xsf
-
-# 停止/启动
-systemctl stop xsf
-systemctl start xsf
-```
-
-#### 4. 验证
-
-```bash
-# 直接访问 / 返回 200 (本地客户端, 无认证)
-curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/
-```
-
-### OCR 实测注意事项
-
-- OCR provider 两种类型（Web「OCR 设置」添加）: `generic_http`（本地 GPU 服务 `~/paddleocr-vl/server.py` :8091 或任意兼容 API）/ `aistudio`（内置云端三阶段, 只填 token）
-- 无 provider 时上传 OCR 会报友好错误（引导去 OCR 设置页）
-- 网络错误/5xx 自动指数退避, 整体重试 MAX 3 次
-- **样本来源**: `~/projects/两岸近代三交资料与研究/` 下的史料 PDF (需上传到服务器, 或用服务器上已有的 PDF)
 
 ## 环境变量
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
 | `XSF_DATA` | 可选 | 数据根目录, 默认 `~/xsf-data/` |
-| `XSF_DB_DIR` | 可选 | **数据库目录(本地磁盘!)**, 默认 `XSF_DATA/db/`. ossfs 不支持 SQLite 文件锁, 服务器上**不要**指向 OSS |
-| `XSF_COLLECTIONS_DIR` | 可选 | 源文件+上传目录, 默认 `XSF_DATA/collections/`; 服务器指向 OSS `/mnt/oss/sources/xsf/collections/` |
+| `XSF_DB_DIR` | 可选 | **数据库目录(本地磁盘!)**, 默认 `XSF_DATA/db/`. 不要指向网络文件系统 (NFS/ossfs 不支持 SQLite 文件锁) |
+| `XSF_COLLECTIONS_DIR` | 可选 | 源文件+上传目录, 默认 `XSF_DATA/collections/`; 本机 NAS 部署指向 `/mnt/nas/xsf-collections` |
 | `XSF_OCR_METHOD` | 可选 | 默认 OCR provider id (匹配 ocr-config.json). 未设则取配置文件 default > 首个 provider |
 | `XSF_SCAN_INTERVAL` | 可选 | 文件夹扫描轮询间隔秒, 默认 120, `0` 关闭. PDF/MD 丢进 `{书架}/uploads/` 自动入库 |
 | `XSF_SCAN_STABLE_SEC` | 可选 | 文件稳定阈值秒 (默认 60), mtime 距今小于此值视为仍在写入, 下轮再收 |
@@ -298,6 +164,7 @@ git add -A && git commit -m "<type>: <描述>"          # git 流程
 .venv/bin/xsf context <doc_id> <page> <block>        # 查看上下文
 .venv/bin/xsf remove <doc_id>                        # 删除文献
 .venv/bin/xsf stats                                  # 统计
+.venv/bin/xsf doctor                                 # 环境自检: 数据目录/书架一致性/孤儿/多实例
 sudo systemctl restart xsf                           # 部署重启
 journalctl -u xsf -f                                 # 实时日志
 
@@ -305,11 +172,6 @@ journalctl -u xsf -f                                 # 实时日志
 cd ~/projects/xsf
 uv pip install -e .                                  # 安装/更新依赖
 # 其余命令同上 (先 .venv/bin/activate 或用全路径)
-
-# === 阿里云服务器 (可选) ===
-ssh root@47.93.199.96
-cd ~/xsf && git pull origin main && .venv/bin/pip install -e .
-systemctl restart xsf
 ```
 
 ## 改名记录 (2026-08-15)
@@ -326,7 +188,6 @@ systemctl restart xsf
 
 **遗留 follow-up**:
 - [ ] WSL 开发机: `mv ~/projects/jiage ~/projects/xsf` + 改 remote + 重建 venv
-- [ ] 阿里云服务器: `~/jiage` 迁移 + systemd unit 更名 + OSS 路径迁移
 - [ ] 旧数据目录 `~/jiage-data`、`~/xiaoshufang` 确认后清理
 
 ## Notes for the LLM
