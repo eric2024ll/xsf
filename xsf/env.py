@@ -26,7 +26,24 @@ def _candidate_paths() -> list[Path]:
         cands.append(exe_dir.parent / '.env')
     except (OSError, RuntimeError):
         pass
+    # venv console_script 的 sys.executable 是 python 解释器而非入口脚本,
+    # 上两级到不了仓库根; 用包位置兜底 (源码运行 = 仓库根, frozen = _internal)
+    try:
+        cands.append(Path(__file__).resolve().parents[1] / '.env')
+    except (OSError, RuntimeError):
+        pass
     return cands
+
+
+def find_env_file() -> Path | None:
+    """返回第一个实际存在的候选 .env 路径 (无则 None). 供 doctor 标注配置来源."""
+    for p in _candidate_paths():
+        try:
+            if p.is_file():
+                return p
+        except (OSError, RuntimeError):
+            pass
+    return None
 
 
 def load_env() -> dict:

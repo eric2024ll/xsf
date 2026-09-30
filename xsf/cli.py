@@ -3,7 +3,10 @@ import json
 import sys
 from pathlib import Path
 
-from .config import get_data_dir, get_collections_dir, list_collections
+from .config import (
+    get_data_dir, get_collections_dir, list_collections,
+    validate_collection_name,
+)
 from .db import init_db, get_conn
 from .ingest import (
     ingest_pdf, ingest_scanned_pdf, ingest_office, _OFFICE_EXTS, remove_doc,
@@ -24,6 +27,10 @@ def cmd_init(args):
 
 
 def cmd_add(args):
+    err = validate_collection_name(args.collection)
+    if err:
+        print(f'错误: 书架名不合法: {err}', file=sys.stderr)
+        sys.exit(1)
     pdf_path = Path(args.file)
     if not pdf_path.exists():
         print(f'错误: 文件不存在: {pdf_path}', file=sys.stderr)
@@ -178,6 +185,108 @@ def cmd_stats(args):
           f'{total_lines} 文本行')
 
 
+def cmd_doctor(args):
+    """环境自检: 数据目录来源 / 书架与 DB 一致性 / 孤儿目录 / 多实例对比.
+
+    便携版多入口 (小書房.exe GUI / xsf.exe CLI) 与双实例 (端口顺延) 场景下,
+    书架「消失」多因数据目录分裂或孤儿目录; 本命令 30 秒定案.
+    """
+    import os
+    import socket
+    import urllib.request
+
+    from .config import get_db_dir, find_orphan_collections
+    from .env import find_env_file
+
+    print('== 数据目录 ==')
+    env_file = find_env_file()
+    env_vals = {}
+    if env_file:
+        try:
+            for raw in env_file.read_text('utf-8').splitlines():
+                line = raw.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    k, _, v = line.partition('=')
+                    env_vals[k.strip()] = v.strip()
+        except (OSError, UnicodeDecodeError):
+            env_vals = {}
+
+    def src(key: str) -> str:
+        if key not in os.environ:
+            return '默认'
+        if key in env_vals:
+            if os.environ[key] == env_vals[key]:
+                return f'.env: {env_file}'
+            return '环境变量 (覆盖 .env)'
+        return '环境变量'
+
+    print(f'  XSF_DATA         = {get_data_dir()}  [{src("XSF_DATA")}]')
+    print(f'  XSF_DB_DIR       = {get_db_dir()}  [{src("XSF_DB_DIR")}]')
+    try:
+        coll_dir = get_collections_dir()
+    except OSError as e:
+        coll_dir = f'(不可达: {e})'
+    print(f'  XSF_COLLECTIONS  = {coll_dir}  [{src("XSF_COLLECTIONS_DIR")}]')
+    print(f'  .env: {env_file or "未找到"}')
+
+    print('\n== 书架 (db/) ==')
+    db_dir = get_db_dir()
+    known = list_collections()
+    if not known:
+        print('  (无)')
+    for c in known:
+        try:
+            size = (db_dir / c / 'xsf.db').stat().st_size
+        except OSError:
+            size = -1
+        print(f'  {c}  {size} 字节')
+    try:
+        db_orphans, dir_orphans = find_orphan_collections()
+    except OSError as e:
+        db_orphans, dir_orphans = [], []
+        print(f'  ! 孤儿目录探测失败 (目录不可达): {e}')
+    for c in db_orphans:
+        print(f'  ! 孤儿 DB 目录 (无有效 xsf.db, 列表不显示): {c}')
+    for c in dir_orphans:
+        print(f'  ! 投放孤儿 (collections/ 有目录无 DB, 文件不会被自动入库): {c}')
+
+    print('\n== 服务实例 (127.0.0.1 本机端口) ==')
+    try:
+        base = int(os.environ.get('XSF_PORT', '8090'))
+    except ValueError:
+        base = 8090
+    local = set(known)
+    found = False
+    for port in range(base, base + 10):
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=0.3):
+                pass
+        except OSError:
+            continue
+        found = True
+        try:
+            url = f'http://127.0.0.1:{port}/api/collections'
+            with urllib.request.urlopen(url, timeout=2) as r:
+                remote = set(json.loads(r.read()).get('collections', []))
+        except Exception as e:
+            print(f'  :{port} 在监听, 但 /api/collections 不可达 ({e})')
+            continue
+        if remote == local:
+            print(f'  :{port} 书架与本机 db/ 一致 ({len(remote)} 个)')
+        else:
+            print(f'  ! :{port} 与本机 db/ 不一致 (该实例用了别的数据目录)')
+            for c in sorted(remote - local):
+                print(f'      仅该实例有: {c}')
+            for c in sorted(local - remote):
+                print(f'      仅本机 db/ 有: {c}')
+    if not found:
+        print(f'  ({base}~{base + 9} 无监听, 服务未启动)')
+
+    if db_orphans or dir_orphans:
+        print('\n提示: 孤儿目录可在 Web 书架页用同名新建书架修复 (自动补建 DB);'
+              ' 投放孤儿修复后 folder_scan 下一周期即自动认领 uploads/ 文件')
+
+
 def main():
     # 便携版/桌面版: 从 exe 旁 .env 补缺失环境变量 (已有环境变量优先)
     from .env import load_env
@@ -232,12 +341,14 @@ def main():
     p_rm.add_argument('-c', '--collection', required=True, help='书架名')
 
     sub.add_parser('stats', help='统计信息')
+    sub.add_parser('doctor', help='环境自检: 数据目录/书架一致性/孤儿目录/多实例')
 
     args = parser.parse_args()
 
     dispatch = {
         'init': cmd_init, 'add': cmd_add, 'search': cmd_search,
         'context': cmd_context, 'remove': cmd_remove, 'stats': cmd_stats,
+        'doctor': cmd_doctor,
     }
     fn = dispatch.get(args.command)
     if fn:

@@ -14,11 +14,10 @@ def get_data_dir() -> Path:
 
 
 def get_db_dir() -> Path:
-    """数据库目录（本地磁盘）。
+    """数据库目录（必须本地磁盘）。
 
-    ossfs 不支持 SQLite 文件锁+随机写，xsf.db 必须留本地磁盘。
+    网络文件系统 (NFS/ossfs) 不支持 SQLite 文件锁+随机写，xsf.db 必须留本地磁盘。
     XSF_DB_DIR 环境变量 → 默认 XSF_DATA/db/。
-    服务器上保持 ~/xsf-data/db/，不要指向 OSS。
     """
     d = Path(os.environ.get('XSF_DB_DIR', str(get_data_dir() / 'db')))
     d.mkdir(parents=True, exist_ok=True)
@@ -44,10 +43,63 @@ def list_collections() -> list[str]:
     return result
 
 
-def get_collections_dir() -> Path:
-    """书架目录（源文件/uploads）。可通过 XSF_COLLECTIONS_DIR 指向 OSS（服务器）。
+# 路径分隔符 (跨平台) + Windows 保留 + URL/cookie 层风险字符 (# % & + 会让
+# /collections/{名}/... 链接与 last_collection cookie 出现截断/解码错乱)
+_COLL_FORBIDDEN = set('/\\:*?"<>|#%&+')
 
-    默认 XSF_DATA/collections/（本地）；服务器设 /mnt/oss/sources/xsf/collections/。
+
+def validate_collection_name(name: str) -> str | None:
+    """校验书架名. 合法返回 None; 非法返回中文错误消息.
+
+    Web (POST/PATCH /api/collections) 与 CLI (add) 共用,
+    防 AI/脚本建出链接层打不开或文件系统层歧义的书架名
+    (如含 # 的名字入库正常但书架页 404).
+    """
+    raw = name or ''
+    if not raw.strip():
+        return '名称不能为空'
+    if raw != raw.strip():
+        return '名称首尾不能含空白'
+    if len(raw) > 64:
+        return '名称过长（最多 64 字符）'
+    if raw in ('.', '..'):
+        return '名称不能为 . 或 ..'
+    bad = sorted(set(raw) & _COLL_FORBIDDEN)
+    if bad:
+        return f'名称包含非法字符: {"".join(bad)}'
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        return '名称包含控制字符'
+    return None
+
+
+def find_orphan_collections() -> tuple[list[str], list[str]]:
+    """探测两类「消失的书架」. 返回 (db_orphans, dir_orphans):
+
+    - db_orphans: db/ 下有目录但 xsf.db 缺失或 0 字节 → list_collections
+      跳过 → 书架列表看不到 (常为删除残留或创建中断)
+    - dir_orphans: collections/ 下有书架目录但 db/ 无对应 DB →
+      folder_scan 只扫已有 DB 的书架, 投放文件永不入库且无任何提示
+      (# 开头如 NAS 回收站 #recycle、. 开头隐藏目录不算)
+    """
+    known = set(list_collections())
+    db_dir = get_db_dir()
+    db_orphans = sorted(
+        c.name for c in db_dir.iterdir()
+        if c.is_dir() and c.name not in known
+    )
+    coll_dir = get_collections_dir()
+    dir_orphans = sorted(
+        c.name for c in coll_dir.iterdir()
+        if c.is_dir() and c.name not in known
+        and not c.name.startswith(('#', '.'))
+    )
+    return db_orphans, dir_orphans
+
+
+def get_collections_dir() -> Path:
+    """书架目录（源文件/uploads）。可通过 XSF_COLLECTIONS_DIR 指向 NAS 等外部存储。
+
+    默认 XSF_DATA/collections/（本地）；本机 NAS 部署用 /mnt/nas/xsf-collections/。
     注意: xsf.db 不放这里，放 get_db_dir()（本地磁盘）。
     """
     d = Path(os.environ.get('XSF_COLLECTIONS_DIR', str(get_data_dir() / 'collections')))

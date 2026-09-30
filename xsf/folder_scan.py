@@ -24,7 +24,10 @@ from pathlib import Path
 
 import pymupdf
 
-from .config import get_collections_dir, get_upload_path, list_collections
+from .config import (
+    get_collections_dir, get_upload_path, list_collections,
+    find_orphan_collections,
+)
 from .db import get_conn
 from .ingest import ingest_pdf, ingest_markdown, ingest_office, _OFFICE_EXTS
 from .reocr import (
@@ -204,8 +207,36 @@ def _enqueue_ocr(collection: str, pending: list) -> None:
         _queue_cond.notify_all()
 
 
+_orphan_warned: set = set()            # 已警告过的投放孤儿 (集合变化时才再报)
+
+
+def _warn_orphan_dirs() -> None:
+    """collections/ 下有目录但无 DB → 投放永不入库且原本无任何提示.
+
+    每扫描周期探测, 集合变化时 warning (首次出现/全部消失), 避免刷屏.
+    """
+    try:
+        _, dir_orphans = find_orphan_collections()
+    except Exception as e:
+        logger.debug("孤儿目录探测失败: %s", e)
+        return
+    current = set(dir_orphans)
+    if current == _orphan_warned:
+        return
+    if current:
+        logger.warning(
+            "发现投放孤儿目录 (无对应书架 DB, uploads/ 文件不会被入库): %s; "
+            "请在 Web 书架页用同名新建书架修复", ', '.join(sorted(current)))
+    elif _orphan_warned:
+        logger.info("投放孤儿目录已全部修复: %s",
+                    ', '.join(sorted(_orphan_warned)))
+    _orphan_warned.clear()
+    _orphan_warned.update(current)
+
+
 def _scan_cycle() -> None:
     ocr_enabled = _env_int('XSF_SCAN_OCR', 1) != 0
+    _warn_orphan_dirs()
     for coll in list_collections():
         new_records, errors, dups = _ingest_new(coll)
         pending = _pending_ocr(coll)

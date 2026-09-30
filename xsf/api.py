@@ -28,7 +28,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import (
     get_collections_dir, get_upload_dir, get_upload_path,
-    list_collections, get_db_path,
+    list_collections, get_db_path, validate_collection_name,
 )
 from .db import init_db, get_conn
 from .search import (search, search_grouped, count_hits, get_block_lines,
@@ -185,15 +185,13 @@ async def api_collections():
 @app.post("/api/collections/{collection}")
 async def api_create_collection(collection: str):
     """创建新书架: 初始化 DB."""
-    name = (collection or "").strip()
-    if not name:
-        return JSONResponse({"error": "名称不能为空"}, status_code=400)
-    if "/" in name or "\\" in name or name in (".", ".."):
-        return JSONResponse({"error": "名称包含非法字符"}, status_code=400)
-    if name in list_collections():
+    err = validate_collection_name(collection)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    if collection in list_collections():
         return JSONResponse({"error": "书架已存在"}, status_code=409)
-    init_db(name)
-    return {"ok": True, "name": name}
+    init_db(collection)
+    return {"ok": True, "name": collection}
 
 
 @app.delete("/api/collections/{collection}")
@@ -233,10 +231,9 @@ async def api_rename_collection(
     已不存在的书架。
     """
     new_name = (new_name or "").strip()
-    if not new_name:
-        return JSONResponse({"error": "新名称不能为空"}, status_code=400)
-    if "/" in new_name or "\\" in new_name or new_name in (".", ".."):
-        return JSONResponse({"error": "名称包含非法字符"}, status_code=400)
+    err = validate_collection_name(new_name)
+    if err:
+        return JSONResponse({"error": f"新{err}"}, status_code=400)
     if collection not in list_collections():
         return JSONResponse({"error": "书架不存在"}, status_code=404)
     if new_name in list_collections():
