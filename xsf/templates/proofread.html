@@ -291,33 +291,48 @@ body.focus-mode .top-nav,
 body.focus-mode .page-nav,
 body.focus-mode .cards-group { display: none; }
 
-/* ── 卡片组 (2026-10-17 整合裁定: 四卡+队列内嵌文本页) ── */
+/* ── 文本面板 tab (2026-10-17: 全文/元数据/目录/实体/摘要 并列切换) ── */
+.tp-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.tp-tab {
+  padding: 6px 14px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.86rem;
+  color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.tp-tab:hover { color: var(--text); }
+.tp-tab.on {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  font-weight: 600;
+}
+.tp-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  display: inline-block;
+}
+.tp-dot.reviewed { background: #2a9d8f; }
+.tp-dot.draft { background: #f59e0b; }
+.tp-pane { display: none; }
+.tp-pane.on { display: block; }
+.cg-head { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.cg-title { font-weight: 600; font-size: 0.88rem; }
+/* 卡片组容器 (候选队列, 全文 tab 底部) */
 .cards-group {
   border-top: 2px solid var(--border);
   margin-top: 10px;
   padding-top: 4px;
 }
-.card-sec {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--card-bg, #fff);
-  margin: 8px 0;
-  padding: 0 12px;
-}
-.card-sec > summary {
-  cursor: pointer;
-  padding: 9px 0;
-  font-weight: 600;
-  font-size: 0.9rem;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  list-style: none;
-  user-select: none;
-}
-.card-sec > summary::-webkit-details-marker { display: none; }
-.card-sec > summary::before { content: '▸'; color: var(--text-muted); transition: transform .15s; }
-.card-sec[open] > summary::before { transform: rotate(90deg); }
 .cg-hint { font-weight: 400; font-size: 0.72rem; color: var(--text-muted); }
 .toc-table, .cand-table {
   width: 100%;
@@ -918,12 +933,23 @@ mark {
       </div>
     </div>
     {% endif %}
-    <div class="text-actions">
+
+    {#- ── 文本面板 tab (2026-10-17 裁定: 元数据/目录/实体/摘要与全文并列切换) ── -#}
+    {% set toc = cards_map.get('toc', {'content': {}, 'status': None}) %}
+    {% set entity = cards_map.get('entity', {'content': {}, 'status': None}) %}
+    {% set summ = cards_map.get('summary', {'content': {}, 'status': None}) %}
+    <div class="tp-tabs" id="tpTabs">
+      <button class="tp-tab on" data-pane="text" onclick="switchTP('text')">全文</button>
+      <button class="tp-tab" data-pane="meta" onclick="switchTP('meta')">元数据</button>
+      <button class="tp-tab" data-pane="toc" onclick="switchTP('toc')">目录{% if toc.status %}<span class="tp-dot {{ toc.status }}" title="{{ toc.status }}"></span>{% endif %}</button>
+      <button class="tp-tab" data-pane="entity" onclick="switchTP('entity')">实体{% if entity.status %}<span class="tp-dot {{ entity.status }}" title="{{ entity.status }}"></span>{% endif %}</button>
+      <button class="tp-tab" data-pane="summary" onclick="switchTP('summary')">摘要{% if summ.status %}<span class="tp-dot {{ summ.status }}" title="{{ summ.status }}"></span>{% endif %}</button>
+    </div>
+    <div class="text-actions" id="textActions">
       <span class="ta-title">识别文本</span>
       <span id="langBadge" class="lang-badge{{ ' tri' if (doc_rows and doc_rows >= 3) else '' }}">{{ (doc_lang ~ (doc_rows ~ '行') if (doc_rows and doc_rows >= 3 and doc_lang != 'zh') else '') if (doc_rows and doc_rows >= 3) else '' }}</span>
       <button class="reocr-btn" id="smartCheckBtn" onclick="runSmartCheck()" title="双通道对照校对（存量 OCR vs 第二引擎/人工录入）">智能校对</button>
       <input type="text" id="basisInput" placeholder="修订依据（选填）" style="width:150px; padding:2px 8px; font-size:12px; border:1px solid var(--border,#ccc); border-radius:4px; color:var(--text-muted,#666);" title="选填，随本次编辑附注到修订史；可随时在修订史中补填或修改">
-      <button onclick="openRevLog()" style="padding:2px 10px; font-size:12px; cursor:pointer; border:1px solid var(--border,#ccc); border-radius:4px; background:var(--bg-secondary,#f5f5f5);" title="本文修订记录（补依据/入包勾选）">修订史</button>
       {% if doc_rows and doc_rows >= 3 %}<button id="autofillBtn" onclick="autofillDraft()" style="padding:2px 10px; font-size:12px; cursor:pointer; border:1px solid #f59e0b; border-radius:4px; background:#fffbeb; color:#92400e;" title="翻译大模型生成本页词对照/译文草稿（落库标 AI, 人工修订后标记自动清除）">AI 填充</button>{% endif %}
       <span class="save-status" id="saveStatus"></span>
       <div class="ta-menu-wrap">
@@ -939,6 +965,7 @@ mark {
         </div>
       </div>
     </div>
+    <div class="tp-pane on" data-pane="text" id="paneText">
     <div id="pageText" class="page-text" contenteditable="true" oninput="onPageEdit()">
 {%- if doc_rows and doc_rows >= 3 %}
 {#- P2 行制: 3=三行(拉丁化原文/词对照/译文); 4=四行(原语/拉丁转写/词对照/译文) -#}
@@ -958,74 +985,10 @@ mark {
 {%- endif %}
     </div>
 
-    {#- ── 卡片组 (2026-10-17 整合裁定: 四卡+候选队列内嵌文本页, 默认折叠) ── -#}
-    {% set toc = cards_map.get('toc', {'content': {}, 'status': None}) %}
-    {% set entity = cards_map.get('entity', {'content': {}, 'status': None}) %}
-    {% set summ = cards_map.get('summary', {'content': {}, 'status': None}) %}
     <div class="cards-group" id="cardsGroup">
-      <details class="card-sec">
-        <summary>元数据（书目）<span class="cg-hint">与全库文献信息同一数据源</span></summary>
-        <div class="doc-tags" id="docTags"></div>
-        <div id="proofBibPanel"></div>
-      </details>
-      <details class="card-sec">
-        <summary>目录卡{% if toc.status %} <span class="badge {{ toc.status }}">{{ toc.status }}</span>{% endif %}<span class="cg-hint">人工修订后标记 reviewed 进检索</span></summary>
-        {% if toc.content.get('nodes') %}
-        <table class="toc-table">
-          <tr><th>节点</th><th>类目</th><th>页</th><th>来源</th><th></th></tr>
-          {% for n in toc.content.get('nodes', []) %}
-          <tr><td>{{ n.label }}</td><td>{{ n.category or '—' }}</td><td>{{ n.page_num or '—' }}</td>
-              <td class="conf">{{ n.from or '手工' }}</td>
-              <td>{% if n.page_num %}<button onclick="goPage({{ n.page_num }})">对照</button>{% endif %}</td></tr>
-          {% endfor %}
-        </table>
-        {% else %}<div class="empty-hint">暂无目录节点——AI 生成候选后采纳，或手工添加</div>{% endif %}
-        <div class="add-row">
-          <input id="tnLabel" placeholder="节点名" style="flex:2;min-width:120px;">
-          <input id="tnCat" placeholder="类目（自由标签）" style="flex:1;min-width:90px;">
-          <input id="tnPage" placeholder="页码" style="width:60px;" type="number" min="1">
-          <button class="btn-primary" onclick="addTocNode()">+ 添加节点</button>
-        </div>
-        <div class="card-actions">
-          <button class="btn-primary" onclick="saveCard('toc')">保存目录</button>
-          {% if toc.status %}<button onclick="toggleStatus('toc', '{{ toc.status }}')">{{ '退回 draft' if toc.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
-        </div>
-      </details>
-      <details class="card-sec">
-        <summary>实体索引卡{% if entity.status %} <span class="badge {{ entity.status }}">{{ entity.status }}</span>{% endif %}<span class="cg-hint">人名/地名/机构/物产</span></summary>
-        {% if entity.content.get('items') %}
-        <table class="toc-table">
-          <tr><th>实体</th><th>类别</th><th>页</th><th>来源</th><th></th></tr>
-          {% for e in entity.content.get('items', []) %}
-          <tr><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td><td>{{ e.page_num or '—' }}</td>
-              <td class="conf">{{ e.from or '手工' }}</td>
-              <td>{% if e.page_num %}<button onclick="goPage({{ e.page_num }})">对照</button>{% endif %}</td></tr>
-          {% endfor %}
-        </table>
-        {% else %}<div class="empty-hint">暂无实体——AI 生成候选后采纳，或手工添加</div>{% endif %}
-        <div class="add-row">
-          <input id="enLabel" placeholder="实体名" style="flex:2;min-width:120px;">
-          <input id="enCat" placeholder="类别（人名/地名/…）" style="flex:1;min-width:90px;">
-          <input id="enPage" placeholder="页码" style="width:60px;" type="number" min="1">
-          <button class="btn-primary" onclick="addEntityItem()">+ 添加实体</button>
-        </div>
-        <div class="card-actions">
-          <button class="btn-primary" onclick="saveCard('entity')">保存实体索引</button>
-          {% if entity.status %}<button onclick="toggleStatus('entity', '{{ entity.status }}')">{{ '退回 draft' if entity.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
-        </div>
-      </details>
-      <details class="card-sec">
-        <summary>摘要卡{% if summ.status %} <span class="badge {{ summ.status }}">{{ summ.status }}</span>{% endif %}</summary>
-        <textarea class="summary-ta" id="sumText" placeholder="100-200 字文献摘要（可由 AI 生成草稿后修订）">{{ summ.content.get('text', '') }}</textarea>
-        <div class="card-actions">
-          <button class="btn-primary" onclick="saveCard('summary')">保存摘要</button>
-          {% if summ.status %}<button onclick="toggleStatus('summary', '{{ summ.status }}')">{{ '退回 draft' if summ.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
-        </div>
-      </details>
-      <details class="card-sec">
-        <summary>候选队列<span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span>
-          <button class="btn-primary" id="genBtn" onclick="genCandidates()" style="margin-left:auto;">AI 生成候选</button>
-        </summary>
+      <div class="cg-head"><span class="cg-title">候选队列</span><span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span>
+        <button class="btn-primary" id="genBtn" onclick="genCandidates()" style="margin-left:auto;">AI 生成候选</button>
+      </div>
         {% if candidates %}
         <table class="cand-table">
           <tr><th>类型</th><th>标签</th><th>类目</th><th>置信</th><th>页</th><th>状态</th><th>操作</th></tr>
@@ -1049,7 +1012,67 @@ mark {
           {% endfor %}
         </table>
         {% else %}<div class="empty-hint">队列为空——点「AI 生成候选」（需设置页配置 llm_chat provider）</div>{% endif %}
-      </details>
+    </div>{# /cardsGroup #}
+    </div>{# /paneText: 全文 tab = pageText + 候选队列 #}
+
+    <div class="tp-pane" data-pane="meta">
+      <div class="cg-hint" style="padding:8px 2px;">与全库文献信息同一数据源（bib_type + bib_data），此处编辑即全库生效。</div>
+      <div class="doc-tags" id="docTags"></div>
+      <div id="proofBibPanel"></div>
+    </div>
+    <div class="tp-pane" data-pane="toc">
+      {% if toc.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ toc.status }}">{{ toc.status }}</span>（reviewed 进检索路）</div>{% endif %}
+        {% if toc.content.get('nodes') %}
+        <table class="toc-table">
+          <tr><th>节点</th><th>类目</th><th>页</th><th>来源</th><th></th></tr>
+          {% for n in toc.content.get('nodes', []) %}
+          <tr><td>{{ n.label }}</td><td>{{ n.category or '—' }}</td><td>{{ n.page_num or '—' }}</td>
+              <td class="conf">{{ n.from or '手工' }}</td>
+              <td>{% if n.page_num %}<button onclick="goPage({{ n.page_num }})">对照</button>{% endif %}</td></tr>
+          {% endfor %}
+        </table>
+        {% else %}<div class="empty-hint">暂无目录节点——AI 生成候选后采纳，或手工添加</div>{% endif %}
+        <div class="add-row">
+          <input id="tnLabel" placeholder="节点名" style="flex:2;min-width:120px;">
+          <input id="tnCat" placeholder="类目（自由标签）" style="flex:1;min-width:90px;">
+          <input id="tnPage" placeholder="页码" style="width:60px;" type="number" min="1">
+          <button class="btn-primary" onclick="addTocNode()">+ 添加节点</button>
+        </div>
+        <div class="card-actions">
+          <button class="btn-primary" onclick="saveCard('toc')">保存目录</button>
+          {% if toc.status %}<button onclick="toggleStatus('toc', '{{ toc.status }}')">{{ '退回 draft' if toc.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
+        </div>
+    </div>
+    <div class="tp-pane" data-pane="entity">
+      {% if entity.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ entity.status }}">{{ entity.status }}</span></div>{% endif %}
+        {% if entity.content.get('items') %}
+        <table class="toc-table">
+          <tr><th>实体</th><th>类别</th><th>页</th><th>来源</th><th></th></tr>
+          {% for e in entity.content.get('items', []) %}
+          <tr><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td><td>{{ e.page_num or '—' }}</td>
+              <td class="conf">{{ e.from or '手工' }}</td>
+              <td>{% if e.page_num %}<button onclick="goPage({{ e.page_num }})">对照</button>{% endif %}</td></tr>
+          {% endfor %}
+        </table>
+        {% else %}<div class="empty-hint">暂无实体——AI 生成候选后采纳，或手工添加</div>{% endif %}
+        <div class="add-row">
+          <input id="enLabel" placeholder="实体名" style="flex:2;min-width:120px;">
+          <input id="enCat" placeholder="类别（人名/地名/…）" style="flex:1;min-width:90px;">
+          <input id="enPage" placeholder="页码" style="width:60px;" type="number" min="1">
+          <button class="btn-primary" onclick="addEntityItem()">+ 添加实体</button>
+        </div>
+        <div class="card-actions">
+          <button class="btn-primary" onclick="saveCard('entity')">保存实体索引</button>
+          {% if entity.status %}<button onclick="toggleStatus('entity', '{{ entity.status }}')">{{ '退回 draft' if entity.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
+        </div>
+    </div>
+    <div class="tp-pane" data-pane="summary">
+      {% if summ.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ summ.status }}">{{ summ.status }}</span></div>{% endif %}
+        <textarea class="summary-ta" id="sumText" placeholder="100-200 字文献摘要（可由 AI 生成草稿后修订）">{{ summ.content.get('text', '') }}</textarea>
+        <div class="card-actions">
+          <button class="btn-primary" onclick="saveCard('summary')">保存摘要</button>
+          {% if summ.status %}<button onclick="toggleStatus('summary', '{{ summ.status }}')">{{ '退回 draft' if summ.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
+        </div>
     </div>
   </div>
 </div>
@@ -2349,6 +2372,14 @@ const SMART_BASE = `/collections/{{ collection }}/doc/{{ doc.id if doc is define
 function smartToast(msg) {
   const el = document.getElementById('smartStatus');
   if (el) el.textContent = msg;
+}
+
+// ── 文本面板 tab 切换 (2026-10-17: 四卡与全文并列) ──
+function switchTP(name) {
+  document.querySelectorAll('.tp-tab').forEach(b => b.classList.toggle('on', b.dataset.pane === name));
+  document.querySelectorAll('.tp-pane').forEach(p => p.classList.toggle('on', p.dataset.pane === name));
+  const ta = document.getElementById('textActions');
+  if (ta) ta.style.display = (name === 'text') ? '' : 'none';
 }
 
 // ── 卡片组 (2026-10-17 整合裁定: 移植自 cards.html, 对照=goPage 跳页) ──
