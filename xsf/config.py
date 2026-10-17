@@ -250,13 +250,18 @@ def _next_provider_id(providers: list[dict]) -> str:
 def save_ocr_provider(name: str, url: str = None, pid: str = None,
                        api_key: str = None, model: str = None,
                        endpoint: str = 'paddle_http',
-                       prompt: str = '') -> dict:
+                       prompt: str = '',
+                       ptype: str = 'vl_api') -> dict:
     """新增 (pid 为空) / 编辑 (pid 已存在) provider (v3, 统一 vl_api).
 
     endpoint:
       'paddle_http'  (本地/自建 PaddleOCR-VL HTTP, 需 base_url)
       'aistudio_job' (aistudio 云端, api_key=token)
       'openai_chat'  (OpenAI 兼容视觉端点, 需 base_url; Ollama/vLLM/LM Studio)
+    ptype (P2c, 2026-10-17):
+      'vl_api'   视觉 OCR provider (default 解析链走 cfg['default'])
+      'llm_chat' 纯文本 LLM provider (翻译/autofill; endpoint 强制 openai_chat,
+                 default 走独立键 cfg['default_llm'])
     api_key 传 None/空 且为编辑 → 保留旧值。
     prompt: openai_chat 专属自定义转录 prompt (可空=用内置默认; 其他 endpoint 忽略)。
     返回写入后的完整 provider dict。
@@ -265,6 +270,11 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
     name = (name or '').strip()
     url = (url or '').strip()
     ep = (endpoint or 'paddle_http').strip() or 'paddle_http'
+    ptype = (ptype or 'vl_api').strip() or 'vl_api'
+    if ptype not in ('vl_api', 'llm_chat'):
+        raise ValueError(f'未知 provider 类型: {ptype} (可选: vl_api/llm_chat)')
+    if ptype == 'llm_chat':
+        ep = 'openai_chat'  # 纯文本 LLM 同协议, 强制
     if ep not in ENDPOINTS:
         raise ValueError(f'未知 endpoint: {ep} (可选: {", ".join(ENDPOINTS)})')
     if not name:
@@ -285,7 +295,7 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
         if target is None:
             raise KeyError(f'provider 不存在: {pid}')
         target['name'] = name
-        target['type'] = 'vl_api'
+        target['type'] = ptype
         target['endpoint'] = ep
         target['base_url'] = url
         if api_key:                       # 空 = 保留旧值
@@ -303,7 +313,7 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
         entry = {
             'id': pid,
             'name': name,
-            'type': 'vl_api',
+            'type': ptype,
             'endpoint': ep,
             'base_url': url,
             'model': (model or '').strip() or None,
@@ -317,15 +327,19 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
         result = dict(entry)
 
     cfg['providers'] = providers
-    if not cfg.get('default'):
-        cfg['default'] = pid
+    if ptype == 'vl_api':
+        if not cfg.get('default'):
+            cfg['default'] = pid
+    else:
+        if not cfg.get('default_llm'):
+            cfg['default_llm'] = pid
     cfg['updated_at'] = datetime.now().isoformat(timespec='seconds')
     _write_ocr_config(cfg)
     return result
 
 
 def delete_ocr_provider(pid: str) -> bool:
-    """删除 provider。若它是 default 则清空 default。返回是否删除。"""
+    """删除 provider。若它是 default/default_llm 则清之。返回是否删除。"""
     cfg = _read_ocr_config()
     if cfg.get('version') != 3:
         return False
@@ -335,19 +349,62 @@ def delete_ocr_provider(pid: str) -> bool:
         return False
     cfg['providers'] = remaining
     if cfg.get('default') == pid:
-        cfg['default'] = remaining[0]['id'] if remaining else None
+        cfg['default'] = next(
+            (p['id'] for p in remaining if p.get('type') != 'llm_chat'),
+            None) if any(p.get('type') != 'llm_chat' for p in remaining) else None
+    if cfg.get('default_llm') == pid:
+        llm_left = [p['id'] for p in remaining if p.get('type') == 'llm_chat']
+        cfg['default_llm'] = llm_left[0] if llm_left else None
     cfg['updated_at'] = datetime.now().isoformat(timespec='seconds')
     _write_ocr_config(cfg)
     return True
 
 
-def set_default_ocr_provider(pid: str) -> None:
-    """设置全局默认 provider。"""
+def set_default_ocr_provider(pid: str, scope: str = 'ocr') -> None:
+    """设置默认 provider。scope='ocr' (cfg['default']) / 'llm' (cfg['default_llm'])。"""
     cfg = _read_ocr_config()
     providers = cfg.get('providers', []) if cfg.get('version') == 3 else []
     ids = [p.get('id') for p in providers]
     if pid not in ids:
         raise KeyError(f'provider 不存在: {pid}')
-    cfg['default'] = pid
+    cfg['default_llm' if scope == 'llm' else 'default'] = pid
     cfg['updated_at'] = datetime.now().isoformat(timespec='seconds')
     _write_ocr_config(cfg)
+
+
+# ── LLM provider (P2c 翻译模型, 2026-10-17) ────────────
+
+def get_llm_providers() -> list[dict]:
+    """type=='llm_chat' 的 provider 列表 (深拷贝)。"""
+    return [p for p in get_ocr_providers() if p.get('type') == 'llm_chat']
+
+
+def get_default_llm_provider_id() -> str | None:
+    """默认 LLM: default_llm > XSF_LLM_METHOD (匹配 id) > 首个 llm_chat。"""
+    cfg = _read_ocr_config()
+    providers = cfg.get('providers', []) if cfg.get('version') == 3 else []
+    llms = [p for p in providers if p.get('type') == 'llm_chat']
+    ids = [p.get('id') for p in llms]
+    default = cfg.get('default_llm')
+    if default in ids:
+        return default
+    env = os.environ.get('XSF_LLM_METHOD')
+    if env in ids:
+        return env
+    return ids[0] if ids else None
+
+
+def get_llm_provider_cfg(provider_id: str = None) -> dict:
+    """解析 LLM provider 配置。未配置 raise RuntimeError。"""
+    llms = get_llm_providers()
+    if not llms:
+        raise RuntimeError(
+            '未配置翻译模型 (llm_chat provider)。请在前端「OCR 设置」添加 '
+            '类型=llm_chat 的 provider (OpenAI 兼容: zhipuai/deepseek/ollama 均可)。'
+        )
+    want = provider_id or get_default_llm_provider_id()
+    for p in llms:
+        if p['id'] == want:
+            return p
+    avail = ', '.join(p['id'] for p in llms)
+    raise RuntimeError(f'未知 LLM provider: {want}。已配置: {avail}')

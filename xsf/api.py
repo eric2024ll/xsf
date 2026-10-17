@@ -266,8 +266,9 @@ async def api_rename_collection(
 
 @app.get("/api/ocr-config")
 async def api_get_ocr_config():
-    """provider 列表 (api_key 打码) + default。"""
-    from .config import (get_ocr_providers, get_default_ocr_provider_id)
+    """provider 列表 (api_key 打码) + default + default_llm (P2c)。"""
+    from .config import (get_ocr_providers, get_default_ocr_provider_id,
+                         get_default_llm_provider_id)
     providers = []
     for p in get_ocr_providers():
         providers.append({
@@ -286,6 +287,7 @@ async def api_get_ocr_config():
     return {
         'providers': providers,
         'default': get_default_ocr_provider_id(),
+        'default_llm': get_default_llm_provider_id(),
     }
 
 
@@ -295,14 +297,16 @@ async def api_save_ocr_provider(name: str = Form(...), url: str = Form(''),
                                 api_key: str = Form(None),
                                 model: str = Form(None),
                                 endpoint: str = Form('paddle_http'),
-                                prompt: str = Form('')):
-    """新增/编辑 provider (v3 vl_api)。api_key 留空且为编辑 → 保留旧值。"""
+                                prompt: str = Form(''),
+                                ptype: str = Form('vl_api')):
+    """新增/编辑 provider (v3)。ptype: vl_api (视觉) / llm_chat (翻译 LLM, P2c)。
+    api_key 留空且为编辑 → 保留旧值。"""
     from .config import save_ocr_provider
     try:
         p = save_ocr_provider(name=name, url=url, pid=id,
                               api_key=(api_key or '').strip() or None,
                               model=model, endpoint=endpoint,
-                              prompt=prompt or '')
+                              prompt=prompt or '', ptype=ptype)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except KeyError as e:
@@ -338,10 +342,12 @@ async def api_delete_ocr_provider(pid: str):
 
 
 @app.post("/api/ocr-config/default")
-async def api_set_ocr_default(id: str = Form(...)):
+async def api_set_ocr_default(id: str = Form(...),
+                              scope: str = Form('ocr')):
+    """设默认 provider。scope: 'ocr' (视觉) / 'llm' (翻译, P2c)。"""
     from .config import set_default_ocr_provider
     try:
-        set_default_ocr_provider(id)
+        set_default_ocr_provider(id, scope=scope)
     except KeyError:
         return JSONResponse({"error": f"provider 不存在: {id}"},
                             status_code=404)
@@ -1874,6 +1880,126 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# ── P2c AI 填充 (翻译大模型 draft 层) ────────────────────
+
+@app.post("/collections/{collection}/doc/{doc_id}/page/{page_num}/autofill")
+async def api_autofill(collection: str, doc_id: int, page_num: int,
+                       request: Request):
+    """AI 填充多行制 draft 层 (页级)。
+
+    body: {targets: ['translit','gloss','trans'] 子集, provider_id?: str}
+    行制 >=3 才可用。LLM 生成草稿**直接落库**对应列并打 draft_flags 标记
+    ({"gloss":"ai",...}); 修订史分层记 ([转]/[对]/[译] 前缀),
+    basis='AI草稿·{model}' — AI 披露入史。人工编辑该列后标记自动清除
+    (edit_page diff 逻辑)。未配置 llm_chat provider → 503。
+    """
+    from .llm import autofill_rows, LLMNotConfigured
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    # 配置缺失最优先报 (503): 用户先配模型, 再谈行制/内容
+    try:
+        from .config import get_llm_provider_cfg as _glc
+        _glc(body.get("provider_id"))
+    except RuntimeError as e:
+        return JSONResponse(status_code=503, content={"error": str(e)})
+
+    try:
+        targets = body.get("targets", ["gloss", "trans"])
+        provider_id = body.get("provider_id")
+        conn = get_conn(collection)
+        try:
+            doc = conn.execute(
+                "SELECT id, lang, tri_rows FROM documents WHERE id = ?",
+                (doc_id,)).fetchone()
+            if doc is None:
+                return JSONResponse(status_code=404,
+                                    content={"error": "文献不存在"})
+            rows_mode = _tri_rows_for(doc)
+            if rows_mode < 3:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "AI 填充仅适用于非中文多行制文献 "
+                                      "(三行/四行); 请先切换行制"})
+            if rows_mode == 3:
+                targets = [t for t in targets if t != "translit"]
+            rows = conn.execute(
+                """SELECT id, text, translit, gloss, trans, draft_flags
+                   FROM lines
+                   WHERE doc_id = ? AND page_num = ?
+                   ORDER BY block_num, line_num""",
+                (doc_id, page_num)).fetchall()
+            if not rows:
+                return JSONResponse(status_code=400,
+                                    content={"error": "该页无文本块"})
+            blocks = [{"text": r["text"]} for r in rows]
+        finally:
+            conn.close()
+
+        results, model = autofill_rows(
+            blocks, src_lang=(doc["lang"] or "zh"),
+            targets=targets, provider_id=provider_id)
+
+        filled = 0
+        conn = get_conn(collection)
+        try:
+            for r, draft in zip(rows, results):
+                if not draft:
+                    continue
+                flags = {}
+                try:
+                    flags = json.loads(r["draft_flags"]) \
+                        if r["draft_flags"] else {}
+                except (json.JSONDecodeError, ValueError):
+                    flags = {}
+                updates, params = [], []
+                for key, prefix in (("translit", "[转] "),
+                                    ("gloss", "[对] "),
+                                    ("trans", "[译] ")):
+                    if key not in draft:
+                        continue
+                    old_v = r[key] or ""
+                    new_v = draft[key]
+                    if new_v == old_v:
+                        continue
+                    updates.append(f"{key} = ?")
+                    params.append(new_v)
+                    flags[key] = "ai"
+                    conn.execute(
+                        """INSERT INTO revision_log
+                           (doc_id, page_num, block_num, old_value, new_value,
+                            basis, in_pkg)
+                           VALUES (?, ?, ?, ?, ?, ?, 0)""",
+                        (doc_id, page_num,
+                         conn.execute(
+                             "SELECT block_num FROM lines WHERE id = ?",
+                             (r["id"],)).fetchone()["block_num"],
+                         prefix + old_v, prefix + new_v,
+                         f"AI草稿·{model}"),
+                    )
+                    filled += 1
+                if updates:
+                    if flags:
+                        updates.append("draft_flags = ?")
+                        params.append(json.dumps(flags, ensure_ascii=False))
+                    params.append(r["id"])
+                    conn.execute(
+                        f"UPDATE lines SET {', '.join(updates)} WHERE id = ?",
+                        params)
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {"ok": True, "filled": filled, "model": model,
+                "targets": targets}
+    except LLMNotConfigured as e:
+        return JSONResponse(status_code=503, content={"error": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 # ── 文献内容浏览 ────────────────────────────────────────
 
 @app.get("/collections/{collection}/doc/{doc_id}/content")
@@ -2039,7 +2165,7 @@ async def proofread_page(
             rows = conn.execute(
                 """SELECT id, page_num, block_num, line_num, text,
                           bbox, block_label, page_w, page_h, suspect,
-                          translit, gloss, trans
+                          translit, gloss, trans, draft_flags
                    FROM lines
                    WHERE doc_id = ? AND page_num = ?
                    ORDER BY block_num, line_num""",
@@ -2071,6 +2197,10 @@ async def proofread_page(
                     line_bbox = json.loads(r["bbox"])
                 except (json.JSONDecodeError, ValueError):
                     line_bbox = None
+            try:
+                _df = json.loads(r["draft_flags"]) if r["draft_flags"] else {}
+            except (json.JSONDecodeError, ValueError):
+                _df = {}
             blocks_map[bn]["lines"].append({
                 "id": r["id"],
                 "line_num": r["line_num"],
@@ -2080,6 +2210,7 @@ async def proofread_page(
                 "translit": r["translit"],
                 "gloss": r["gloss"],
                 "trans": r["trans"],
+                "draft_flags": _df,
             })
         blocks = [blocks_map[bn] for bn in sorted(blocks_map)]
 
@@ -2670,10 +2801,21 @@ async def edit_page(
         try:
             # 旧块快照 → 修订史 diff (在任何写操作前).
             # 四元组快照: zh 模式后三列恒 None, 多行制齐取 (P2 行制扩展).
+            # draft_flags 随行 (P2c): 人工修订某列 (值变) → 清该列 AI 标记,
+            # 未变列的标记跨保存保留。
+            def _flags_load(raw):
+                try:
+                    v = json.loads(raw) if raw else {}
+                    return v if isinstance(v, dict) else {}
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    return {}
+
             old_blocks = [
-                (r["text"], r["translit"], r["gloss"], r["trans"])
+                (r["text"], r["translit"], r["gloss"], r["trans"],
+                 _flags_load(r["draft_flags"]))
                 for r in conn.execute(
-                    """SELECT text, translit, gloss, trans FROM lines
+                    """SELECT text, translit, gloss, trans, draft_flags
+                       FROM lines
                        WHERE doc_id = ? AND page_num = ?
                        ORDER BY block_num, line_num, id""",
                     (doc_id, page_num),
@@ -2698,9 +2840,18 @@ async def edit_page(
                     for bt in text.split("\n\n")
                     if bt.strip()
                 ]
+            kept_flags: list[dict] = []
+            _FLAG_KEYS = {"translit": 1, "gloss": 2, "trans": 3}
             for i in range(max(len(old_blocks), len(new_blocks))):
                 old_t = old_blocks[i] if i < len(old_blocks) else None
                 new_t = new_blocks[i] if i < len(new_blocks) else None
+                flags = dict(old_t[4]) if old_t else {}
+                if old_t is not None and new_t is not None:
+                    # 值变列 → 清该列 AI 草稿标记 (人工已修订)
+                    for key, idx in _FLAG_KEYS.items():
+                        if (old_t[idx] or "") != (new_t[idx] or ""):
+                            flags.pop(key, None)
+                kept_flags.append(flags)
                 if old_t == new_t:
                     continue
                 # 分层记史: 正文正常记; 转写/词对照/译文带前缀独立成条 (P2)
@@ -2779,12 +2930,15 @@ async def edit_page(
                 for bn, b in enumerate(tri_blocks, 1):
                     conn.execute(
                         """INSERT INTO lines(doc_id, page_num, block_num, line_num,
-                                             block_label, text, translit, gloss, trans)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                             block_label, text, translit, gloss, trans,
+                                             draft_flags)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (doc_id, page_num, bn, 1, carry_label,
                          str(b.get("text", "")).strip("\n"),
                          _cell(b, "translit"), _cell(b, "gloss"),
-                         _cell(b, "trans")),
+                         _cell(b, "trans"),
+                         json.dumps(kept_flags[bn - 1], ensure_ascii=False)
+                         if kept_flags[bn - 1] else None),
                     )
                     conn.execute(
                         """INSERT INTO blocks_fts(doc_id, page_num, block_num, text)

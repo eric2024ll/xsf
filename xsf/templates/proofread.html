@@ -353,6 +353,8 @@ body.focus-mode .main { height: 100vh; }
 
 .tri-line { margin: 2px 0; }
 .tri-line > div { white-space: pre-wrap; }
+.tri-draft { background: #fffbeb; border-radius: 3px; padding: 0 4px; }
+.tri-draft::after { content: 'AI'; font-size: 9px; color: #b45309; font-weight: 600; margin-left: 4px; vertical-align: super; letter-spacing: 0.5px; }
 .tri-text { font-weight: 500; }
 .tri-translit { color: #0e7490; font-size: 12px; min-height: 16px; }
 .tri-gloss { color: var(--text-muted, #888); font-size: 12px; min-height: 16px; }
@@ -901,6 +903,7 @@ mark {
       <span id="langBadge" class="lang-badge{{ ' tri' if (doc_rows and doc_rows >= 3) else '' }}">{{ (doc_lang ~ (doc_rows ~ '行') if (doc_rows and doc_rows >= 3 and doc_lang != 'zh') else '') if (doc_rows and doc_rows >= 3) else '' }}</span>
       <input type="text" id="basisInput" placeholder="修订依据（选填）" style="width:150px; padding:2px 8px; font-size:12px; border:1px solid var(--border,#ccc); border-radius:4px; color:var(--text-muted,#666);" title="选填，随本次编辑附注到修订史；可随时在修订史中补填或修改">
       <button onclick="openRevLog()" style="padding:2px 10px; font-size:12px; cursor:pointer; border:1px solid var(--border,#ccc); border-radius:4px; background:var(--bg-secondary,#f5f5f5);" title="本文修订记录（补依据/入包勾选）">修订史</button>
+      {% if doc_rows and doc_rows >= 3 %}<button id="autofillBtn" onclick="autofillDraft()" style="padding:2px 10px; font-size:12px; cursor:pointer; border:1px solid #f59e0b; border-radius:4px; background:#fffbeb; color:#92400e;" title="翻译大模型生成本页词对照/译文草稿（落库标 AI, 人工修订后标记自动清除）">AI 填充</button>{% endif %}
       <span class="save-status" id="saveStatus"></span>
       <div class="ta-menu-wrap">
         <button class="ta-more" onclick="toggleTaMenu(event)">⋯</button>
@@ -920,7 +923,7 @@ mark {
 {#- P2 行制: 3=三行(拉丁化原文/词对照/译文); 4=四行(原语/拉丁转写/词对照/译文) -#}
 {%- for b in blocks %}
 {%- for ln in b.lines %}
-<div class="tri-line"><div class="tri-text">{{ (highlight(ln.text, keyword) | safe) | replace('\n', '<br>') }}</div>{% if doc_rows == 4 %}<div class="tri-translit">{{ ln.translit or '' }}</div>{% endif %}<div class="tri-gloss">{{ ln.gloss or '' }}</div><div class="tri-trans">{{ ln.trans or '' }}</div></div>
+<div class="tri-line"><div class="tri-text">{{ (highlight(ln.text, keyword) | safe) | replace('\n', '<br>') }}</div>{% if doc_rows == 4 %}<div class="tri-translit{{ ' tri-draft' if ln.draft_flags and ln.draft_flags.get('translit') else '' }}">{{ ln.translit or '' }}</div>{% endif %}<div class="tri-gloss{{ ' tri-draft' if ln.draft_flags and ln.draft_flags.get('gloss') else '' }}">{{ ln.gloss or '' }}</div><div class="tri-trans{{ ' tri-draft' if ln.draft_flags and ln.draft_flags.get('trans') else '' }}">{{ ln.trans or '' }}</div></div>
 {%- endfor %}
 {%- if not loop.last %}<br><br>{% endif -%}
 {%- endfor %}
@@ -1195,8 +1198,37 @@ async function switchRows(target) {
     { method: 'PATCH', body: params });
   location.reload();
 }
-async function autoSavePage() {
-  const el = document.getElementById('pageText');
+// P2c AI 填充: 翻译大模型生成本页 draft 层 (词对照/译文[/转写]), 落库标 AI
+async function autofillDraft() {
+  const targets = [];
+  if (docRows === 4) targets.push('translit');
+  targets.push('gloss', 'trans');
+  if (!confirm('AI 填充本页草稿层（' + targets.join(' + ') + '）？\n\n' +
+      '翻译模型将批量生成词对照/译文并直接落库（黄色底 + AI 标），\n' +
+      '已有内容的列会被覆盖。修订史记「AI草稿·模型名」，人工修订后标记自动清除。'))
+    return;
+  const btn = document.getElementById('autofillBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+  try {
+    const res = await fetch(
+      `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/autofill`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targets }),
+      });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'AI 填充失败'); return; }
+    alert(`AI 填充完成：${data.filled} 处草稿已落库（模型 ${data.model}）`);
+    location.reload();
+  } catch (e) {
+    alert('AI 填充失败: ' + (e.message || e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'AI 填充'; }
+  }
+}
+
+async function autoSavePage() {  const el = document.getElementById('pageText');
   const status = document.getElementById('saveStatus');
   if (!el) return;
   const isTri = docRows >= 3;

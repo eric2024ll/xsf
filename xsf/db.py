@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS lines (
     page_h INTEGER,
     gloss TEXT,
     trans TEXT,
-    translit TEXT
+    translit TEXT,
+    draft_flags TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_lines_doc_page
@@ -113,6 +114,10 @@ def _migrate(conn):
         conn.execute("ALTER TABLE lines ADD COLUMN trans TEXT")
     if "translit" not in cols:
         conn.execute("ALTER TABLE lines ADD COLUMN translit TEXT")
+    # P2c AI 草稿标记 (2026-10-17): JSON {"gloss":"ai",...} — autofill 写入打标,
+    # 人工修订该列 (值变) 后自动清除; 未变列的标记跨保存保留
+    if "draft_flags" not in cols:
+        conn.execute("ALTER TABLE lines ADD COLUMN draft_flags TEXT")
     doc_cols2 = {row[1] for row in conn.execute("PRAGMA table_info(documents)")}
     if "lang" not in doc_cols2:
         conn.execute("ALTER TABLE documents ADD COLUMN lang TEXT DEFAULT 'zh'")
