@@ -9,7 +9,6 @@
 <style>
 
 /* ── 来源标签 ── */
-.doc-tags { display:flex; gap:4px; flex-wrap:wrap; align-items:center; }
 .tag-chip {
   display:inline-flex; align-items:center; gap:2px;
   padding:1px 8px; border-radius:10px; font-size:0.68rem;
@@ -23,64 +22,7 @@
   border:1px dashed var(--border); border-radius:10px; outline:none;
 }
 
-/* ── 伸缩左栏 (文献信息 + 书目编辑) ── */
-.proof-sidebar {
-  width: 280px;
-  flex-shrink: 0;
-  background: var(--card-bg);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  transition: width 0.18s ease;
-  position: relative;
-}
-.proof-sidebar.collapsed { width: 32px; }
-.proof-sidebar.collapsed .sidebar-content { display: none; }
-.sidebar-toggle {
-  position: absolute;
-  right: 4px; top: 6px;
-  width: 24px; height: 24px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--card-bg);
-  cursor: pointer;
-  font-size: 0.8rem;
-  color: var(--text-muted);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 5;
-}
-.sidebar-toggle:hover { background: var(--accent); color: var(--primary); }
 .sb-toggle-label { display: inline-block; transition: transform 0.18s; line-height: 1; }
-.proof-sidebar.collapsed .sb-toggle-label { transform: rotate(180deg); }
-.sb-rail-label { display: none; }
-.proof-sidebar.collapsed .sb-rail-label {
-  display: block;
-  writing-mode: vertical-rl;
-  letter-spacing: 0.35em;
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  margin: 40px auto 0;
-  text-align: center;
-  user-select: none;
-}
-.proof-sidebar.collapsed .sidebar-toggle { position: static; margin: 8px auto; width: 26px; height: 26px; }
-.sidebar-content { overflow-y: auto; padding: 10px 12px 16px; }
-.sb-doc-title {
-  font-size: 0.95rem; font-weight: 700; line-height: 1.45;
-  margin: 2px 0 8px; padding-right: 24px; word-break: break-word;
-}
-.sb-ck-row { margin-bottom: 10px; }
-.proof-ck { font-size:0.72rem; color:var(--primary); font-family:monospace;
-  background:var(--accent); padding:2px 7px; border-radius:4px; white-space:nowrap; }
-.sb-meta { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 0.76rem; margin-bottom: 10px; }
-.sb-meta dt { color: var(--text-muted); white-space: nowrap; }
-.sb-meta dd { word-break: break-all; margin: 0; }
-.sb-section-title {
-  font-size: 0.72rem; font-weight: 700; color: var(--text-muted);
-  letter-spacing: 0.08em; margin: 14px 0 6px; padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
 
 .back-link {
   font-size:0.78rem; color:var(--primary); text-decoration:none;
@@ -346,8 +288,80 @@
 
 /* ── 专注模式 (F11 进入 / Esc 退出) ── */
 body.focus-mode .top-nav,
-body.focus-mode .proof-sidebar,
-body.focus-mode .page-nav { display: none; }
+body.focus-mode .page-nav,
+body.focus-mode .cards-group { display: none; }
+
+/* ── 卡片组 (2026-10-17 整合裁定: 四卡+队列内嵌文本页) ── */
+.cards-group {
+  border-top: 2px solid var(--border);
+  margin-top: 10px;
+  padding-top: 4px;
+}
+.card-sec {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-bg, #fff);
+  margin: 8px 0;
+  padding: 0 12px;
+}
+.card-sec > summary {
+  cursor: pointer;
+  padding: 9px 0;
+  font-weight: 600;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+  user-select: none;
+}
+.card-sec > summary::-webkit-details-marker { display: none; }
+.card-sec > summary::before { content: '▸'; color: var(--text-muted); transition: transform .15s; }
+.card-sec[open] > summary::before { transform: rotate(90deg); }
+.cg-hint { font-weight: 400; font-size: 0.72rem; color: var(--text-muted); }
+.toc-table, .cand-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  margin: 6px 0;
+}
+.toc-table th, .toc-table td, .cand-table th, .cand-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 5px 6px;
+  text-align: left;
+}
+.toc-table th, .cand-table th { color: var(--text-muted); font-weight: 500; font-size: 0.74rem; }
+.toc-table .conf, .cand-table .conf { color: var(--text-muted); font-size: 0.72rem; }
+.badge {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  font-size: 0.7rem; font-weight: 500;
+}
+.badge.draft { background: #fff8e1; color: #b45309; }
+.badge.reviewed { background: #e6f4ea; color: #2a9d8f; }
+.badge.adopted { background: #e6f4ea; color: #2a9d8f; }
+.badge.rejected { background: #fdecea; color: #c0392b; }
+.badge.pending { background: #e8f0fe; color: #4361ee; }
+.add-row { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+.add-row input {
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; font-size: 0.8rem;
+}
+.btn-primary {
+  background: var(--primary, #4361ee); color: #fff; border: none;
+  border-radius: 5px; padding: 6px 12px; font-size: 0.8rem; cursor: pointer;
+}
+.btn-primary:hover { filter: brightness(1.08); }
+.card-actions { display: flex; gap: 8px; margin: 8px 0; align-items: center; }
+.card-actions button:not(.btn-primary) {
+  background: #fff; border: 1px solid var(--border); border-radius: 5px;
+  padding: 5px 10px; font-size: 0.78rem; cursor: pointer;
+}
+.empty-hint { color: var(--text-muted); font-size: 0.78rem; padding: 8px 0; }
+.summary-ta {
+  width: 100%; min-height: 90px; box-sizing: border-box;
+  border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+  font-size: 0.84rem; font-family: inherit; resize: vertical;
+}
+#genBtn { padding: 4px 10px; font-size: 0.74rem; }
 body.focus-mode { padding-top: 0; }
 body.focus-mode .main { height: 100vh; }
 
@@ -722,7 +736,6 @@ mark {
 
 @media (max-width: 900px) {
   .main { flex-direction: column; height: calc(100vh - var(--nav-h, 52px) - 46px); }
-  .proof-sidebar { display: none; }
   .mobile-tabs {
     display: flex;
     gap: 0;
@@ -783,24 +796,26 @@ mark {
 
 {% include '_nav.html' %}
 
-<div class="main" id="main" data-tab="img">
-  <aside class="proof-sidebar" id="proofSidebar">
-    <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" title="收起/展开文献信息"><span class="sb-toggle-label">‹</span></button>
-    <span class="sb-rail-label">文献信息</span>
-    <div class="sidebar-content">
-      <h2 class="sb-doc-title" title="{{ doc.title or doc.filename }}">{{ doc.title or doc.filename }}</h2>
-      {% if doc.cite_key %}<div class="sb-ck-row"><span class="proof-ck">{{ doc.cite_key }}</span></div>{% endif %}
-      <dl class="sb-meta">
-        {% if doc.author %}<dt>作者</dt><dd>{{ doc.author }}</dd>{% endif %}
-        <dt>文件</dt><dd>{{ doc.filename }}</dd>
-        {% if doc.page_count %}<dt>页数</dt><dd>{{ doc.page_count }}</dd>{% endif %}
-        {% if doc.doc_type %}<dt>类型</dt><dd>{{ doc.doc_type }}</dd>{% endif %}
-      </dl>
-      <div class="doc-tags" id="docTags"></div>
-      <div class="sb-section-title">书目信息</div>
-      <div id="proofBibPanel"></div>
+{#- 翻页+搜索导航 (2026-10-17 布局裁定: 搬左侧图像页) 三分支共用 macro -#}
+{% macro page_nav_left() %}
+    <div class="page-nav pn-left">
+      <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 列表</a>
+      <button onclick="goPage({{ page_num - 1 }})" {% if page_num <= 1 %}disabled{% endif %} title="上一页">‹</button>
+      <select id="pageSelect" onchange="goPage(this.value)" title="跳转页码">
+        {% for p in range(1, page_count + 1) %}
+        <option value="{{ p }}" {% if p == page_num %}selected{% endif %}>第 {{ p }} / {{ page_count }} 页</option>
+        {% endfor %}
+      </select>
+      <button onclick="goPage({{ page_num + 1 }})" {% if page_num >= page_count %}disabled{% endif %} title="下一页">›</button>
+      <div class="in-page-search">
+        <input type="text" id="inPageSearch" placeholder="搜索本文献..." value="{{ keyword }}" onkeydown="if(event.key==='Enter')doDocSearch()" oninput="hideDocSearchPanel()">
+        <button onclick="doDocSearch()">搜索</button>
+        <div class="doc-search-panel" id="docSearchPanel"></div>
+      </div>
     </div>
-  </aside>
+{% endmacro %}
+
+<div class="main" id="main" data-tab="img">
   {% if not is_md and not is_epub %}
   <div class="mobile-tabs">
     <button id="tabImg" class="active" onclick="switchTab('img')">圖</button>
@@ -808,6 +823,7 @@ mark {
   </div>
 
   <div class="left" id="leftPanel">
+      {{ page_nav_left() }}
       <div class="img-toolbar">
         <button onclick="zoomDelta(1/1.25)" title="缩小">−</button>
         <span class="zoom-label" id="zoomLabel">適寬</span>
@@ -815,7 +831,6 @@ mark {
         <button onclick="zoomSetFit()" title="适应宽度">適寬</button>
         <button onclick="zoomSetPct(1)" title="实际尺寸 (150dpi)">1:1</button>
         <button class="reocr-btn" id="reocrToggle" onclick="toggleReocrMode()">框选重OCR</button>
-        <button class="reocr-btn" id="smartCheckBtn" onclick="runSmartCheck()">智能校对</button>
         <button id="showAllBoxes" onclick="toggleShowAllBoxes()">显示全部框</button>
         <span class="hint">滚轮缩放 · 拖拽平移</span>
         <div class="type-legend" id="typeLegend"></div>
@@ -864,6 +879,7 @@ mark {
   </div>
   {% elif is_epub %}
   <div class="left" id="leftPanel" style="overflow:auto;">
+    {{ page_nav_left() }}
     <iframe id="pageSource"
            src="/collections/{{ collection }}/doc/{{ doc.id }}/page/{{ page_num }}/source"
            style="width:100%;height:calc(100vh - 140px);border:1px solid var(--border);border-radius:var(--radius);background:#fff;"
@@ -871,6 +887,7 @@ mark {
   </div>
   {% elif has_pdf %}
   <div class="left" id="leftPanel" style="overflow:auto;">
+    {{ page_nav_left() }}
     <div class="image-wrap" style="max-width:100%;">
       <img id="pageImage" draggable="false"
            src="/collections/{{ collection }}/doc/{{ doc.id }}/page/{{ page_num }}/image"
@@ -891,24 +908,20 @@ mark {
   <div class="divider" id="panelDivider" title="拖拽调整宽度"></div>
 
   <div class="right{% if is_md and not has_pdf %} md-mode{% endif %}" id="textPanel">
+    {% if is_md and not has_pdf %}
     <div class="page-nav">
       <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 列表</a>
-      <button onclick="goPage({{ page_num - 1 }})" {% if page_num <= 1 %}disabled{% endif %} title="上一页">‹</button>
-      <select id="pageSelect" onchange="goPage(this.value)" title="跳转页码">
-        {% for p in range(1, page_count + 1) %}
-        <option value="{{ p }}" {% if p == page_num %}selected{% endif %}>第 {{ p }} / {{ page_count }} 页</option>
-        {% endfor %}
-      </select>
-      <button onclick="goPage({{ page_num + 1 }})" {% if page_num >= page_count %}disabled{% endif %} title="下一页">›</button>
       <div class="in-page-search">
         <input type="text" id="inPageSearch" placeholder="搜索本文献..." value="{{ keyword }}" onkeydown="if(event.key==='Enter')doDocSearch()" oninput="hideDocSearchPanel()">
         <button onclick="doDocSearch()">搜索</button>
         <div class="doc-search-panel" id="docSearchPanel"></div>
       </div>
     </div>
+    {% endif %}
     <div class="text-actions">
       <span class="ta-title">识别文本</span>
       <span id="langBadge" class="lang-badge{{ ' tri' if (doc_rows and doc_rows >= 3) else '' }}">{{ (doc_lang ~ (doc_rows ~ '行') if (doc_rows and doc_rows >= 3 and doc_lang != 'zh') else '') if (doc_rows and doc_rows >= 3) else '' }}</span>
+      <button class="reocr-btn" id="smartCheckBtn" onclick="runSmartCheck()" title="双通道对照校对（存量 OCR vs 第二引擎/人工录入）">智能校对</button>
       <input type="text" id="basisInput" placeholder="修订依据（选填）" style="width:150px; padding:2px 8px; font-size:12px; border:1px solid var(--border,#ccc); border-radius:4px; color:var(--text-muted,#666);" title="选填，随本次编辑附注到修订史；可随时在修订史中补填或修改">
       <button onclick="openRevLog()" style="padding:2px 10px; font-size:12px; cursor:pointer; border:1px solid var(--border,#ccc); border-radius:4px; background:var(--bg-secondary,#f5f5f5);" title="本文修订记录（补依据/入包勾选）">修订史</button>
       {% if doc_rows and doc_rows >= 3 %}<button id="autofillBtn" onclick="autofillDraft()" style="padding:2px 10px; font-size:12px; cursor:pointer; border:1px solid #f59e0b; border-radius:4px; background:#fffbeb; color:#92400e;" title="翻译大模型生成本页词对照/译文草稿（落库标 AI, 人工修订后标记自动清除）">AI 填充</button>{% endif %}
@@ -943,6 +956,100 @@ mark {
 {%- if not loop.last %}<br><br>{% endif -%}
 {%- endfor %}
 {%- endif %}
+    </div>
+
+    {#- ── 卡片组 (2026-10-17 整合裁定: 四卡+候选队列内嵌文本页, 默认折叠) ── -#}
+    {% set toc = cards_map.get('toc', {'content': {}, 'status': None}) %}
+    {% set entity = cards_map.get('entity', {'content': {}, 'status': None}) %}
+    {% set summ = cards_map.get('summary', {'content': {}, 'status': None}) %}
+    <div class="cards-group" id="cardsGroup">
+      <details class="card-sec">
+        <summary>元数据（书目）<span class="cg-hint">与全库文献信息同一数据源</span></summary>
+        <div class="doc-tags" id="docTags"></div>
+        <div id="proofBibPanel"></div>
+      </details>
+      <details class="card-sec">
+        <summary>目录卡{% if toc.status %} <span class="badge {{ toc.status }}">{{ toc.status }}</span>{% endif %}<span class="cg-hint">人工修订后标记 reviewed 进检索</span></summary>
+        {% if toc.content.get('nodes') %}
+        <table class="toc-table">
+          <tr><th>节点</th><th>类目</th><th>页</th><th>来源</th><th></th></tr>
+          {% for n in toc.content.get('nodes', []) %}
+          <tr><td>{{ n.label }}</td><td>{{ n.category or '—' }}</td><td>{{ n.page_num or '—' }}</td>
+              <td class="conf">{{ n.from or '手工' }}</td>
+              <td>{% if n.page_num %}<button onclick="goPage({{ n.page_num }})">对照</button>{% endif %}</td></tr>
+          {% endfor %}
+        </table>
+        {% else %}<div class="empty-hint">暂无目录节点——AI 生成候选后采纳，或手工添加</div>{% endif %}
+        <div class="add-row">
+          <input id="tnLabel" placeholder="节点名" style="flex:2;min-width:120px;">
+          <input id="tnCat" placeholder="类目（自由标签）" style="flex:1;min-width:90px;">
+          <input id="tnPage" placeholder="页码" style="width:60px;" type="number" min="1">
+          <button class="btn-primary" onclick="addTocNode()">+ 添加节点</button>
+        </div>
+        <div class="card-actions">
+          <button class="btn-primary" onclick="saveCard('toc')">保存目录</button>
+          {% if toc.status %}<button onclick="toggleStatus('toc', '{{ toc.status }}')">{{ '退回 draft' if toc.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
+        </div>
+      </details>
+      <details class="card-sec">
+        <summary>实体索引卡{% if entity.status %} <span class="badge {{ entity.status }}">{{ entity.status }}</span>{% endif %}<span class="cg-hint">人名/地名/机构/物产</span></summary>
+        {% if entity.content.get('items') %}
+        <table class="toc-table">
+          <tr><th>实体</th><th>类别</th><th>页</th><th>来源</th><th></th></tr>
+          {% for e in entity.content.get('items', []) %}
+          <tr><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td><td>{{ e.page_num or '—' }}</td>
+              <td class="conf">{{ e.from or '手工' }}</td>
+              <td>{% if e.page_num %}<button onclick="goPage({{ e.page_num }})">对照</button>{% endif %}</td></tr>
+          {% endfor %}
+        </table>
+        {% else %}<div class="empty-hint">暂无实体——AI 生成候选后采纳，或手工添加</div>{% endif %}
+        <div class="add-row">
+          <input id="enLabel" placeholder="实体名" style="flex:2;min-width:120px;">
+          <input id="enCat" placeholder="类别（人名/地名/…）" style="flex:1;min-width:90px;">
+          <input id="enPage" placeholder="页码" style="width:60px;" type="number" min="1">
+          <button class="btn-primary" onclick="addEntityItem()">+ 添加实体</button>
+        </div>
+        <div class="card-actions">
+          <button class="btn-primary" onclick="saveCard('entity')">保存实体索引</button>
+          {% if entity.status %}<button onclick="toggleStatus('entity', '{{ entity.status }}')">{{ '退回 draft' if entity.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
+        </div>
+      </details>
+      <details class="card-sec">
+        <summary>摘要卡{% if summ.status %} <span class="badge {{ summ.status }}">{{ summ.status }}</span>{% endif %}</summary>
+        <textarea class="summary-ta" id="sumText" placeholder="100-200 字文献摘要（可由 AI 生成草稿后修订）">{{ summ.content.get('text', '') }}</textarea>
+        <div class="card-actions">
+          <button class="btn-primary" onclick="saveCard('summary')">保存摘要</button>
+          {% if summ.status %}<button onclick="toggleStatus('summary', '{{ summ.status }}')">{{ '退回 draft' if summ.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
+        </div>
+      </details>
+      <details class="card-sec">
+        <summary>候选队列<span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span>
+          <button class="btn-primary" id="genBtn" onclick="genCandidates()" style="margin-left:auto;">AI 生成候选</button>
+        </summary>
+        {% if candidates %}
+        <table class="cand-table">
+          <tr><th>类型</th><th>标签</th><th>类目</th><th>置信</th><th>页</th><th>状态</th><th>操作</th></tr>
+          {% for c in candidates %}
+          <tr>
+            <td>{{ '目录' if c.ctype == 'toc' else '实体' }}</td>
+            <td id="cl-{{ c.id }}">{{ c.label }}</td>
+            <td id="cc-{{ c.id }}">{{ c.category or '—' }}</td>
+            <td class="conf">{{ '%.2f' % c.confidence if c.confidence is not none else '—' }}</td>
+            <td>{{ c.page_num or '—' }}</td>
+            <td><span class="badge {{ c.status }}">{{ c.status }}</span></td>
+            <td class="ops">
+              {% if c.status == 'pending' %}
+              <button onclick="reviewCand({{ c.id }}, 'adopt')">采纳</button>
+              <button onclick="reviewCand({{ c.id }}, 'reject')">驳回</button>
+              {% endif %}
+              <button onclick="patchCand({{ c.id }})">修订</button>
+              {% if c.page_num %}<button onclick="goPage({{ c.page_num }})">对照</button>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% else %}<div class="empty-hint">队列为空——点「AI 生成候选」（需设置页配置 llm_chat provider）</div>{% endif %}
+      </details>
     </div>
   </div>
 </div>
@@ -1063,21 +1170,7 @@ window.BIB_FIELD_LABELS = {{ bib_field_labels | default({}) | tojson }};
 })();
 
 // ── 伸缩左栏 ──
-function toggleSidebar() {
-  const sb = document.getElementById('proofSidebar');
-  if (!sb) return;
-  sb.classList.toggle('collapsed');
-  try {
-    localStorage.setItem('proofSidebar', sb.classList.contains('collapsed') ? '1' : '');
-  } catch (e) {}
-}
-(function initSidebar() {
-  const sb = document.getElementById('proofSidebar');
-  if (!sb) return;
-  try {
-    if (localStorage.getItem('proofSidebar') === '1') sb.classList.add('collapsed');
-  } catch (e) {}
-})();
+// (2026-10-17 布局裁定: 文献信息侧栏取消, 元数据入卡片组; toggleSidebar 移除)
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -2256,6 +2349,91 @@ const SMART_BASE = `/collections/{{ collection }}/doc/{{ doc.id if doc is define
 function smartToast(msg) {
   const el = document.getElementById('smartStatus');
   if (el) el.textContent = msg;
+}
+
+// ── 卡片组 (2026-10-17 整合裁定: 移植自 cards.html, 对照=goPage 跳页) ──
+async function postCard(url, data) {
+  const fd = new URLSearchParams(data);
+  const r = await fetch(url, { method: 'POST', body: fd });
+  return r.json();
+}
+async function saveCard(kind) {
+  let content = {};
+  if (kind === 'toc') content = window.__tocContent || { nodes: [] };
+  else if (kind === 'entity') content = window.__entityContent || { items: [] };
+  else if (kind === 'summary') content = { text: document.getElementById('sumText').value };
+  const d = await postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
+    { kind, content: JSON.stringify(content), status: 'draft' });
+  if (d.ok) { showToast('已保存'); setTimeout(() => location.reload(), 450); }
+  else showToast('保存失败: ' + (d.error || ''));
+}
+async function toggleStatus(kind, cur) {
+  const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards`);
+  const d = await r.json();
+  const card = (d.cards || []).filter(c => c.kind === kind)[0];
+  if (!card) { showToast('先保存卡片'); return; }
+  const next = cur === 'reviewed' ? 'draft' : 'reviewed';
+  const res = await postCard(`/collections/${encodeURIComponent(collection)}/cards/${card.id}/status`, { status: next });
+  if (res.ok) { showToast(next === 'reviewed' ? '已 reviewed（进检索路）' : '已退回 draft'); setTimeout(() => location.reload(), 400); }
+  else showToast('失败: ' + (res.error || ''));
+}
+function addTocNode() {
+  const label = document.getElementById('tnLabel').value.trim();
+  if (!label) { showToast('节点名必填'); return; }
+  const cat = document.getElementById('tnCat').value.trim();
+  const pg = parseInt(document.getElementById('tnPage').value, 10) || page;
+  if (!window.__tocContent) {
+    window.__tocContent = { nodes: [] };
+    {% if toc.content.get('nodes') %}
+    window.__tocContent.nodes = {{ toc.content.get('nodes') | tojson }};
+    {% endif %}
+  }
+  window.__tocContent.nodes.push({ label, category: cat || null, page_num: pg, from: '手工' });
+  document.getElementById('tnLabel').value = '';
+  document.getElementById('tnCat').value = '';
+  document.getElementById('tnPage').value = '';
+  showToast('已暂存（保存目录后生效）— 当前 ' + window.__tocContent.nodes.length + ' 节点');
+}
+function addEntityItem() {
+  const label = document.getElementById('enLabel').value.trim();
+  if (!label) { showToast('实体名必填'); return; }
+  const cat = document.getElementById('enCat').value.trim();
+  const pg = parseInt(document.getElementById('enPage').value, 10) || page;
+  if (!window.__entityContent) {
+    window.__entityContent = { items: [] };
+    {% if entity.content.get('items') %}
+    window.__entityContent.items = {{ entity.content.get('items') | tojson }};
+    {% endif %}
+  }
+  window.__entityContent.items.push({ label, category: cat || null, page_num: pg, from: '手工' });
+  document.getElementById('enLabel').value = '';
+  document.getElementById('enCat').value = '';
+  document.getElementById('enPage').value = '';
+  showToast('已暂存（保存实体索引后生效）— 当前 ' + window.__entityContent.items.length + ' 条');
+}
+async function reviewCand(id, action) {
+  const d = await postCard(`/collections/${encodeURIComponent(collection)}/candidates/${id}/review`, { action });
+  if (d.ok) { showToast(action === 'adopt' ? '已采纳（并入卡）' : '已驳回'); setTimeout(() => location.reload(), 400); }
+  else showToast('失败: ' + (d.error || ''));
+}
+async function patchCand(id) {
+  const curL = (document.getElementById('cl-' + id) || {}).textContent || '';
+  const curC = (document.getElementById('cc-' + id) || {}).textContent || '';
+  const l = prompt('修订标签:', curL); if (l === null) return;
+  const c = prompt('修订类目（自由标签）:', curC === '—' ? '' : curC); if (c === null) return;
+  const d = await postCard(`/collections/${encodeURIComponent(collection)}/candidates/${id}/review`,
+    { action: 'patch', label: l.trim(), category: c.trim() });
+  if (d.ok) { showToast('已修订'); setTimeout(() => location.reload(), 400); }
+}
+async function genCandidates() {
+  const btn = document.getElementById('genBtn');
+  btn.disabled = true; btn.textContent = '生成中…';
+  try {
+    const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/candidates/generate`, { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) { showToast(`生成 ${d.toc} 目录 + ${d.entities} 实体候选${d.summary ? ' + 摘要草稿' : ''} (${d.model})`); setTimeout(() => location.reload(), 600); }
+    else { showToast('生成失败: ' + (d.error || '')); btn.disabled = false; btn.textContent = 'AI 生成候选'; }
+  } catch (e) { showToast('请求失败'); btn.disabled = false; btn.textContent = 'AI 生成候选'; }
 }
 
 async function runSmartCheck(channel = 'engine') {

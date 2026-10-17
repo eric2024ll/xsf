@@ -2650,6 +2650,28 @@ async def proofread_page(
 
             page_num = max(1, min(page, page_count))
 
+            # 卡片组 (2026-10-17 整合裁定): 校对页文本侧内嵌四卡+候选队列
+            try:
+                _migrate_legacy_meta(conn, doc_id)
+                card_rows = conn.execute(
+                    "SELECT kind, content, status FROM doc_cards "
+                    "WHERE doc_id = ?", (doc_id,)).fetchall()
+                cand_rows = conn.execute(
+                    "SELECT id, ctype, label, category, confidence, "
+                    "page_num, status FROM card_candidates "
+                    "WHERE doc_id = ? ORDER BY status, ctype, id",
+                    (doc_id,)).fetchall()
+            except sqlite3.OperationalError:
+                card_rows, cand_rows = [], []
+            cards_map = {}
+            for cr in card_rows:
+                try:
+                    cards_map[cr["kind"]] = {
+                        "content": json.loads(cr["content"] or "{}"),
+                        "status": cr["status"]}
+                except ValueError:
+                    cards_map[cr["kind"]] = {"content": {}, "status": cr["status"]}
+
             rows = conn.execute(
                 """SELECT id, page_num, block_num, line_num, text,
                           bbox, block_label, page_w, page_h, suspect,
@@ -2782,6 +2804,8 @@ async def proofread_page(
                 source_tags=source_tags,
                 bib_type=bib_type,
                 bib_data=bib_data,
+                cards_map=cards_map,
+                candidates=[dict(cr) for cr in cand_rows],
                 bib_type_labels=BIB_TYPE_LABELS,
                 bib_field_labels=BIB_FIELD_LABELS,
                 bib_type_fields=BIB_TYPE_FIELDS,
