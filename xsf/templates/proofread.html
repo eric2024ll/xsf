@@ -890,7 +890,7 @@ mark {
     </div>
     <div class="text-actions">
       <span class="ta-title">识别文本</span>
-      <input type="text" id="basisInput" placeholder="修订依据（如：对校影印）" style="width:150px; padding:2px 8px; font-size:12px; border:1px solid var(--border,#ccc); border-radius:4px; color:var(--text-muted,#666);" title="随本次编辑保存到修订史；留空则记为待补，导出变更包前必须补填">
+      <input type="text" id="basisInput" placeholder="修订依据（选填）" style="width:150px; padding:2px 8px; font-size:12px; border:1px solid var(--border,#ccc); border-radius:4px; color:var(--text-muted,#666);" title="选填，随本次编辑附注到修订史；可随时在修订史中补填或修改">
       <button onclick="openRevLog()" style="padding:2px 10px; font-size:12px; cursor:pointer; border:1px solid var(--border,#ccc); border-radius:4px; background:var(--bg-secondary,#f5f5f5);" title="本文修订记录（补依据/入包勾选）">修订史</button>
       <span class="save-status" id="saveStatus"></span>
       <div class="ta-menu-wrap">
@@ -1207,17 +1207,16 @@ async function openRevLog() {
     return;
   }
   const rows = data.revisions || [];
-  const nb = rows.filter(x => x.needs_basis).length;
-  const trs = rows.map(x => `
+  const nb = rows.filter(x => x.needs_basis).length;  const trs = rows.map(x => `
     <tr style="border-top:1px solid var(--border,#eee);">
       <td style="padding:4px 6px; white-space:nowrap; color:var(--text-muted,#888); font-size:12px;">${escRev(x.created_at)}<br>p${x.page_num}·块${x.block_num}</td>
       <td style="padding:4px 6px; font-size:12px;">${escRev(truncRev(x.old_value, 40))}<br>→ ${escRev(truncRev(x.new_value, 40))}</td>
-      <td style="padding:4px 6px; font-size:12px; ${x.needs_basis ? 'color:var(--danger,#c33);' : ''}">${x.needs_basis ? '待补' : escRev(x.basis)} <button onclick="promptBasis(${x.id})" style="font-size:11px; padding:1px 6px; cursor:pointer;">${x.needs_basis ? '补依据' : '改'}</button></td>
-      <td style="padding:4px 6px; text-align:center;"><input type="checkbox" ${x.in_pkg ? 'checked' : ''} onchange="toggleRevPkg(this, ${x.id})" title="勾选进入导出变更包（依据待补不可勾）"></td>
+      <td style="padding:4px 6px; font-size:12px; color:var(--text-muted,#888);">${x.needs_basis ? '—' : escRev(x.basis)} <button onclick="promptBasis(${x.id})" style="font-size:11px; padding:1px 6px; cursor:pointer;">${x.needs_basis ? '填' : '改'}</button></td>
+      <td style="padding:4px 6px; text-align:center;"><input type="checkbox" ${x.in_pkg ? 'checked' : ''} onchange="toggleRevPkg(this, ${x.id})" title="勾选进入导出变更包"></td>
     </tr>`).join('');
   panel.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <b>修订史 · ${rows.length} 条${nb ? ` · <span style="color:var(--danger,#c33);">待补依据 ${nb} 条</span>` : ''}</b>
+      <b>修订史 · ${rows.length} 条${nb ? ` · 未填依据 ${nb} 条` : ''}</b>
       <div>
         <button onclick="openRevLog()" style="padding:2px 10px; cursor:pointer;">刷新</button>
         <button onclick="document.getElementById('revLogPanel').style.display='none'" style="padding:2px 10px; cursor:pointer;">关闭</button>
@@ -1227,11 +1226,11 @@ async function openRevLog() {
       <tr style="color:var(--text-muted,#888); font-size:12px;"><th align="left" style="padding:2px 6px;">时间/位置</th><th align="left" style="padding:2px 6px;">旧 → 新</th><th align="left" style="padding:2px 6px;">依据</th><th style="padding:2px 6px;">入包</th></tr>
       ${trs}</table>`
       : '<div style="color:var(--text-muted,#888); padding:8px;">尚无修订记录 — 编辑保存后此处留痕。</div>'}
-    <div style="color:var(--text-muted,#888); font-size:12px; margin-top:8px;">依据为最终必填项：待补条目导出变更包前必须补齐（入包勾选被拦截）。</div>`;
+    <div style="color:var(--text-muted,#888); font-size:12px; margin-top:8px;">依据选填：可随时补填/修改（清空即删除）。勾选「入包」的条目将进入导出变更包。</div>`;
 }
 
 async function promptBasis(id) {
-  const v = prompt('修订依据（对校来源/考证理由）:');
+  const v = prompt('修订依据（选填，对校来源/考证理由；清空则删除）:');
   if (v === null) return;
   try {
     const params = new URLSearchParams();

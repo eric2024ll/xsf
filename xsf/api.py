@@ -2123,17 +2123,12 @@ async def list_revisions(collection: str, doc_id: int, limit: int = 200):
 async def set_revision_basis(
     collection: str,
     rev_id: int,
-    basis: str = Form(...),
+    basis: str = Form(""),
 ):
-    """补填/修订依据. 依据为最终必填项: 待补(红)条目须补齐后方可入导出包."""
+    """补填/修订/清空依据. 依据为选填 (用户裁定 2026-10-17 修订)."""
     try:
         conn = get_conn(collection)
         try:
-            if not basis.strip():
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": "依据不能为空"},
-                )
             cur = conn.execute(
                 "UPDATE revision_log SET basis = ? WHERE id = ?",
                 (basis.strip(), rev_id),
@@ -2158,18 +2153,13 @@ async def toggle_revision_pkg(collection: str, rev_id: int):
         conn = get_conn(collection)
         try:
             row = conn.execute(
-                "SELECT basis, in_pkg FROM revision_log WHERE id = ?",
+                "SELECT in_pkg FROM revision_log WHERE id = ?",
                 (rev_id,),
             ).fetchone()
             if row is None:
                 return JSONResponse(
                     status_code=404,
                     content={"error": "修订记录不存在"},
-                )
-            if not row["in_pkg"] and not (row["basis"] or "").strip():
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": "依据待补: 补填依据后才能勾选入包"},
                 )
             conn.execute(
                 "UPDATE revision_log SET in_pkg = ? WHERE id = ?",
