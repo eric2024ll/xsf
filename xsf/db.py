@@ -111,9 +111,24 @@ def _migrate(conn):
         conn.execute("ALTER TABLE lines ADD COLUMN gloss TEXT")
     if "trans" not in cols:
         conn.execute("ALTER TABLE lines ADD COLUMN trans TEXT")
+    if "translit" not in cols:
+        conn.execute("ALTER TABLE lines ADD COLUMN translit TEXT")
     doc_cols2 = {row[1] for row in conn.execute("PRAGMA table_info(documents)")}
     if "lang" not in doc_cols2:
         conn.execute("ALTER TABLE documents ADD COLUMN lang TEXT DEFAULT 'zh'")
+    if "tri_rows" not in doc_cols2:
+        conn.execute("ALTER TABLE documents ADD COLUMN tri_rows INTEGER DEFAULT NULL")
+    # 语料包台账 (P3, 2026-10-17): .sqpkg 导出记录 (导出中心数据源)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS export_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exported_at TEXT DEFAULT (datetime('now')),
+            pkg_type TEXT NOT NULL,
+            doc_ids TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            edits_count INTEGER DEFAULT 0
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ocr_page_state (
             doc_id INTEGER NOT NULL,

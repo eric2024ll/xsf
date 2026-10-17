@@ -1496,13 +1496,28 @@ async def api_batch_tags(collection: str, request: Request):
 
 @app.post("/collections/{collection}/docs/export-archive")
 async def api_export_archive(collection: str, request: Request):
-    """导出选中文献为数据包 (tar.gz)：含 export.db + uploads/ + manifest.json。"""
+    """导出选中文献为语料包 (.sqpkg, tar.gz)。
+
+    P3 双通道 (body: {ids, pkg_type}):
+    - doc 包: 全量 (documents + lines + blocks_fts + 全部修订史 + uploads/)
+    - changeset 包: 变更增量 (documents 元数据 + 仅 in_pkg=1 修订史, 无 lines/uploads)
+    manifest v2: {format, version:2, pkg_type, collection, exported_at,
+                  docs:[{cite_key,filename,lang,tri_rows,page_count,base_version}],
+                  edits_count}; export_log 记台账。
+    v1 旧格式 (manifest 无 version) 仍可导入。
+    """
+    import datetime as _dt
+
     try:
         body = await request.json()
         ids = body.get("ids", [])
+        pkg_type = body.get("pkg_type", "doc")
         if not ids:
             return JSONResponse(status_code=400,
                                 content={"error": "未选择文献"})
+        if pkg_type not in ("doc", "changeset"):
+            return JSONResponse(status_code=400,
+                                content={"error": "pkg_type 只接受 doc/changeset"})
 
         db_path = get_db_path(collection)
         if not db_path.exists():
@@ -1511,7 +1526,7 @@ async def api_export_archive(collection: str, request: Request):
 
         placeholders = ",".join("?" * len(ids))
 
-        # 1. SQLite backup 到临时 DB，然后只保留选中文献
+        # 1. SQLite backup 到临时 DB，然后按包型清理
         fd, tmp_db = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         src_conn = get_conn(collection)
@@ -1521,52 +1536,113 @@ async def api_export_archive(collection: str, request: Request):
                 src_conn.backup(backup_conn)
             backup_conn.close()
 
-            # 删除非选中文献
             clean = sqlite3.connect(tmp_db)
             clean.row_factory = sqlite3.Row
-            clean.execute(f"DELETE FROM lines WHERE doc_id NOT IN ({placeholders})", ids)
-            clean.execute(f"DELETE FROM blocks_fts WHERE doc_id NOT IN ({placeholders})", ids)
-            clean.execute(f"DELETE FROM documents WHERE id NOT IN ({placeholders})", ids)
+            # 文档元信息 (manifest + 均含 documents 表)
+            doc_meta = clean.execute(
+                f"""SELECT id, cite_key, filename, page_count FROM documents
+                    WHERE id IN ({placeholders}) ORDER BY id""", ids,
+            ).fetchall()
+            # base_version = 导出时该文献全部修订数 (清理前取, 变更增量基准)
+            base_versions = dict(
+                (r[0], r[1]) for r in clean.execute(
+                    f"""SELECT doc_id, COUNT(*) FROM revision_log
+                        WHERE doc_id IN ({placeholders}) GROUP BY doc_id""",
+                    ids).fetchall())
+
+            if pkg_type == "changeset":
+                # 变更包: 只保留选中文献的 documents + in_pkg=1 修订史
+                clean.execute("DELETE FROM lines")
+                clean.execute("DELETE FROM blocks_fts")
+                clean.execute(
+                    f"""DELETE FROM revision_log
+                        WHERE doc_id NOT IN ({placeholders})
+                           OR in_pkg != 1""", ids)
+                clean.execute(
+                    f"DELETE FROM documents WHERE id NOT IN ({placeholders})",
+                    ids)
+            else:
+                # 文献包: 全量, 但清到选中文献 (含修订史同步过滤)
+                clean.execute(
+                    f"DELETE FROM lines WHERE doc_id NOT IN ({placeholders})",
+                    ids)
+                clean.execute(
+                    f"DELETE FROM blocks_fts WHERE doc_id NOT IN ({placeholders})",
+                    ids)
+                clean.execute(
+                    f"DELETE FROM revision_log WHERE doc_id NOT IN ({placeholders})",
+                    ids)
+                clean.execute(
+                    f"DELETE FROM documents WHERE id NOT IN ({placeholders})",
+                    ids)
             clean.commit()
-            filenames = [r[0] for r in clean.execute(
-                "SELECT filename FROM documents"
-            ).fetchall()]
-            doc_count = clean.execute(
-                "SELECT COUNT(*) FROM documents"
-            ).fetchone()[0]
+
+            edits_count = clean.execute("SELECT COUNT(*) FROM revision_log"
+                                        ).fetchone()[0]
             clean.close()
         finally:
             src_conn.close()
 
-        # 2. 打包 tar.gz
+        # 2. 打包 .sqpkg (tar.gz)
         fd, tmp_tar = tempfile.mkstemp(suffix=".tar.gz")
         os.close(fd)
         uploads_dir = get_upload_dir(collection)
+        doc_count = len(doc_meta)
         with tarfile.open(tmp_tar, "w:gz") as tar:
             tar.add(tmp_db, arcname="export.db")
             manifest = {
+                "format": "sqpkg",
+                "version": 2,
+                "pkg_type": pkg_type,
                 "collection": collection,
-                "exported_at": __import__("datetime").datetime.now().isoformat(),
+                "exported_at": _dt.datetime.now().isoformat(),
                 "doc_count": doc_count,
-                "filenames": filenames,
+                "edits_count": edits_count,
+                "docs": [
+                    {
+                        "id": r["id"],
+                        "cite_key": r["cite_key"],
+                        "filename": r["filename"],
+                        "page_count": r["page_count"],
+                        "base_version": base_versions.get(r["id"], 0),
+                    }
+                    for r in doc_meta
+                ],
+                "filenames": [r["filename"] for r in doc_meta],
             }
             manifest_data = json.dumps(manifest, ensure_ascii=False, indent=2)
             manifest_bytes = manifest_data.encode("utf-8")
             mi = tarfile.TarInfo(name="manifest.json")
             mi.size = len(manifest_bytes)
             tar.addfile(mi, io.BytesIO(manifest_bytes))
-            for fn in filenames:
-                fp = uploads_dir / fn
-                if fp.exists():
-                    tar.add(fp, arcname=f"uploads/{fn}")
+            if pkg_type == "doc":
+                for r in doc_meta:
+                    fp = uploads_dir / r["filename"]
+                    if fp.exists():
+                        tar.add(fp, arcname=f"uploads/{r['filename']}")
 
         os.unlink(tmp_db)
+
+        # 3. 台账
+        conn = get_conn(collection)
+        try:
+            stamp = _dt.datetime.now().strftime("%Y%m%d")
+            fname = (f"{collection}_{stamp}_{doc_count}docs.sqpkg"
+                     if pkg_type == "doc"
+                     else f"{collection}_{stamp}_{edits_count}edits.sqpkg")
+            conn.execute(
+                """INSERT INTO export_log (pkg_type, doc_ids, filename, edits_count)
+                   VALUES (?, ?, ?, ?)""",
+                (pkg_type, json.dumps(ids), fname, edits_count),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
         with open(tmp_tar, "rb") as f:
             content = f.read()
         os.unlink(tmp_tar)
 
-        fname = f"{collection}_export_{doc_count}docs.tar.gz"
         return Response(
             content=content,
             media_type="application/gzip",
@@ -1579,8 +1655,20 @@ async def api_export_archive(collection: str, request: Request):
 
 
 @app.post("/collections/{collection}/docs/import-archive")
-async def api_import_archive(collection: str, file: UploadFile = File(...)):
-    """导入数据包 (tar.gz)：三表联动导入到当前 collection。"""
+async def api_import_archive(collection: str, file: UploadFile = File(...),
+                             force: int = 0):
+    """导入语料包 (.sqpkg / 旧 tar.gz) 到当前书架。
+
+    P3 语义:
+    - doc 包 (manifest v2 pkg_type=doc / v1 旧包): 全量导入 (documents+lines
+      +blocks_fts+revision_log 联动重映射); **cite_key 幂等** — 同 cite_key
+      已在架则拦截 (force=1 覆盖导入为新记录); filename 撞但 cite_key 不同
+      → 照旧 _imported 改名共存。
+    - changeset 包 (pkg_type=changeset): 变更附件随行, **不自动 apply** —
+      同 cite_key 文献在架 → 修订史条目挂到该文献名下 (basis 前缀「变更包·
+      {collection}」溯源, in_pkg 置 0); 不在架 → 文献+附件一起导入。
+    - 列白名单含 P1/P2 新列 (lang/tri_rows/suspect/gloss/trans/translit)。
+    """
     try:
         init_db(collection)
         raw = await file.read()
@@ -1596,21 +1684,41 @@ async def api_import_archive(collection: str, file: UploadFile = File(...)):
                 tar.extractall(tmp_dir)
 
             tmp_db_path = Path(tmp_dir) / "export.db"
+            manifest_path = Path(tmp_dir) / "manifest.json"
             if not tmp_db_path.exists():
                 return JSONResponse(
                     status_code=400,
                     content={"error": "数据包缺少 export.db"},
                 )
+            manifest = {}
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(
+                        manifest_path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, ValueError):
+                    manifest = {}
+            pkg_type = manifest.get("pkg_type", "doc") \
+                if manifest.get("version") == 2 else "doc"
+            src_collection = manifest.get("collection", "未知书架")
 
             src_uploads = Path(tmp_dir) / "uploads"
             dst_uploads = get_upload_dir(collection)
 
-            # 2. 三表联动导入
+            # 2. 联动导入 (src schema 探测: v1 旧包缺新列/无 revision_log)
             src = sqlite3.connect(str(tmp_db_path))
             src.row_factory = sqlite3.Row
+            src_line_cols = {r[1] for r in src.execute(
+                "PRAGMA table_info(lines)")}
+            src_has_revlog = src.execute(
+                """SELECT 1 FROM sqlite_master
+                   WHERE type='table' AND name='revision_log'"""
+            ).fetchone() is not None
+            LINE_EXTRA = ["suspect", "gloss", "trans", "translit"]
+            line_extras = [c for c in LINE_EXTRA if c in src_line_cols]
             dst = get_conn(collection)
             imported = 0
             conflicts = []
+            skipped = []
 
             try:
                 doc_rows = src.execute(
@@ -1618,6 +1726,53 @@ async def api_import_archive(collection: str, file: UploadFile = File(...)):
                 ).fetchall()
                 for doc in doc_rows:
                     doc = dict(doc)
+                    cite_key = doc.get("cite_key")
+                    old_id = doc.pop("id", None)
+
+                    # cite_key 幂等 (doc 包): 同 cite_key 在架 → 拦截/覆盖
+                    existing_by_key = None
+                    if cite_key:
+                        existing_by_key = dst.execute(
+                            "SELECT id FROM documents WHERE cite_key = ?",
+                            (cite_key,),
+                        ).fetchone()
+
+                    if pkg_type == "changeset":
+                        # 变更附件随行: 在架 → 挂到该文献; 不在架 → 全量导
+                        if existing_by_key and src_has_revlog:
+                            new_id = existing_by_key["id"]
+                            n = 0
+                            for r in src.execute(
+                                """SELECT page_num, block_num, old_value,
+                                          new_value, basis, created_at
+                                   FROM revision_log WHERE doc_id = ?""",
+                                (old_id,),
+                            ).fetchall():
+                                dst.execute(
+                                    """INSERT INTO revision_log
+                                       (doc_id, page_num, block_num, old_value,
+                                        new_value, basis, in_pkg, created_at)
+                                       VALUES (?, ?, ?, ?, ?, ?, 0, ?)""",
+                                    (new_id, r["page_num"], r["block_num"],
+                                     r["old_value"], r["new_value"],
+                                     f"变更包·{src_collection}·"
+                                     f"{r['basis'] or ''}",
+                                     r["created_at"]),
+                                )
+                                n += 1
+                            skipped.append({
+                                "cite_key": cite_key,
+                                "attached_edits": n,
+                            })
+                            continue
+
+                    elif existing_by_key and not force:
+                        skipped.append({
+                            "cite_key": cite_key,
+                            "reason": "已在架 (cite_key 重复), force=1 可覆盖",
+                        })
+                        continue
+
                     filename = doc["filename"]
                     existing = dst.execute(
                         "SELECT id FROM documents WHERE filename = ?",
@@ -1637,14 +1792,13 @@ async def api_import_archive(collection: str, file: UploadFile = File(...)):
                     if src_fp.exists() and not dst_fp.exists():
                         shutil.copy2(src_fp, dst_fp)
 
-                    old_id = doc.pop("id", None)
                     doc["filename"] = filename
                     cols = [
                         "cite_key", "title", "author", "filename",
                         "page_count", "doc_type", "is_primary",
                         "is_secondary", "is_reference", "source_tags",
                         "bib_type", "bib_data", "linked_pdf",
-                        "created_at",
+                        "lang", "tri_rows", "created_at",
                     ]
                     placeholders = ",".join("?" * len(cols))
                     cur = dst.execute(
@@ -1654,20 +1808,25 @@ async def api_import_archive(collection: str, file: UploadFile = File(...)):
                     )
                     new_id = cur.lastrowid
 
+                    line_sel = ("page_num, block_num, line_num, text, "
+                                "bbox, block_label, page_w, page_h"
+                                + (", " + ", ".join(line_extras)
+                                   if line_extras else ""))
+                    line_ins = ("doc_id, page_num, block_num, line_num, "
+                                "text, bbox, block_label, page_w, page_h"
+                                + (", " + ", ".join(line_extras)
+                                   if line_extras else ""))
                     for r in src.execute(
-                        """SELECT page_num, block_num, line_num, text,
-                                  bbox, block_label, page_w, page_h
-                           FROM lines WHERE doc_id = ?""",
+                        f"""SELECT {line_sel} FROM lines WHERE doc_id = ?""",
                         (old_id,),
                     ).fetchall():
                         dst.execute(
-                            """INSERT INTO lines
-                               (doc_id, page_num, block_num, line_num,
-                                text, bbox, block_label, page_w, page_h)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            f"""INSERT INTO lines ({line_ins})
+                                VALUES ({','.join('?' * (9 + len(line_extras)))})""",
                             (new_id, r["page_num"], r["block_num"],
                              r["line_num"], r["text"], r["bbox"],
-                             r["block_label"], r["page_w"], r["page_h"]),
+                             r["block_label"], r["page_w"], r["page_h"],
+                             *[r[c] for c in line_extras]),
                         )
 
                     for r in src.execute(
@@ -1682,6 +1841,24 @@ async def api_import_archive(collection: str, file: UploadFile = File(...)):
                             (new_id, r["page_num"], r["block_num"],
                              r["text"]),
                         )
+
+                    # 修订史联动 (doc_id 重映射; in_pkg 置 0 = 未再导出)
+                    if src_has_revlog:
+                        for r in src.execute(
+                            """SELECT page_num, block_num, old_value, new_value,
+                                      basis, created_at
+                               FROM revision_log WHERE doc_id = ?""",
+                            (old_id,),
+                        ).fetchall():
+                            dst.execute(
+                                """INSERT INTO revision_log
+                                   (doc_id, page_num, block_num, old_value,
+                                    new_value, basis, in_pkg, created_at)
+                                   VALUES (?, ?, ?, ?, ?, ?, 0, ?)""",
+                                (new_id, r["page_num"], r["block_num"],
+                                 r["old_value"], r["new_value"], r["basis"],
+                                 r["created_at"]),
+                            )
                     imported += 1
 
                 dst.commit()
@@ -1691,7 +1868,8 @@ async def api_import_archive(collection: str, file: UploadFile = File(...)):
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        return {"imported": imported, "conflicts": conflicts}
+        return {"imported": imported, "conflicts": conflicts,
+                "skipped": skipped, "pkg_type": pkg_type}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

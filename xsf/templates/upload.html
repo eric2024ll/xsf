@@ -355,7 +355,15 @@ async function importArchive(input){
     var data=await r.json();
     if(data.error){st.className='import-status show err';st.textContent='导入失败: '+data.error;return;}
     st.className='import-status show ok';
-    st.textContent='已导入 '+data.imported+' 篇'+(data.conflicts.length?'（'+data.conflicts.length+' 个文件名冲突已重命名）':'');
+    var msg='已导入 '+data.imported+' 篇'+(data.conflicts.length?'（'+data.conflicts.length+' 个文件名冲突已重命名）':'');
+    if(data.skipped && data.skipped.length){
+      msg+='；'+data.skipped.length+' 条跳过：'+data.skipped.map(function(s){
+        return s.attached_edits!==undefined
+          ? (s.cite_key||'?')+' 附件挂载 '+s.attached_edits+' 条修订'
+          : (s.cite_key||'?')+' '+(s.reason||'');
+      }).join('，');
+    }
+    st.textContent=msg;
   }catch(e){st.className='import-status show err';st.textContent='导入失败: '+e.message;}
 }
 

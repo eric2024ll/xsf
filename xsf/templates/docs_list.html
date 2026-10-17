@@ -116,6 +116,7 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
         <button onclick="exportAllBib()">导出全部 BibTeX</button>
         <button onclick="exportMd()">导出 Markdown</button>
         <button onclick="exportArchive()">导出数据包</button>
+        <button onclick="exportArchive('changeset')">导出变更包（勾选修订）</button>
       </div>
     </div>
     <button class="btn" onclick="openBibMatch()" id="btnBibMatch">批量导入 BibTeX</button>
@@ -660,9 +661,11 @@ async function exportMd(){
   await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-md', {ids}, 'xsf_docs.zip', 'application/zip');
 }
 
-async function exportArchive(){
+async function exportArchive(pkgType){
   const ids = getSelectedIds(); if(!ids) return;
-  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-archive', {ids}, 'xsf_archive.tar.gz', 'application/gzip');
+  const pt = pkgType || (confirm('确定：导出【文献包】（全量：文本+修订史+源文件）。\n\n取消：导出【变更包】（仅勾选入包的修订史，供上游人工审）。') ? 'doc' : 'changeset');
+  await downloadPost('/collections/' + encodeURIComponent(collection) + '/docs/export-archive',
+    {ids, pkg_type: pt}, pt === 'changeset' ? 'xsf_changeset.sqpkg' : 'xsf_docs.sqpkg', 'application/gzip');
 }
 
 async function downloadPost(url, body, filename, mime){
