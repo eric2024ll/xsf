@@ -321,13 +321,25 @@ async def api_save_ocr_provider(name: str = Form(...), url: str = Form(''),
 
 @app.post("/api/ocr-config/test")
 async def api_test_ocr_provider(id: str = Form(...)):
-    """连接测试: 按端点类型轻量探活, 不跑大推理。"""
+    """连接测试: 按端点类型轻量探活, 不跑大推理。
+    llm_chat 型 (P2c) 走翻译 LLM 探活 (chat ping)。"""
     from .config import get_ocr_provider_cfg
     from .ocr.vl_api import VLApiAdapter
     try:
         cfg = get_ocr_provider_cfg(id)
     except RuntimeError as e:
-        return JSONResponse({"error": str(e)}, status_code=404)
+        # llm_chat 型不在 OCR 解析链内, 直接查配置
+        from .config import get_llm_providers
+        llm = next((p for p in get_llm_providers() if p['id'] == id), None)
+        if llm is None:
+            return JSONResponse({"error": str(e)}, status_code=404)
+        try:
+            from .llm import chat
+            _, model = chat([{"role": "user", "content": "ping"}],
+                            provider_id=id, max_tokens=8)
+            return {"ok": True, "detail": f"LLM 连通 ({model})"}
+        except Exception as ex:
+            return {"ok": False, "detail": f"LLM 探活失败: {ex}"}
     result = VLApiAdapter(cfg).test_connection()
     return result
 

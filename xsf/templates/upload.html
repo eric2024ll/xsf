@@ -187,7 +187,14 @@
       <div class="section-title">已添加的 OCR 服务</div>
       <div class="provider-list" id="providerList"></div>
 
-      <div class="section-title" id="providerFormTitle">添加 OCR 服务</div>
+      <div class="section-title" id="providerFormTitle">添加服务</div>
+      <div class="field">
+        <label>用途 <span style="color:var(--text-muted);font-weight:400;font-size:0.75rem;">（决定它进哪条默认链）</span></label>
+        <select id="pfPtype" onchange="onPtypeChange()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;">
+          <option value="vl_api">视觉 OCR（识别引擎）</option>
+          <option value="llm_chat">翻译 LLM（多行制 AI 填充草稿层）</option>
+        </select>
+      </div>
       <input type="hidden" id="pfId" value="">
       <div class="field">
         <label>端点类型</label>
@@ -375,7 +382,9 @@ function ocrStatusEl(msg, cls) {
 }
 function resetProviderForm() {
   document.getElementById('pfId').value = '';
+  document.getElementById('pfPtype').value = 'vl_api';
   document.getElementById('pfType').value = 'paddle_http';
+  document.getElementById('pfType').disabled = false;
   document.getElementById('pfName').value = '';
   document.getElementById('pfUrl').value = '';
   document.getElementById('pfKey').value = '';
@@ -383,6 +392,19 @@ function resetProviderForm() {
   document.getElementById('pfPrompt').value = '';
   document.getElementById('providerFormTitle').textContent = '添加 OCR 服务';
   document.getElementById('pfCancelBtn').style.display = 'none';
+  onTypeChange();
+}
+function onPtypeChange() {
+  var pt = document.getElementById('pfPtype').value;
+  var typeSel = document.getElementById('pfType');
+  if (pt === 'llm_chat') {
+    typeSel.value = 'openai_chat';
+    typeSel.disabled = true;
+    typeSel.title = '翻译 LLM 固定走 OpenAI 兼容协议';
+  } else {
+    typeSel.disabled = false;
+    typeSel.title = '';
+  }
   onTypeChange();
 }
 function onTypeChange() {
@@ -400,33 +422,30 @@ function onTypeChange() {
     hint.innerHTML = '结构化契约：<code>POST 文件 → {pages:[{parsing_res_list,…}]}</code> (base_url 自动补 <code>/ocr</code>)。上传 OCR / 画框重 OCR 使用默认服务（点选列表项切换）。自训练管线 (小语种 det+rec) 见 <code>contrib/pipeline_server_template.py</code>。';
   }
 }
-var _providers = [], _defaultPid = null;
+var _providers = [], _defaultPid = null, _defaultLlmPid = null;
 async function loadProviders() {
   try {
     var r = await fetch('/api/ocr-config');
     var data = await r.json();
     _providers = data.providers || [];
     _defaultPid = data.default;
+    _defaultLlmPid = data.default_llm;
     renderProviders();
   } catch (e) { /* 静默 */ }
 }
-function renderProviders() {
-  var el = document.getElementById('providerList');
-  if (!_providers.length) {
-    el.innerHTML = '<div class="ocr-empty">尚未添加 OCR 服务。在下方表单添加第一个（本地服务或远程 API）。</div>';
-    return;
-  }
-  el.innerHTML = _providers.map(function(p) {
-    var isDef = p.id === _defaultPid;
+function _providerRow(p, scope) {
+    var isDef = (scope === 'llm') ? (p.id === _defaultLlmPid) : (p.id === _defaultPid);
+    var radioName = (scope === 'llm') ? 'defLlmProvider' : 'defProvider';
     var epLabel = {paddle_http:'结构化', aistudio_job:'aistudio', openai_chat:'OpenAI'}[p.endpoint] || p.endpoint || '';
     return '<div class="provider-item' + (isDef ? ' is-default' : '') + '">' +
-      '<input type="radio" name="defProvider" class="radio" id="def-' + p.id + '"' + (isDef ? ' checked' : '') +
-      ' title="设为默认" onchange="setDefault(\'' + p.id + '\')">' +
+      '<input type="radio" name="' + radioName + '" class="radio" id="def-' + p.id + '"' + (isDef ? ' checked' : '') +
+      ' title="设为默认" onchange="setDefault(\'' + p.id + '\',\'' + scope + '\')">' +
       '<div class="meta">' +
       '<label for="def-' + p.id + '" style="cursor:pointer;" title="点击设为默认">' +
       '<div class="pname">' + escapeHtml(p.name) + (isDef ? ' <span class="badge-def">默认</span>' : '') +
       ' <span class="badge-def" style="color:var(--text-muted)">' + epLabel + '</span>' +
-      (!p.structured ? ' <span style="color:var(--warn,#c0392b);font-size:0.75rem;">(整页纯文本, 无块坐标)</span>' : '') + '</div>' +
+      (scope === 'llm' ? ' <span style="color:#92400e;font-size:0.75rem;">翻译</span>' : '') +
+      (!p.structured && scope !== 'llm' ? ' <span style="color:var(--warn,#c0392b);font-size:0.75rem;">(整页纯文本, 无块坐标)</span>' : '') + '</div>' +
       '<div class="purl">' + (p.endpoint === 'aistudio_job' ? 'aistudio 云端 (内置)' : escapeHtml(p.url)) + '</div>' +
       '<div class="pinfo">' +
       (p.has_key ? '<span class="badge-ok">🔑 已设密钥</span> · ' : '') +
@@ -439,15 +458,34 @@ function renderProviders() {
       '<button onclick="editProvider(\'' + p.id + '\')">编辑</button>' +
       '<button class="btn-del" onclick="deleteProvider(\'' + p.id + '\')">删除</button>' +
       '</div></div>';
-  }).join('');
 }
-async function setDefault(pid) {
+function renderProviders() {
+  var el = document.getElementById('providerList');
+  if (!_providers.length) {
+    el.innerHTML = '<div class="ocr-empty">尚未添加服务。在下方表单添加第一个（本地服务或远程 API）。</div>';
+    return;
+  }
+  var ocr = _providers.filter(function(p) { return p.type !== 'llm_chat'; });
+  var llm = _providers.filter(function(p) { return p.type === 'llm_chat'; });
+  var html = '';
+  if (ocr.length) {
+    html += '<div style="font-size:0.78rem;color:var(--text-muted);margin:6px 0 2px;">视觉 OCR（识别引擎 · 单默认）</div>';
+    html += ocr.map(function(p) { return _providerRow(p, 'ocr'); }).join('');
+  }
+  if (llm.length) {
+    html += '<div style="font-size:0.78rem;color:#92400e;margin:12px 0 2px;">翻译 LLM（多行制 AI 填充 · 独立默认）</div>';
+    html += llm.map(function(p) { return _providerRow(p, 'llm'); }).join('');
+  }
+  el.innerHTML = html;
+}
+async function setDefault(pid, scope) {
+  scope = scope || 'ocr';
   try {
-    var fd = new FormData(); fd.append('id', pid);
+    var fd = new FormData(); fd.append('id', pid); fd.append('scope', scope);
     var r = await fetch('/api/ocr-config/default', { method: 'POST', body: fd });
     var data = await r.json();
     if (data.ok) {
-      _defaultPid = pid;
+      if (scope === 'llm') _defaultLlmPid = pid; else _defaultPid = pid;
       const p = _providers.find(x => x.id === pid);
       ocrStatusEl('✓ 默认已切换: ' + (p ? p.name : pid) + ' (' + pid + ')', 'ok');
       renderProviders();
@@ -471,13 +509,14 @@ function editProvider(pid) {
   var p = _providers.filter(function(x) { return x.id === pid; })[0];
   if (!p) return;
   document.getElementById('pfId').value = p.id;
+  document.getElementById('pfPtype').value = (p.type === 'llm_chat') ? 'llm_chat' : 'vl_api';
   document.getElementById('pfType').value = p.endpoint || 'paddle_http';
   document.getElementById('pfName').value = p.name;
   document.getElementById('pfUrl').value = p.url || '';
   document.getElementById('pfKey').value = '';
   document.getElementById('pfModel').value = p.model || '';
   document.getElementById('pfPrompt').value = p.prompt || '';
-  onTypeChange();
+  onPtypeChange();
   document.getElementById('providerFormTitle').textContent = '编辑: ' + p.name;
   document.getElementById('pfCancelBtn').style.display = '';
   window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
@@ -507,6 +546,7 @@ async function saveProvider() {
   try {
     var fd = new FormData();
     fd.append('name', name); fd.append('url', url); fd.append('endpoint', type);
+    fd.append('ptype', document.getElementById('pfPtype').value);
     fd.append('api_key', key); fd.append('model', model);
     fd.append('prompt', document.getElementById('pfPrompt').value);
     if (id) fd.append('id', id);

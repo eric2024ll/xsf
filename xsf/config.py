@@ -209,13 +209,17 @@ def get_ocr_providers() -> list[dict]:
 
 
 def get_default_ocr_provider_id() -> str | None:
-    """默认 provider id: 配置 default > XSF_OCR_METHOD (匹配 id) > 首个。"""
+    """默认 OCR provider id: 配置 default > XSF_OCR_METHOD (匹配 id) > 首个。
+
+    P2c (2026-10-17): 只在 vl_api 型中解析——llm_chat (翻译 LLM) 即使被
+    写进 default (旧数据/手工编辑) 也跳过, 防止 OCR 引擎误拿翻译配置。
+    """
     cfg = _read_ocr_config()
     providers = cfg.get('providers', []) if cfg.get('version') == 3 else []
-    ids = [p.get('id') for p in providers if p.get('id')]
-    default = cfg.get('default')
-    if default in ids:
-        return default
+    vl = [p for p in providers if p.get('type') != 'llm_chat' and p.get('id')]
+    ids = [p.get('id') for p in vl]
+    if cfg.get('default') in ids:
+        return cfg['default']
     env = os.environ.get('XSF_OCR_METHOD')
     if env in ids:
         return env
