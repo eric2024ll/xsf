@@ -754,16 +754,18 @@ async def api_purge_missing(collection: str, request: Request):
 async def api_update_doc(collection: str, doc_id: int,
                          source_tags: str = Form(None),
                          bib_type: str = Form(None),
-                         bib_data: str = Form(None)):
+                         bib_data: str = Form(None),
+                         lang: str = Form(None)):
     """更新文献元数据。
 
     可选字段（至少传一个）:
     - source_tags: JSON 数组字符串（来源标签）
     - bib_type: 文献类型（任意标准 BibTeX 类型, 如 @book/@article/@phdthesis 等 15 类）
     - bib_data: JSON 对象字符串（biblatex 字段）
+    - lang: 语种（zh=中文单行制; 其他=非中文三行制, 如 eng/mnc, 2026-10-17 P2）
     """
     try:
-        if source_tags is None and bib_type is None and bib_data is None:
+        if source_tags is None and bib_type is None and bib_data is None and lang is None:
             return JSONResponse(
                 status_code=400,
                 content={"error": "未提供可更新字段"},
@@ -772,6 +774,18 @@ async def api_update_doc(collection: str, doc_id: int,
         updates = []
         params = []
         result_extra = {}
+
+        # ── lang (P2 两制转录) ──
+        if lang is not None:
+            lang_v = lang.strip().lower() or "zh"
+            if not lang_v.isascii() or not lang_v.replace("-", "").isalnum():
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "lang 只接受字母/连字符 (如 zh/eng/mnc)"},
+                )
+            updates.append("lang = ?")
+            params.append(lang_v)
+            result_extra["lang"] = lang_v
 
         # ── source_tags ──
         if source_tags is not None:
@@ -1667,7 +1681,7 @@ async def api_doc_content(collection: str, doc_id: int,
         try:
             doc = conn.execute(
                 """SELECT id, title, author, filename, doc_type, page_count,
-                          source_tags, bib_type, bib_data, cite_key
+                          source_tags, bib_type, bib_data, cite_key, lang
                    FROM documents WHERE id = ?""",
                 (doc_id,),
             ).fetchone()
@@ -1678,7 +1692,8 @@ async def api_doc_content(collection: str, doc_id: int,
                 )
 
             query = (
-                "SELECT page_num, block_num, line_num, text, bbox, block_label "
+                "SELECT page_num, block_num, line_num, text, bbox, block_label, "
+                "gloss, trans "
                 "FROM lines WHERE doc_id = ?"
             )
             params = [doc_id]
@@ -1716,6 +1731,8 @@ async def api_doc_content(collection: str, doc_id: int,
             pages_map[pn][bn]["lines"].append({
                 "line_num": r["line_num"],
                 "text": _highlight_keyword(r["text"], q or ""),
+                "gloss": r["gloss"],
+                "trans": r["trans"],
             })
             total_lines += 1
 
@@ -1780,7 +1797,8 @@ async def proofread_page(
         try:
             doc = conn.execute(
                 """SELECT id, title, author, filename, page_count, doc_type,
-                          source_tags, bib_type, bib_data, cite_key, linked_pdf
+                          source_tags, bib_type, bib_data, cite_key, linked_pdf,
+                          lang
                    FROM documents WHERE id = ?""",
                 (doc_id,),
             ).fetchone()
@@ -1810,7 +1828,8 @@ async def proofread_page(
 
             rows = conn.execute(
                 """SELECT id, page_num, block_num, line_num, text,
-                          bbox, block_label, page_w, page_h, suspect
+                          bbox, block_label, page_w, page_h, suspect,
+                          gloss, trans
                    FROM lines
                    WHERE doc_id = ? AND page_num = ?
                    ORDER BY block_num, line_num""",
@@ -1848,6 +1867,8 @@ async def proofread_page(
                 "text": r["text"],
                 "suspect": r["suspect"],
                 "bbox": line_bbox,
+                "gloss": r["gloss"],
+                "trans": r["trans"],
             })
         blocks = [blocks_map[bn] for bn in sorted(blocks_map)]
 
@@ -1935,6 +1956,7 @@ async def proofread_page(
                 bib_field_labels=BIB_FIELD_LABELS,
                 bib_type_fields=BIB_TYPE_FIELDS,
                 linked_pdf=linked_pdf,
+                doc_lang=(doc["lang"] or "zh") if "lang" in doc.keys() else "zh",
             ),
         )
     except Exception as e:
@@ -2396,42 +2418,114 @@ async def edit_page(
     collection: str,
     doc_id: int,
     page_num: int,
-    text: str = Form(...),
+    text: str = Form(""),
     basis: str = Form(""),
+    blocks_json: str = Form(""),
 ):
     """更新整页文本：以空行分隔 block，整体替换，FTS 同步。
 
     修订史 (P1): DELETE 前对旧块做快照, 与新块按位置对齐 diff,
     变化块记 revision_log (block 粒度 — 整页重写下行号不稳定).
     basis 可空 (自动保存不打断编辑流), 空值=待补, 导出变更包时强制.
+
+    P2 两制转录: blocks_json 提供时走三行制路径 —
+    [{text, gloss, trans}, ...] 逐块写入 (拉丁化原文复用 text 列,
+    gloss=词语对照 / trans=流畅译文, 可空). diff 分层记史:
+    text 变化正常记, gloss 变化记 '[对] ' 前缀, trans 记 '[译] ' 前缀.
+    未提供时走原 text 单行路径 (中文文献兼容).
     """
+    import json as _json
+
+    tri_blocks = None
+    if blocks_json:
+        try:
+            tri_blocks = _json.loads(blocks_json)
+            assert isinstance(tri_blocks, list)
+        except Exception:
+            return JSONResponse(
+                status_code=400, content={"error": "blocks_json 格式错误"}
+            )
+        for b in tri_blocks:
+            if not isinstance(b, dict) or not str(b.get("text", "")).strip():
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "blocks_json 每块需含非空 text"},
+                )
+
     try:
         conn = get_conn(collection)
         try:
-            # 旧块快照 → 修订史 diff (在任何写操作前)
+            # 旧块快照 → 修订史 diff (在任何写操作前).
+            # 三元组快照: zh 模式 gloss/trans 恒 None, tri 模式三列齐取.
             old_blocks = [
-                r["text"]
+                (r["text"], r["gloss"], r["trans"])
                 for r in conn.execute(
-                    """SELECT text FROM lines
+                    """SELECT text, gloss, trans FROM lines
                        WHERE doc_id = ? AND page_num = ?
                        ORDER BY block_num, line_num, id""",
                     (doc_id, page_num),
                 ).fetchall()
             ]
-            new_blocks = [
-                bt.strip("\n")
-                for bt in text.split("\n\n")
-                if bt.strip()
-            ]
+            if tri_blocks is not None:
+                new_blocks = [
+                    (
+                        str(b.get("text", "")).strip("\n"),
+                        (str(b.get("gloss", "")).strip() or None)
+                        if b.get("gloss")
+                        else None,
+                        (str(b.get("trans", "")).strip() or None)
+                        if b.get("trans")
+                        else None,
+                    )
+                    for b in tri_blocks
+                ]
+            else:
+                new_blocks = [
+                    (bt.strip("\n"), None, None)
+                    for bt in text.split("\n\n")
+                    if bt.strip()
+                ]
             for i in range(max(len(old_blocks), len(new_blocks))):
-                old_v = old_blocks[i] if i < len(old_blocks) else None
-                new_v = new_blocks[i] if i < len(new_blocks) else None
-                if old_v != new_v:
+                old_t = old_blocks[i] if i < len(old_blocks) else None
+                new_t = new_blocks[i] if i < len(new_blocks) else None
+                if old_t == new_t:
+                    continue
+                # 分层记史: 正文正常记; 词对照/译文带前缀独立成条 (P2)
+                if old_t is None or new_t is None:
                     conn.execute(
                         """INSERT INTO revision_log
                            (doc_id, page_num, block_num, old_value, new_value, basis)
                            VALUES (?, ?, ?, ?, ?, ?)""",
-                        (doc_id, page_num, i + 1, old_v, new_v, basis or ""),
+                        (doc_id, page_num, i + 1,
+                         old_t[0] if old_t else "",
+                         new_t[0] if new_t else "", basis or ""),
+                    )
+                    continue
+                if old_t[0] != new_t[0]:
+                    conn.execute(
+                        """INSERT INTO revision_log
+                           (doc_id, page_num, block_num, old_value, new_value, basis)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (doc_id, page_num, i + 1,
+                         old_t[0], new_t[0], basis or ""),
+                    )
+                if (old_t[1] or "") != (new_t[1] or ""):
+                    conn.execute(
+                        """INSERT INTO revision_log
+                           (doc_id, page_num, block_num, old_value, new_value, basis)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (doc_id, page_num, i + 1,
+                         "[对] " + (old_t[1] or ""),
+                         "[对] " + (new_t[1] or ""), basis or ""),
+                    )
+                if (old_t[2] or "") != (new_t[2] or ""):
+                    conn.execute(
+                        """INSERT INTO revision_log
+                           (doc_id, page_num, block_num, old_value, new_value, basis)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (doc_id, page_num, i + 1,
+                         "[译] " + (old_t[2] or ""),
+                         "[译] " + (new_t[2] or ""), basis or ""),
                     )
 
             # 继承该页原有正文块标签 (整页重写无法逐行映射,
@@ -2454,17 +2548,38 @@ async def edit_page(
                 (doc_id, page_num),
             )
 
-            # 块粒度: \n\n 分块, 每块一条 line 记录 — 2026-09-06 批次2
-            for bn, bt in enumerate(text.split("\n\n"), 1):
-                bt = bt.strip("\n")
-                if not bt.strip():
-                    continue
-                conn.execute(
-                    """INSERT INTO lines(doc_id, page_num, block_num, line_num,
-                                         block_label, text)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (doc_id, page_num, bn, 1, carry_label, bt),
-                )
+            if tri_blocks is not None:
+                # 三行制: 每块一条 line 记录, text=拉丁化原文, gloss/trans 并列
+                for bn, b in enumerate(tri_blocks, 1):
+                    conn.execute(
+                        """INSERT INTO lines(doc_id, page_num, block_num, line_num,
+                                             block_label, text, gloss, trans)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (doc_id, page_num, bn, 1, carry_label,
+                         str(b.get("text", "")).strip("\n"),
+                         str(b.get("gloss", "")).strip() or None
+                         if b.get("gloss") else None,
+                         str(b.get("trans", "")).strip() or None
+                         if b.get("trans") else None),
+                    )
+                    conn.execute(
+                        """INSERT INTO blocks_fts(doc_id, page_num, block_num, text)
+                           VALUES (?, ?, ?, ?)""",
+                        (doc_id, page_num, bn,
+                         _tokenize(str(b.get("text", "")).strip("\n"))),
+                    )
+            else:
+                # 块粒度: \n\n 分块, 每块一条 line 记录 — 2026-09-06 批次2
+                for bn, bt in enumerate(text.split("\n\n"), 1):
+                    bt = bt.strip("\n")
+                    if not bt.strip():
+                        continue
+                    conn.execute(
+                        """INSERT INTO lines(doc_id, page_num, block_num, line_num,
+                                             block_label, text)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (doc_id, page_num, bn, 1, carry_label, bt),
+                    )
                 conn.execute(
                     """INSERT INTO blocks_fts(doc_id, page_num, block_num, text)
                        VALUES (?, ?, ?, ?)""",

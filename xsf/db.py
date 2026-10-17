@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS documents (
     bib_type TEXT DEFAULT NULL,
     bib_data TEXT DEFAULT NULL,
     linked_pdf TEXT DEFAULT NULL,
+    lang TEXT DEFAULT 'zh',
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(filename)
 );
@@ -32,7 +33,9 @@ CREATE TABLE IF NOT EXISTS lines (
     bbox TEXT,
     block_label TEXT,
     page_w INTEGER,
-    page_h INTEGER
+    page_h INTEGER,
+    gloss TEXT,
+    trans TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_lines_doc_page
@@ -99,6 +102,16 @@ def _migrate(conn):
         conn.execute("ALTER TABLE lines ADD COLUMN page_h INTEGER")
     if "suspect" not in cols:
         conn.execute("ALTER TABLE lines ADD COLUMN suspect TEXT")
+    # 两制转录 (P2, 2026-10-17): 非中文语种 OCR 直接产出拉丁化文本 (text 列),
+    # 词对照/流畅译文为可空平行层; documents.lang 驱动工位页单行/三行渲染
+    # 设计: mem 小书房/design/完善路线图.md P2 (用户裁定: 拉丁化原文复用 text 列)
+    if "gloss" not in cols:
+        conn.execute("ALTER TABLE lines ADD COLUMN gloss TEXT")
+    if "trans" not in cols:
+        conn.execute("ALTER TABLE lines ADD COLUMN trans TEXT")
+    doc_cols2 = {row[1] for row in conn.execute("PRAGMA table_info(documents)")}
+    if "lang" not in doc_cols2:
+        conn.execute("ALTER TABLE documents ADD COLUMN lang TEXT DEFAULT 'zh'")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ocr_page_state (
             doc_id INTEGER NOT NULL,

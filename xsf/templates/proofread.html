@@ -351,6 +351,13 @@ body.focus-mode .page-nav { display: none; }
 body.focus-mode { padding-top: 0; }
 body.focus-mode .main { height: 100vh; }
 
+.tri-line { margin: 2px 0; }
+.tri-line > div { white-space: pre-wrap; }
+.tri-text { font-weight: 500; }
+.tri-gloss { color: var(--text-muted, #888); font-size: 12px; min-height: 16px; }
+.tri-trans { color: var(--primary, #4361ee); font-size: 13px; min-height: 17px; }
+.lang-badge { display: none; font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border, #ccc); color: var(--text-muted, #888); }
+.lang-badge.tri { display: inline-block; background: #f3e8ff; border-color: #d8b4fe; color: #7e22ce; font-weight: 600; }
 #pageText {
   padding: 12px 16px;
   line-height: 1.8;
@@ -890,6 +897,7 @@ mark {
     </div>
     <div class="text-actions">
       <span class="ta-title">识别文本</span>
+      <span id="langBadge" class="lang-badge{{ ' tri' if (doc_lang and doc_lang != 'zh') else '' }}">{{ doc_lang if (doc_lang and doc_lang != 'zh') else '' }}</span>
       <input type="text" id="basisInput" placeholder="修订依据（选填）" style="width:150px; padding:2px 8px; font-size:12px; border:1px solid var(--border,#ccc); border-radius:4px; color:var(--text-muted,#666);" title="选填，随本次编辑附注到修订史；可随时在修订史中补填或修改">
       <button onclick="openRevLog()" style="padding:2px 10px; font-size:12px; cursor:pointer; border:1px solid var(--border,#ccc); border-radius:4px; background:var(--bg-secondary,#f5f5f5);" title="本文修订记录（补依据/入包勾选）">修订史</button>
       <span class="save-status" id="saveStatus"></span>
@@ -900,16 +908,27 @@ mark {
           <button onclick="exportPage()">导出本页</button>
           <button onclick="exportDocMd()">导出全篇</button>
           <button onclick="openRevLog()">修订史…</button>
+          <button onclick="switchLangMode()">{{ '转为中文单行制' if (doc_lang and doc_lang != 'zh') else '转为非中文三行制' }}</button>
         </div>
       </div>
     </div>
     <div id="pageText" class="page-text" contenteditable="true" oninput="onPageEdit()">
+{%- if doc_lang and doc_lang != 'zh' %}
+{#- P2 三行制: 拉丁化原文(text)/词语对照(gloss)/流畅译文(trans), 每块一组 .tri-line -#}
+{%- for b in blocks %}
+{%- for ln in b.lines %}
+<div class="tri-line"><div class="tri-text">{{ (highlight(ln.text, keyword) | safe) | replace('\n', '<br>') }}</div><div class="tri-gloss">{{ ln.gloss or '' }}</div><div class="tri-trans">{{ ln.trans or '' }}</div></div>
+{%- endfor %}
+{%- if not loop.last %}<br><br>{% endif -%}
+{%- endfor %}
+{%- else %}
 {%- for b in blocks %}
 {%- for ln in b.lines %}
 {{- (highlight(ln.text, keyword) | safe) | replace('\n', '<br>') }}{% if not loop.last %}<br>{% endif -%}
 {%- endfor %}
 {%- if not loop.last %}<br><br>{% endif -%}
 {%- endfor %}
+{%- endif %}
     </div>
   </div>
 </div>
@@ -923,6 +942,7 @@ const collection = {{ collection | tojson }};
 const docId = {{ doc.id | default('null') | tojson }};
 const doc = {{ doc | tojson }};
 const page = {{ page_num | default(1) }};
+const docLang = {{ (doc_lang or 'zh') | tojson }};  // P2 两制: 非 zh → 三行制编辑/序列化
 const pageCount = {{ page_count | default(1) }};
 const origWidth = {{ orig_width | default(0) }};
 const origHeight = {{ orig_height | default(0) }};
@@ -1125,15 +1145,52 @@ function onPageEdit() {
   if (el) { el.textContent = '未保存'; el.className = 'save-status'; }
   _saveTimer = setTimeout(autoSavePage, 1000);
 }
+// P2 三行制: DOM 序列化为块数组 [{text,gloss,trans}]
+// .tri-line = 块; 其余顶层子元素(用户新增未成形的行)兜底为纯 text 块
+function collectTriBlocks() {
+  const el = document.getElementById('pageText');
+  const blocks = [];
+  for (const node of el.children) {
+    if (node.classList && node.classList.contains('tri-line')) {
+      const t = node.querySelector('.tri-text');
+      const g = node.querySelector('.tri-gloss');
+      const tr = node.querySelector('.tri-trans');
+      blocks.push({
+        text: (t ? t.innerText : '').trim(),
+        gloss: g ? g.innerText.trim() : '',
+        trans: tr ? tr.innerText.trim() : '',
+      });
+    } else if ((node.innerText || '').trim()) {
+      blocks.push({ text: node.innerText.trim(), gloss: '', trans: '' });
+    }
+  }
+  return blocks;
+}
+// P2 语种切换: 单行 ↔ 三行 (改 lang 后整页重载渲染)
+async function switchLangMode() {
+  const toTri = docLang === 'zh';
+  const lang = toTri ? 'eng' : 'zh';
+  if (!confirm(toTri
+    ? '转为非中文三行制：编辑区将按「拉丁化原文 / 词语对照 / 流畅译文」三行一组重新渲染，现有正文进入第一行。继续？'
+    : '转为中文单行制：三行将合并回单行（只保留拉丁化原文列）。继续？')) return;
+  const params = new URLSearchParams();
+  params.append('lang', lang);
+  await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}`,
+    { method: 'PATCH', body: params });
+  location.reload();
+}
 async function autoSavePage() {
   const el = document.getElementById('pageText');
   const status = document.getElementById('saveStatus');
   if (!el) return;
-  const text = el.innerText || '';
+  const isTri = docLang !== 'zh';
+  const text = isTri ? '' : (el.innerText || '');
+  const blocksJson = isTri ? JSON.stringify(collectTriBlocks()) : '';
   if (status) { status.textContent = '保存中…'; status.className = 'save-status saving'; }
   try {
     const params = new URLSearchParams();
-    params.append('text', text);
+    if (isTri) params.append('blocks_json', blocksJson);
+    else params.append('text', text);
     params.append('basis', getBasis());
     const res = await fetch(
       `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/edit`,
@@ -1163,7 +1220,11 @@ window.addEventListener('beforeunload', () => {
   const el = document.getElementById('pageText');
   if (el) {
     const params = new URLSearchParams();
-    params.append('text', el.innerText || '');
+    if (docLang !== 'zh') {
+      params.append('blocks_json', JSON.stringify(collectTriBlocks()));
+    } else {
+      params.append('text', el.innerText || '');
+    }
     params.append('basis', getBasis());
     navigator.sendBeacon(
       `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/edit`,
@@ -1891,6 +1952,11 @@ function showToast(msg) {
 function collectPageText() {
   const el = document.getElementById('pageText');
   if (!el) return '';
+  // P2 三行制: 导出/复制只取拉丁化原文行 (对照/译文留在编辑器)
+  if (docLang !== 'zh') {
+    return Array.from(el.querySelectorAll('.tri-text'))
+      .map(t => t.innerText.trim()).filter(Boolean).join('\n\n');
+  }
   return el.innerText.trim();
 }
 
