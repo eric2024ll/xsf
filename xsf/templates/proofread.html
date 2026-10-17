@@ -354,6 +354,7 @@ body.focus-mode .main { height: 100vh; }
 .tri-line { margin: 2px 0; }
 .tri-line > div { white-space: pre-wrap; }
 .tri-text { font-weight: 500; }
+.tri-translit { color: #0e7490; font-size: 12px; min-height: 16px; }
 .tri-gloss { color: var(--text-muted, #888); font-size: 12px; min-height: 16px; }
 .tri-trans { color: var(--primary, #4361ee); font-size: 13px; min-height: 17px; }
 .lang-badge { display: none; font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border, #ccc); color: var(--text-muted, #888); }
@@ -897,7 +898,7 @@ mark {
     </div>
     <div class="text-actions">
       <span class="ta-title">识别文本</span>
-      <span id="langBadge" class="lang-badge{{ ' tri' if (doc_lang and doc_lang != 'zh') else '' }}">{{ doc_lang if (doc_lang and doc_lang != 'zh') else '' }}</span>
+      <span id="langBadge" class="lang-badge{{ ' tri' if (doc_rows and doc_rows >= 3) else '' }}">{{ (doc_lang ~ (doc_rows ~ '行') if (doc_rows and doc_rows >= 3 and doc_lang != 'zh') else '') if (doc_rows and doc_rows >= 3) else '' }}</span>
       <input type="text" id="basisInput" placeholder="修订依据（选填）" style="width:150px; padding:2px 8px; font-size:12px; border:1px solid var(--border,#ccc); border-radius:4px; color:var(--text-muted,#666);" title="选填，随本次编辑附注到修订史；可随时在修订史中补填或修改">
       <button onclick="openRevLog()" style="padding:2px 10px; font-size:12px; cursor:pointer; border:1px solid var(--border,#ccc); border-radius:4px; background:var(--bg-secondary,#f5f5f5);" title="本文修订记录（补依据/入包勾选）">修订史</button>
       <span class="save-status" id="saveStatus"></span>
@@ -908,16 +909,18 @@ mark {
           <button onclick="exportPage()">导出本页</button>
           <button onclick="exportDocMd()">导出全篇</button>
           <button onclick="openRevLog()">修订史…</button>
-          <button onclick="switchLangMode()">{{ '转为中文单行制' if (doc_lang and doc_lang != 'zh') else '转为非中文三行制' }}</button>
+          {% if doc_rows and doc_rows >= 3 %}<button onclick="switchRows('1')">转为中文单行制</button>{% endif %}
+          {% if not doc_rows or doc_rows != 3 %}<button onclick="switchRows('3')">转为非中文三行制</button>{% endif %}
+          {% if not doc_rows or doc_rows != 4 %}<button onclick="switchRows('4')">转为四行制（原语+转写）</button>{% endif %}
         </div>
       </div>
     </div>
     <div id="pageText" class="page-text" contenteditable="true" oninput="onPageEdit()">
-{%- if doc_lang and doc_lang != 'zh' %}
-{#- P2 三行制: 拉丁化原文(text)/词语对照(gloss)/流畅译文(trans), 每块一组 .tri-line -#}
+{%- if doc_rows and doc_rows >= 3 %}
+{#- P2 行制: 3=三行(拉丁化原文/词对照/译文); 4=四行(原语/拉丁转写/词对照/译文) -#}
 {%- for b in blocks %}
 {%- for ln in b.lines %}
-<div class="tri-line"><div class="tri-text">{{ (highlight(ln.text, keyword) | safe) | replace('\n', '<br>') }}</div><div class="tri-gloss">{{ ln.gloss or '' }}</div><div class="tri-trans">{{ ln.trans or '' }}</div></div>
+<div class="tri-line"><div class="tri-text">{{ (highlight(ln.text, keyword) | safe) | replace('\n', '<br>') }}</div>{% if doc_rows == 4 %}<div class="tri-translit">{{ ln.translit or '' }}</div>{% endif %}<div class="tri-gloss">{{ ln.gloss or '' }}</div><div class="tri-trans">{{ ln.trans or '' }}</div></div>
 {%- endfor %}
 {%- if not loop.last %}<br><br>{% endif -%}
 {%- endfor %}
@@ -942,7 +945,8 @@ const collection = {{ collection | tojson }};
 const docId = {{ doc.id | default('null') | tojson }};
 const doc = {{ doc | tojson }};
 const page = {{ page_num | default(1) }};
-const docLang = {{ (doc_lang or 'zh') | tojson }};  // P2 两制: 非 zh → 三行制编辑/序列化
+const docLang = {{ (doc_lang or 'zh') | tojson }};
+const docRows = {{ (doc_rows or 1) }};  // P2 行制: 1=单行 3=三行 4=四行
 const pageCount = {{ page_count | default(1) }};
 const origWidth = {{ orig_width | default(0) }};
 const origHeight = {{ orig_height | default(0) }};
@@ -1149,32 +1153,44 @@ function onPageEdit() {
 // .tri-line = 块; 其余顶层子元素(用户新增未成形的行)兜底为纯 text 块
 function collectTriBlocks() {
   const el = document.getElementById('pageText');
+  const four = docRows === 4;
   const blocks = [];
   for (const node of el.children) {
     if (node.classList && node.classList.contains('tri-line')) {
       const t = node.querySelector('.tri-text');
+      const tl = node.querySelector('.tri-translit');
       const g = node.querySelector('.tri-gloss');
       const tr = node.querySelector('.tri-trans');
       blocks.push({
         text: (t ? t.innerText : '').trim(),
+        translit: four && tl ? tl.innerText.trim() : '',
         gloss: g ? g.innerText.trim() : '',
         trans: tr ? tr.innerText.trim() : '',
       });
     } else if ((node.innerText || '').trim()) {
-      blocks.push({ text: node.innerText.trim(), gloss: '', trans: '' });
+      blocks.push({ text: node.innerText.trim(), translit: '', gloss: '', trans: '' });
     }
   }
   return blocks;
 }
-// P2 语种切换: 单行 ↔ 三行 (改 lang 后整页重载渲染)
-async function switchLangMode() {
-  const toTri = docLang === 'zh';
-  const lang = toTri ? 'eng' : 'zh';
-  if (!confirm(toTri
-    ? '转为非中文三行制：编辑区将按「拉丁化原文 / 词语对照 / 流畅译文」三行一组重新渲染，现有正文进入第一行。继续？'
-    : '转为中文单行制：三行将合并回单行（只保留拉丁化原文列）。继续？')) return;
+// P2 行制切换: 1=中文单行 / 3=拉丁化三行 / 4=原语四行 (PATCH lang+tri_rows 后重载)
+async function switchRows(target) {
+  const rows = parseInt(target, 10);
+  const names = { 1: '中文单行制', 3: '非中文三行制（拉丁化原文/词语对照/流畅译文）', 4: '四行制（原语/拉丁转写/词语对照/流畅译文）' };
+  const warns = {
+    1: '转为中文单行制：多行将合并回单行（三行=保留拉丁化原文列；四行=保留原语列），其余列数据保留在库但不再显示。继续？',
+    3: '转为非中文三行制：编辑区按「拉丁化原文 / 词语对照 / 流畅译文」三行一组重新渲染，现有正文进入第一行。继续？',
+    4: '转为四行制：编辑区按「原语 / 拉丁转写 / 词语对照 / 流畅译文」四行一组重新渲染，现有正文视为原语（第一行）。继续？',
+  };
+  let lang = docLang;
+  if (rows >= 3 && docLang === 'zh') {
+    lang = (prompt('该文献语种码（如 eng/mnc/ja/ru）：', rows === 4 ? 'ja' : 'eng') || '').trim().toLowerCase();
+    if (!lang) return;
+  }
+  if (!confirm(warns[rows])) return;
   const params = new URLSearchParams();
   params.append('lang', lang);
+  params.append('tri_rows', String(rows));
   await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}`,
     { method: 'PATCH', body: params });
   location.reload();
@@ -1183,7 +1199,7 @@ async function autoSavePage() {
   const el = document.getElementById('pageText');
   const status = document.getElementById('saveStatus');
   if (!el) return;
-  const isTri = docLang !== 'zh';
+  const isTri = docRows >= 3;
   const text = isTri ? '' : (el.innerText || '');
   const blocksJson = isTri ? JSON.stringify(collectTriBlocks()) : '';
   if (status) { status.textContent = '保存中…'; status.className = 'save-status saving'; }
@@ -1220,7 +1236,7 @@ window.addEventListener('beforeunload', () => {
   const el = document.getElementById('pageText');
   if (el) {
     const params = new URLSearchParams();
-    if (docLang !== 'zh') {
+    if (docRows >= 3) {
       params.append('blocks_json', JSON.stringify(collectTriBlocks()));
     } else {
       params.append('text', el.innerText || '');
@@ -1953,7 +1969,7 @@ function collectPageText() {
   const el = document.getElementById('pageText');
   if (!el) return '';
   // P2 三行制: 导出/复制只取拉丁化原文行 (对照/译文留在编辑器)
-  if (docLang !== 'zh') {
+  if (docRows >= 3) {
     return Array.from(el.querySelectorAll('.tri-text'))
       .map(t => t.innerText.trim()).filter(Boolean).join('\n\n');
   }

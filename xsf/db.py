@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS documents (
     bib_data TEXT DEFAULT NULL,
     linked_pdf TEXT DEFAULT NULL,
     lang TEXT DEFAULT 'zh',
+    tri_rows INTEGER DEFAULT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(filename)
 );
@@ -35,7 +36,8 @@ CREATE TABLE IF NOT EXISTS lines (
     page_w INTEGER,
     page_h INTEGER,
     gloss TEXT,
-    trans TEXT
+    trans TEXT,
+    translit TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_lines_doc_page

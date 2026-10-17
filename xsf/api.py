@@ -750,22 +750,42 @@ async def api_purge_missing(collection: str, request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+
+# 行制推断 (P2 行制扩展): 1=中文单行 / 3=拉丁化三行 / 4=原语四行.
+# tri_rows 显式值优先; 否则按语种集推断 (日/俄/韩/希腊等活文字系统 → 4 行).
+FOUR_ROW_LANGS = {"ja", "jpn", "ru", "rus", "ko", "kor", "el", "ell", "grc", "gre"}
+
+
+def _tri_rows_for(doc) -> int:
+    if doc is None:
+        return 1
+    keys = doc.keys()
+    lang = (doc["lang"] or "zh") if "lang" in keys else "zh"
+    if lang == "zh":
+        return 1
+    if "tri_rows" in keys and doc["tri_rows"] in (3, 4):
+        return doc["tri_rows"]
+    return 4 if lang in FOUR_ROW_LANGS else 3
+
 @app.patch("/collections/{collection}/doc/{doc_id}")
 async def api_update_doc(collection: str, doc_id: int,
                          source_tags: str = Form(None),
                          bib_type: str = Form(None),
                          bib_data: str = Form(None),
-                         lang: str = Form(None)):
+                         lang: str = Form(None),
+                         tri_rows: int = Form(None)):
     """更新文献元数据。
 
     可选字段（至少传一个）:
     - source_tags: JSON 数组字符串（来源标签）
     - bib_type: 文献类型（任意标准 BibTeX 类型, 如 @book/@article/@phdthesis 等 15 类）
     - bib_data: JSON 对象字符串（biblatex 字段）
-    - lang: 语种（zh=中文单行制; 其他=非中文三行制, 如 eng/mnc, 2026-10-17 P2）
+    - lang: 语种（zh=中文单行制; 其他=非中文行制, 如 eng/mnc/ja, 2026-10-17 P2）
+    - tri_rows: 行制显式覆盖（1=单行/3=三行/4=四行; 日/俄类语种默认四行）
     """
     try:
-        if source_tags is None and bib_type is None and bib_data is None and lang is None:
+        if (source_tags is None and bib_type is None and bib_data is None
+                and lang is None and tri_rows is None):
             return JSONResponse(
                 status_code=400,
                 content={"error": "未提供可更新字段"},
@@ -786,6 +806,17 @@ async def api_update_doc(collection: str, doc_id: int,
             updates.append("lang = ?")
             params.append(lang_v)
             result_extra["lang"] = lang_v
+
+        # ── tri_rows (P2 行制扩展: 1=单行/3=三行/4=四行, 显式覆盖语种推断) ──
+        if tri_rows is not None:
+            if tri_rows not in (1, 3, 4):
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "tri_rows 只接受 1(单行)/3(三行)/4(四行)"},
+                )
+            updates.append("tri_rows = ?")
+            params.append(tri_rows)
+            result_extra["tri_rows"] = tri_rows
 
         # ── source_tags ──
         if source_tags is not None:
@@ -1681,7 +1712,7 @@ async def api_doc_content(collection: str, doc_id: int,
         try:
             doc = conn.execute(
                 """SELECT id, title, author, filename, doc_type, page_count,
-                          source_tags, bib_type, bib_data, cite_key, lang
+                          source_tags, bib_type, bib_data, cite_key, lang, tri_rows
                    FROM documents WHERE id = ?""",
                 (doc_id,),
             ).fetchone()
@@ -1693,7 +1724,7 @@ async def api_doc_content(collection: str, doc_id: int,
 
             query = (
                 "SELECT page_num, block_num, line_num, text, bbox, block_label, "
-                "gloss, trans "
+                "translit, gloss, trans "
                 "FROM lines WHERE doc_id = ?"
             )
             params = [doc_id]
@@ -1731,6 +1762,7 @@ async def api_doc_content(collection: str, doc_id: int,
             pages_map[pn][bn]["lines"].append({
                 "line_num": r["line_num"],
                 "text": _highlight_keyword(r["text"], q or ""),
+                "translit": r["translit"],
                 "gloss": r["gloss"],
                 "trans": r["trans"],
             })
@@ -1798,7 +1830,7 @@ async def proofread_page(
             doc = conn.execute(
                 """SELECT id, title, author, filename, page_count, doc_type,
                           source_tags, bib_type, bib_data, cite_key, linked_pdf,
-                          lang
+                          lang, tri_rows
                    FROM documents WHERE id = ?""",
                 (doc_id,),
             ).fetchone()
@@ -1829,7 +1861,7 @@ async def proofread_page(
             rows = conn.execute(
                 """SELECT id, page_num, block_num, line_num, text,
                           bbox, block_label, page_w, page_h, suspect,
-                          gloss, trans
+                          translit, gloss, trans
                    FROM lines
                    WHERE doc_id = ? AND page_num = ?
                    ORDER BY block_num, line_num""",
@@ -1867,6 +1899,7 @@ async def proofread_page(
                 "text": r["text"],
                 "suspect": r["suspect"],
                 "bbox": line_bbox,
+                "translit": r["translit"],
                 "gloss": r["gloss"],
                 "trans": r["trans"],
             })
@@ -1957,6 +1990,7 @@ async def proofread_page(
                 bib_type_fields=BIB_TYPE_FIELDS,
                 linked_pdf=linked_pdf,
                 doc_lang=(doc["lang"] or "zh") if "lang" in doc.keys() else "zh",
+                doc_rows=_tri_rows_for(doc),
             ),
         )
     except Exception as e:
@@ -2428,10 +2462,11 @@ async def edit_page(
     变化块记 revision_log (block 粒度 — 整页重写下行号不稳定).
     basis 可空 (自动保存不打断编辑流), 空值=待补, 导出变更包时强制.
 
-    P2 两制转录: blocks_json 提供时走三行制路径 —
-    [{text, gloss, trans}, ...] 逐块写入 (拉丁化原文复用 text 列,
-    gloss=词语对照 / trans=流畅译文, 可空). diff 分层记史:
-    text 变化正常记, gloss 变化记 '[对] ' 前缀, trans 记 '[译] ' 前缀.
+    P2 行制转录: blocks_json 提供时走多行制路径 —
+    [{text, translit, gloss, trans}, ...] 逐块写入. 列语义按行制:
+    三行(满文类): text=拉丁化原文(OCR 直接产出), 无 translit;
+    四行(日/俄类): text=原语, translit=拉丁转写. gloss=词语对照/trans=流畅译文.
+    diff 分层记史: text 正常记, translit '[转] '/gloss '[对] '/trans '[译] ' 前缀.
     未提供时走原 text 单行路径 (中文文献兼容).
     """
     import json as _json
@@ -2456,32 +2491,32 @@ async def edit_page(
         conn = get_conn(collection)
         try:
             # 旧块快照 → 修订史 diff (在任何写操作前).
-            # 三元组快照: zh 模式 gloss/trans 恒 None, tri 模式三列齐取.
+            # 四元组快照: zh 模式后三列恒 None, 多行制齐取 (P2 行制扩展).
             old_blocks = [
-                (r["text"], r["gloss"], r["trans"])
+                (r["text"], r["translit"], r["gloss"], r["trans"])
                 for r in conn.execute(
-                    """SELECT text, gloss, trans FROM lines
+                    """SELECT text, translit, gloss, trans FROM lines
                        WHERE doc_id = ? AND page_num = ?
                        ORDER BY block_num, line_num, id""",
                     (doc_id, page_num),
                 ).fetchall()
             ]
             if tri_blocks is not None:
+                def _tri_cell(b, k):
+                    v = str(b.get(k, "") or "").strip()
+                    return v or None
                 new_blocks = [
                     (
                         str(b.get("text", "")).strip("\n"),
-                        (str(b.get("gloss", "")).strip() or None)
-                        if b.get("gloss")
-                        else None,
-                        (str(b.get("trans", "")).strip() or None)
-                        if b.get("trans")
-                        else None,
+                        _tri_cell(b, "translit"),
+                        _tri_cell(b, "gloss"),
+                        _tri_cell(b, "trans"),
                     )
                     for b in tri_blocks
                 ]
             else:
                 new_blocks = [
-                    (bt.strip("\n"), None, None)
+                    (bt.strip("\n"), None, None, None)
                     for bt in text.split("\n\n")
                     if bt.strip()
                 ]
@@ -2490,7 +2525,7 @@ async def edit_page(
                 new_t = new_blocks[i] if i < len(new_blocks) else None
                 if old_t == new_t:
                     continue
-                # 分层记史: 正文正常记; 词对照/译文带前缀独立成条 (P2)
+                # 分层记史: 正文正常记; 转写/词对照/译文带前缀独立成条 (P2)
                 if old_t is None or new_t is None:
                     conn.execute(
                         """INSERT INTO revision_log
@@ -2515,8 +2550,8 @@ async def edit_page(
                            (doc_id, page_num, block_num, old_value, new_value, basis)
                            VALUES (?, ?, ?, ?, ?, ?)""",
                         (doc_id, page_num, i + 1,
-                         "[对] " + (old_t[1] or ""),
-                         "[对] " + (new_t[1] or ""), basis or ""),
+                         "[转] " + (old_t[1] or ""),
+                         "[转] " + (new_t[1] or ""), basis or ""),
                     )
                 if (old_t[2] or "") != (new_t[2] or ""):
                     conn.execute(
@@ -2524,8 +2559,17 @@ async def edit_page(
                            (doc_id, page_num, block_num, old_value, new_value, basis)
                            VALUES (?, ?, ?, ?, ?, ?)""",
                         (doc_id, page_num, i + 1,
-                         "[译] " + (old_t[2] or ""),
-                         "[译] " + (new_t[2] or ""), basis or ""),
+                         "[对] " + (old_t[2] or ""),
+                         "[对] " + (new_t[2] or ""), basis or ""),
+                    )
+                if (old_t[3] or "") != (new_t[3] or ""):
+                    conn.execute(
+                        """INSERT INTO revision_log
+                           (doc_id, page_num, block_num, old_value, new_value, basis)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (doc_id, page_num, i + 1,
+                         "[译] " + (old_t[3] or ""),
+                         "[译] " + (new_t[3] or ""), basis or ""),
                     )
 
             # 继承该页原有正文块标签 (整页重写无法逐行映射,
@@ -2549,18 +2593,20 @@ async def edit_page(
             )
 
             if tri_blocks is not None:
-                # 三行制: 每块一条 line 记录, text=拉丁化原文, gloss/trans 并列
+                # 多行制: 每块一条 line 记录; 列语义按行制
+                # (三行: text=拉丁化原文; 四行: text=原语 + translit=拉丁转写)
+                def _cell(b, k):
+                    v = str(b.get(k, "") or "").strip()
+                    return v or None
                 for bn, b in enumerate(tri_blocks, 1):
                     conn.execute(
                         """INSERT INTO lines(doc_id, page_num, block_num, line_num,
-                                             block_label, text, gloss, trans)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                                             block_label, text, translit, gloss, trans)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (doc_id, page_num, bn, 1, carry_label,
                          str(b.get("text", "")).strip("\n"),
-                         str(b.get("gloss", "")).strip() or None
-                         if b.get("gloss") else None,
-                         str(b.get("trans", "")).strip() or None
-                         if b.get("trans") else None),
+                         _cell(b, "translit"), _cell(b, "gloss"),
+                         _cell(b, "trans")),
                     )
                     conn.execute(
                         """INSERT INTO blocks_fts(doc_id, page_num, block_num, text)
