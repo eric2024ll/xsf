@@ -1,5 +1,6 @@
 import json
 import re
+import posixpath
 
 import pymupdf
 import jieba
@@ -282,6 +283,176 @@ def ingest_markdown(md_path: str | Path, collection: str,
 
 
 _OFFICE_EXTS = {'.doc', '.docx', '.docm', '.epub'}
+
+
+def _epub_spine_files(zip_path: str | Path) -> list[str]:
+    """EPUB spine 顺序的 XHTML 文件列表（解析失败回退文件名排序）。"""
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    NS = {
+        'cn': 'urn:oasis:names:tc:opendocument:xmlns:container',
+        'opf': 'http://www.idpf.org/2007/opf',
+    }
+    with zipfile.ZipFile(zip_path) as zf:
+        fallback = sorted(
+            n for n in zf.namelist()
+            if n.lower().endswith(('.xhtml', '.html', '.htm'))
+        )
+        try:
+            container = ET.fromstring(zf.read('META-INF/container.xml'))
+            opf_path = container.find('.//cn:rootfile', NS).get('full-path')
+            opf = ET.fromstring(zf.read(opf_path))
+            base = posixpath.dirname(opf_path)
+            manifest = {
+                i.get('id'): i.get('href')
+                for i in opf.findall('.//opf:manifest/opf:item', NS)
+            }
+            hrefs = [
+                manifest[ir.get('idref')]
+                for ir in opf.findall('.//opf:spine/opf:itemref', NS)
+                if ir.get('idref') in manifest
+            ]
+            spine = [
+                posixpath.normpath(posixpath.join(base, h)) if base else h
+                for h in hrefs
+                if h and h.lower().endswith(('.xhtml', '.html', '.htm'))
+            ]
+            if spine:
+                return spine
+        except Exception:
+            pass
+    return fallback
+
+
+def _epub_meta(zip_path: str | Path) -> tuple:
+    """EPUB OPF 元数据 (dc:title, dc:creator), 无则 (None, None)。"""
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    NS = {
+        'cn': 'urn:oasis:names:tc:opendocument:xmlns:container',
+        'opf': 'http://www.idpf.org/2007/opf',
+        'dc': 'http://purl.org/dc/elements/1.1/',
+    }
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            container = ET.fromstring(zf.read('META-INF/container.xml'))
+            opf_path = container.find('.//cn:rootfile', NS).get('full-path')
+            opf = ET.fromstring(zf.read(opf_path))
+            t = opf.find('.//dc:title', NS)
+            a = opf.find('.//dc:creator', NS)
+            return (t.text.strip() if t is not None and t.text else None,
+                    a.text.strip() if a is not None and a.text else None)
+    except Exception:
+        return (None, None)
+
+
+def _xhtml_paragraphs(data: bytes) -> list[str]:
+    """XHTML 提段: p/h1-h6/blockquote/li 块级元素文本为段落。"""
+    from html.parser import HTMLParser
+
+    class _ParaParser(HTMLParser):
+        BLOCKS = {'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                  'blockquote', 'li'}
+
+        def __init__(self):
+            super().__init__()
+            self.paras = []
+            self._cur = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag in self.BLOCKS:
+                self._cur = []
+
+        def handle_endtag(self, tag):
+            if tag in self.BLOCKS and self._cur is not None:
+                text = ' '.join(''.join(self._cur).split())
+                if text:
+                    self.paras.append(text)
+                self._cur = None
+
+        def handle_data(self, d):
+            if self._cur is not None:
+                self._cur.append(d)
+
+    p = _ParaParser()
+    p.feed(data.decode('utf-8', errors='replace'))
+    return p.paras
+
+
+def ingest_epub(epub_path: str | Path, collection: str,
+                cite_key: str = None, title: str = None,
+                author: str = None,
+                source_tags: str = '["primary"]') -> dict:
+    """EPUB 分页入库: spine 每个 XHTML 文档 = 1 页, 段落建块。
+
+    分页对照语义: 页 = 章节 (spine 文档); 校对台影印区经
+    page/{n}/source 端点渲染章节 XHTML 原文, 转录区显示提取段落。
+    doc_type='epub', 与 office (整篇单块) 管线区分。
+    """
+    import zipfile
+    epub_path = Path(epub_path)
+    spine = _epub_spine_files(epub_path)
+    if not spine:
+        raise RuntimeError('EPUB 无正文 XHTML 文件（spine 为空）')
+    if not title or not author:
+        m_title, m_author = _epub_meta(epub_path)
+        title = title or m_title or epub_path.stem
+        author = author or m_author
+
+    is_primary, is_secondary, is_reference = _source_flags(source_tags)
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            '''INSERT INTO documents
+               (cite_key, title, author, filename, page_count, doc_type,
+                is_primary, is_secondary, is_reference, source_tags)
+               VALUES (?, ?, ?, ?, ?, 'epub', ?, ?, ?, ?)''',
+            (cite_key, title, author, epub_path.name, len(spine),
+             is_primary, is_secondary, is_reference, source_tags)
+        )
+        doc_id = cur.lastrowid
+
+        total_lines = 0
+        total_blocks = 0
+        empty_pages = []
+        with zipfile.ZipFile(epub_path) as zf:
+            for pno, name in enumerate(spine, 1):
+                paras = _xhtml_paragraphs(zf.read(name))
+                block_num = 0
+                for para in paras:
+                    block_num += 1
+                    conn.execute(
+                        '''INSERT INTO lines
+                           (doc_id, page_num, block_num, line_num, text)
+                           VALUES (?, ?, ?, ?, ?)''',
+                        (doc_id, pno, block_num, 1, para)
+                    )
+                    conn.execute(
+                        '''INSERT INTO blocks_fts
+                           (doc_id, page_num, block_num, text)
+                           VALUES (?, ?, ?, ?)''',
+                        (doc_id, pno, block_num, _tokenize(para))
+                    )
+                    total_lines += 1
+                    total_blocks += 1
+                if block_num == 0:
+                    empty_pages.append(pno)
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        'doc_id': doc_id,
+        'pages': len(spine),
+        'blocks': total_blocks,
+        'lines': total_lines,
+        'title': title,
+        'mode': 'epub (spine 分页)',
+        'empty_pages': empty_pages,
+    }
 
 
 def _office_to_markdown(path: Path) -> str:

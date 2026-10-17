@@ -248,7 +248,7 @@
 var currentCollection = {{ collection | tojson }};
 var _TAG_LABELS = {primary:'原始史料', secondary:'研究文献', reference:'工具书'};
 var _uploadTags = ['primary'];
-var _ACCEPT_EXT = new Set(['pdf','md','markdown','doc','docx','docm','jpg','jpeg','png','webp','bmp','tif','tiff','gif']);
+var _ACCEPT_EXT = new Set(['pdf','md','markdown','doc','docx','docm','epub','jpg','jpeg','png','webp','bmp','tif','tiff','gif']);
 
 function escapeHtml(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 function tagLabel(t){return _TAG_LABELS[t]||t;}

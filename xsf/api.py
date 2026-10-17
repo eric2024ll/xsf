@@ -40,8 +40,8 @@ from .bib_utils import (
 )
 from .ingest import (
     ingest_pdf, ingest_scanned_pdf, ingest_markdown, ingest_image,
-    ingest_office, ingest_native_pdf, probe_pdf_text_layer,
-    _OFFICE_EXTS, remove_doc, _tokenize,
+    ingest_office, ingest_native_pdf, ingest_epub, probe_pdf_text_layer,
+    _OFFICE_EXTS, _epub_spine_files, remove_doc, _tokenize,
 )
 from .reocr import (
     _reocr_lock, _reocr_jobs, _reocr_get, _reocr_set,
@@ -645,7 +645,8 @@ async def api_add(
       * 'force_ocr' (旧值 'true' 兼容): 强制扫描件 OCR
       * 'force_text': 强制原生文本提取 (纯图件会得到空页提示)
     - md/markdown：按段落解析入库（doc_type='markdown'）
-    - doc/docx/docm/epub：anydoc 转 Markdown 入库（doc_type='office'）
+    - epub：spine 分页入库（每章 1 页，doc_type='epub'，校对台分章对照）
+    - doc/docx/docm：anydoc 转 Markdown 入库（doc_type='office'）
     - 图片（jpg/png/...）：包成单页 PDF 后强制 OCR（doc_type='ocr'）
     - source_tags: JSON 数组字符串，如 '["primary","档案"]'
     返回 {status, results, skipped, errors}：
@@ -717,6 +718,8 @@ async def api_add(
                                     '走扫描件 OCR')
                 elif ext in ('md', 'markdown'):
                     ingest_func = ingest_markdown
+                elif ext == 'epub':
+                    ingest_func = ingest_epub
                 elif ext in _OFFICE_EXT:
                     ingest_func = ingest_office
                 else:  # 图片：强制 OCR
@@ -2351,6 +2354,35 @@ async def proofread_page(
 
 
 # ── 页面图片 ────────────────────────────────────────────
+
+@app.get("/collections/{collection}/doc/{doc_id}/page/{page_num}/source")
+async def page_source(collection: str, doc_id: int, page_num: int):
+    """EPUB 章节源文件 (spine 第 N 个 XHTML), 供校对台影印区 iframe 渲染。"""
+    conn = get_conn(collection)
+    try:
+        doc = conn.execute(
+            "SELECT filename FROM documents WHERE id = ?", (doc_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if doc is None:
+        return JSONResponse(status_code=404, content={"error": "文献不存在"})
+
+    src = get_upload_path(collection, doc["filename"])
+    if not src.exists():
+        return JSONResponse(status_code=404, content={"error": "EPUB 文件不存在"})
+
+    try:
+        spine = _epub_spine_files(src)
+        if page_num < 1 or page_num > len(spine):
+            return JSONResponse(status_code=404, content={"error": "章节超出范围"})
+        import zipfile
+        with zipfile.ZipFile(src) as zf:
+            content = zf.read(spine[page_num - 1])
+        return Response(content=content, media_type='application/xhtml+xml')
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"读取章节失败: {e}"})
+
 
 @app.get("/collections/{collection}/doc/{doc_id}/page/{page_num}/image")
 async def page_image(collection: str, doc_id: int, page_num: int):
