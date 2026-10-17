@@ -891,6 +891,7 @@ mark {
     <div class="text-actions">
       <span class="ta-title">识别文本</span>
       <input type="text" id="basisInput" placeholder="修订依据（如：对校影印）" style="width:150px; padding:2px 8px; font-size:12px; border:1px solid var(--border,#ccc); border-radius:4px; color:var(--text-muted,#666);" title="随本次编辑保存到修订史；留空则记为待补，导出变更包前必须补填">
+      <button onclick="openRevLog()" style="padding:2px 10px; font-size:12px; cursor:pointer; border:1px solid var(--border,#ccc); border-radius:4px; background:var(--bg-secondary,#f5f5f5);" title="本文修订记录（补依据/入包勾选）">修订史</button>
       <span class="save-status" id="saveStatus"></span>
       <div class="ta-menu-wrap">
         <button class="ta-more" onclick="toggleTaMenu(event)">⋯</button>
@@ -2107,7 +2108,7 @@ resumeReocrRange();
 </div>
 
 <script>
-const SMART_BASE = `/collections/{{ collection }}/doc/{{ doc.id }}/proofread/{{ page_num }}/smart-check`;
+const SMART_BASE = `/collections/{{ collection }}/doc/{{ doc.id if doc is defined else 0 }}/proofread/{{ page_num if page_num is defined else 1 }}/smart-check`;
 
 // 面板拖拽: 按标题栏移动 (fixed 定位, 切换为 left/top)
 (function () {
