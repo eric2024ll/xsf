@@ -67,7 +67,7 @@ textarea.summary-ta{width:100%;box-sizing:border-box;min-height:120px;padding:9p
   </div>
 
   <div class="gen-bar">
-    <button class="btn-primary" id="genBtn" onclick="genCandidates()">AI 生成候选（目录+摘要草稿）</button>
+    <button class="btn-primary" id="genBtn" onclick="genCandidates()">AI 生成候选（目录+实体+摘要草稿）</button>
     <span class="gen-note">复用设置页 llm_chat 型 provider；生成后进入下方队列人工审</span>
   </div>
 
@@ -99,33 +99,11 @@ textarea.summary-ta{width:100%;box-sizing:border-box;min-height:120px;padding:9p
   </div>
 
   <div class="cards-col">
-  {# ── 元数据卡 ── #}
-  {% set meta = cards.get('meta', {'content': {}, 'status': None}) %}
+  {# ── 元数据（书目）—— 与校对页文献信息同一数据源 (bib_type/bib_data), bibEditor 编辑 ── #}
   <div class="card-sec">
-    <h3>元数据卡
-      {% if meta.status %}<span class="badge {{ meta.status }}" id="metaBadge">{{ meta.status }}</span>{% endif %}
-    </h3>
-    <div class="meta-grid">
-      <div><label>著者</label><input id="mAuthor" value="{{ (meta.content.get('author') or '') }}"></div>
-      <div><label>年代/版本</label><input id="mEra" value="{{ (meta.content.get('era') or '') }}"></div>
-      <div><label>版本说明</label><input id="mNote" value="{{ (meta.content.get('note') or '') }}"></div>
-    </div>
-    {% if meta.content.get('entities') %}
-    <table class="toc-table" style="margin-top:10px;">
-      <tr><th>实体（采纳自队列）</th><th>类目</th><th>页</th></tr>
-      {% for e in meta.content.get('entities', []) %}
-      <tr><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td><td>{{ e.page_num or '—' }}</td></tr>
-      {% endfor %}
-    </table>
-    {% endif %}
-    <div class="card-actions">
-      <button class="btn-primary" onclick="saveCard('meta')">保存元数据</button>
-      {% if meta.status %}
-      <button onclick="toggleStatus('meta', '{{ meta.status }}')">
-        {{ '退回 draft' if meta.status == 'reviewed' else '标记 reviewed（进检索）' }}
-      </button>
-      {% endif %}
-    </div>
+    <h3>元数据（书目）</h3>
+    <div class="empty-hint" style="margin-bottom:8px;">与校对页「文献信息 → 书目信息」为同一数据源（bib_type + bib_data），此处编辑即全库生效。</div>
+    <div id="cardsBibPanel"></div>
   </div>
 
   {# ── 目录卡 ── #}
@@ -160,6 +138,43 @@ textarea.summary-ta{width:100%;box-sizing:border-box;min-height:120px;padding:9p
       {% if toc.status %}
       <button onclick="toggleStatus('toc', '{{ toc.status }}')">
         {{ '退回 draft' if toc.status == 'reviewed' else '标记 reviewed（进检索）' }}
+      </button>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── 实体索引卡 ── #}
+  {% set entity = cards.get('entity', {'content': {}, 'status': None}) %}
+  <div class="card-sec">
+    <h3>实体索引卡
+      {% if entity.status %}<span class="badge {{ entity.status }}" id="entityBadge">{{ entity.status }}</span>{% endif %}
+    </h3>
+    {% if entity.content.get('items') %}
+    <table class="toc-table">
+      <tr><th>实体</th><th>类别</th><th>页</th><th>来源</th><th></th></tr>
+      {% for e in entity.content.get('items', []) %}
+      <tr>
+        <td>{{ e.label }}</td><td>{{ e.category or '—' }}</td>
+        <td>{{ e.page_num or '—' }}</td>
+        <td class="conf">{{ e.from or '手工' }}</td>
+        <td>{% if e.page_num %}<button onclick="setRefPage({{ e.page_num }})">对照</button>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty-hint">暂无实体——AI 生成候选后从队列采纳，或手工添加（人名/地名/机构/物产等）</div>
+    {% endif %}
+    <div class="add-row">
+      <input id="enLabel" placeholder="实体名（如 軍機處）" style="flex:2;min-width:140px;">
+      <input id="enCat" placeholder="类别（人名/地名/机构/物产…）" style="flex:1;min-width:110px;">
+      <input id="enPage" placeholder="页码" style="width:70px;" type="number" min="1">
+      <button class="btn-primary" onclick="addEntityItem()">+ 添加实体</button>
+    </div>
+    <div class="card-actions">
+      <button class="btn-primary" onclick="saveCard('entity')">保存实体索引</button>
+      {% if entity.status %}
+      <button onclick="toggleStatus('entity', '{{ entity.status }}')">
+        {{ '退回 draft' if entity.status == 'reviewed' else '标记 reviewed（进检索）' }}
       </button>
       {% endif %}
     </div>
@@ -215,10 +230,28 @@ textarea.summary-ta{width:100%;box-sizing:border-box;min-height:120px;padding:9p
   </div>{# /cards-layout #}
 </div>
 <div class="msg" id="msg"></div>
+<script src="/static/bib.js?v={{ static_v }}"></script>
 <script>
 var collection = {{ collection | tojson }};
 var docId = {{ doc.id }};
 var cardIds = {};  // kind -> card_id (状态切换用; 后端按 kind 定位)
+
+// ── 元数据: bibEditor 挂载 (与校对页文献信息同一数据源) ──
+window.BIB_TYPE_LABELS = {{ bib_type_labels | default({}) | tojson }};
+window.BIB_TYPE_FIELDS = {{ bib_type_fields | default({}) | tojson }};
+window.BIB_FIELD_LABELS = {{ bib_field_labels | default({}) | tojson }};
+(function initCardsBib(){
+  if(typeof bibEditor === 'undefined') return;
+  bibEditor.mount('cardsBibPanel', {
+    type: {{ bib_type | default('') | tojson }},
+    data: Object.assign({}, {{ bib_data | default({}) | tojson }}),
+    docId: docId,
+    coll: collection,
+    docTitle: {{ (doc.title or '') | tojson }},
+    citeKey: {{ (doc.cite_key or '') | tojson }},
+    readOnlyCiteKey: true
+  });
+})();
 
 // ── 影像参照: 翻页与对照跳页 ──
 var refMode = (document.getElementById('refPane')||{}).dataset ? document.getElementById('refPane').dataset.mode : 'none';
@@ -255,14 +288,10 @@ async function postJson(url, data){
 
 async function saveCard(kind){
   var content = {};
-  if(kind === 'meta'){
-    content = {author: document.getElementById('mAuthor').value,
-               era: document.getElementById('mEra').value,
-               note: document.getElementById('mNote').value};
-    // 已有 entities 保留 (服务端 upsert 整卡——先取现值)
-    content = await mergeExisting(kind, content);
-  } else if(kind === 'toc'){
+  if(kind === 'toc'){
     content = window.__tocContent || {nodes: []};
+  } else if(kind === 'entity'){
+    content = window.__entityContent || {items: []};
   } else if(kind === 'summary'){
     content = {text: document.getElementById('sumText').value};
   }
@@ -274,7 +303,7 @@ async function saveCard(kind){
 }
 
 async function mergeExisting(kind, base){
-  // 元数据卡保存时保留 entities 等未在表单中的字段
+  // 兜底: 保留未在表单中的字段 (当前无调用方, 保留备用)
   try{
     var r = await fetch('/collections/'+encodeURIComponent(collection)+'/doc/'+docId+'/cards');
     var d = await r.json();
@@ -319,6 +348,24 @@ function addTocNode(){
   showMsg('已暂存（保存目录后生效）— 当前 ' + window.__tocContent.nodes.length + ' 节点');
 }
 
+function addEntityItem(){
+  var label = document.getElementById('enLabel').value.trim();
+  if(!label){showMsg('实体名必填'); return;}
+  var cat = document.getElementById('enCat').value.trim();
+  var pg = parseInt(document.getElementById('enPage').value, 10) || (refMode !== 'none' ? refPage : null);
+  if(!window.__entityContent){
+    window.__entityContent = {items: []};
+    {% if entity.content.get('items') %}
+    window.__entityContent.items = {{ entity.content.get('items') | tojson }};
+    {% endif %}
+  }
+  window.__entityContent.items.push({label: label, category: cat || null, page_num: pg, from: '手工'});
+  document.getElementById('enLabel').value='';
+  document.getElementById('enCat').value='';
+  document.getElementById('enPage').value='';
+  showMsg('已暂存（保存实体索引后生效）— 当前 ' + window.__entityContent.items.length + ' 条');
+}
+
 async function reviewCand(id, action){
   var d = await postJson('/collections/'+encodeURIComponent(collection)+'/candidates/'+id+'/review', {action: action});
   if(d.ok){showMsg(action==='adopt'?'已采纳（并入卡）':'已驳回'); setTimeout(function(){location.reload();}, 400);}
@@ -341,9 +388,9 @@ async function genCandidates(){
   try{
     var r = await fetch('/collections/'+encodeURIComponent(collection)+'/doc/'+docId+'/candidates/generate', {method:'POST'});
     var d = await r.json();
-    if(d.ok){showMsg('生成 '+d.toc+' 个目录候选'+(d.summary?' + 摘要草稿':'')+' ('+d.model+')'); setTimeout(function(){location.reload();}, 600);}
-    else{showMsg('生成失败: '+(d.error||'')); btn.disabled=false; btn.textContent='AI 生成候选（目录+摘要草稿）';}
-  }catch(e){showMsg('请求失败'); btn.disabled=false; btn.textContent='AI 生成候选（目录+摘要草稿）';}
+    if(d.ok){showMsg('生成 '+d.toc+' 个目录候选 + '+d.entities+' 个实体候选'+(d.summary?' + 摘要草稿':'')+' ('+d.model+')'); setTimeout(function(){location.reload();}, 600);}
+    else{showMsg('生成失败: '+(d.error||'')); btn.disabled=false; btn.textContent='AI 生成候选（目录+实体+摘要草稿）';}
+  }catch(e){showMsg('请求失败'); btn.disabled=false; btn.textContent='AI 生成候选（目录+实体+摘要草稿）';}
 }
 </script>
 </body>

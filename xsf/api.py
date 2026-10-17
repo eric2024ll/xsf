@@ -2097,13 +2097,92 @@ def _get_card_doc(collection: str, doc_id: int):
     conn = get_conn(collection)
     try:
         doc = conn.execute(
-            "SELECT id, title, author, cite_key, filename, page_count, "
-            "doc_type FROM documents WHERE id = ?",
-            (doc_id,),
-        ).fetchone()
+             "SELECT id, title, author, cite_key, filename, page_count, "
+             "doc_type, bib_type, bib_data FROM documents WHERE id = ?",
+             (doc_id,),
+         ).fetchone()
         return doc
     finally:
         conn.close()
+
+
+def _migrate_legacy_meta(conn, doc_id: int):
+    """旧 meta 卡惰性迁移 (2026-10-17 元数据合并裁定).
+
+    元数据编辑统一走 bibEditor (documents.bib_type/bib_data) 后:
+    - meta 卡 author/era/note → bib_data 空字段回填, 回填后清旧键
+    - meta 卡 entities → 独立 entity 卡 items, 搬完清键
+    幂等: 键已清/卡不存在时零动作.
+    """
+    row = conn.execute(
+        "SELECT id, content FROM doc_cards WHERE doc_id = ? AND kind = 'meta'",
+        (doc_id,)).fetchone()
+    if row is None:
+        return
+    try:
+        content = json.loads(row["content"] or "{}")
+    except ValueError:
+        return
+    changed = False
+
+    # entities → entity 卡
+    entities = content.pop("entities", None)
+    if entities:
+        erow = conn.execute(
+            "SELECT id, content FROM doc_cards "
+            "WHERE doc_id = ? AND kind = 'entity'", (doc_id,)).fetchone()
+        items = []
+        if erow is not None:
+            try:
+                items = json.loads(erow["content"] or "{}").get("items") or []
+            except ValueError:
+                items = []
+        existing = {it.get("label") for it in items}
+        for e in entities:
+            if e.get("label") and e["label"] not in existing:
+                items.append(e)
+        payload = json.dumps({"items": items}, ensure_ascii=False)
+        if erow is None:
+            conn.execute(
+                "INSERT INTO doc_cards (doc_id, kind, content, status, updated_at) "
+                "VALUES (?, 'entity', ?, 'draft', datetime('now'))",
+                (doc_id, payload))
+        else:
+            conn.execute(
+                "UPDATE doc_cards SET content = ?, updated_at = datetime('now') "
+                "WHERE id = ?", (payload, erow["id"]))
+        changed = True
+
+    # author/era/note → bib_data 空字段回填
+    legacy_map = {"author": "author", "era": "year", "note": "note"}
+    backfill = {k: v for k, v in
+                ((fk, content.pop(lk, None)) for lk, fk in legacy_map.items())
+                if v}
+    if backfill:
+        drow = conn.execute(
+            "SELECT bib_data FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        try:
+            bib = json.loads(drow["bib_data"] or "{}") if drow else {}
+        except ValueError:
+            bib = {}
+        for fk, v in backfill.items():
+            if not bib.get(fk):
+                bib[fk] = v
+        conn.execute(
+            "UPDATE documents SET bib_data = ? WHERE id = ?",
+            (json.dumps(bib, ensure_ascii=False), doc_id))
+        changed = True
+
+    if changed:
+        # meta 卡已无编辑职责; 清空旧键后若 content 为空 dict 则整卡删除
+        if content:
+            conn.execute(
+                "UPDATE doc_cards SET content = ?, updated_at = datetime('now') "
+                "WHERE id = ?",
+                (json.dumps(content, ensure_ascii=False), row["id"]))
+        else:
+            conn.execute("DELETE FROM doc_cards WHERE id = ?", (row["id"],))
+        conn.commit()
 
 
 @app.get("/collections/{collection}/doc/{doc_id}/cards")
@@ -2114,6 +2193,7 @@ async def api_cards(collection: str, doc_id: int):
         return JSONResponse(status_code=404, content={"error": "文献不存在"})
     conn = get_conn(collection)
     try:
+        _migrate_legacy_meta(conn, doc_id)
         cards = conn.execute(
             "SELECT id, kind, content, status, updated_at FROM doc_cards "
             "WHERE doc_id = ?", (doc_id,)).fetchall()
@@ -2139,9 +2219,9 @@ async def api_card_save(collection: str, doc_id: int,
                         kind: str = Form(...), content: str = Form(...),
                         status: str = Form('draft')):
     """保存/更新单卡 (每 doc 每 kind 一张, upsert)."""
-    if kind not in ('meta', 'toc', 'summary'):
+    if kind not in ('meta', 'toc', 'summary', 'entity'):
         return JSONResponse(status_code=400,
-                            content={"error": "kind 只支持 meta/toc/summary"})
+                            content={"error": "kind 只支持 meta/toc/summary/entity"})
     if status not in ('draft', 'reviewed'):
         return JSONResponse(status_code=400,
                             content={"error": "status 只支持 draft/reviewed"})
@@ -2218,16 +2298,16 @@ async def api_candidate_review(collection: str, cand_id: int,
 
         # adopt 时并入对应卡:
         #   toc 候选 → toc 卡 nodes 数组追加节点
-        #   entity 候选 → meta 卡 entities 数组追加
+        #   entity 候选 → entity 卡 items 数组追加 (2026-10-17 实体独立成卡)
         if action == 'adopt':
-            card_kind = 'toc' if cand["ctype"] == 'toc' else 'meta'
+            card_kind = 'toc' if cand["ctype"] == 'toc' else 'entity'
             card = conn.execute(
                 "SELECT id, content FROM doc_cards "
                 "WHERE doc_id = ? AND kind = ?",
                 (cand["doc_id"], card_kind)).fetchone()
             if card is None:
                 content = {"nodes": []} if card_kind == 'toc' \
-                    else {"entities": []}
+                    else {"items": []}
                 cur = conn.execute(
                     """INSERT INTO doc_cards
                        (doc_id, kind, content, status, updated_at)
@@ -2248,11 +2328,11 @@ async def api_candidate_review(collection: str, cand_id: int,
                               "block_num": cand["block_num"],
                               "from": f"candidate#{cand_id}"})
             else:
-                entities = card_content.setdefault("entities", [])
-                entities.append({"label": label or cand["label"],
-                                 "category": category or cand["category"],
-                                 "page_num": cand["page_num"],
-                                 "from": f"candidate#{cand_id}"})
+                items = card_content.setdefault("items", [])
+                items.append({"label": label or cand["label"],
+                              "category": category or cand["category"],
+                              "page_num": cand["page_num"],
+                              "from": f"candidate#{cand_id}"})
             conn.execute(
                 "UPDATE doc_cards SET content = ?, updated_at = datetime('now') "
                 "WHERE id = ?",
@@ -2293,8 +2373,11 @@ async def api_candidates_generate(collection: str, doc_id: int):
         "输出严格 JSON：{\"toc\": [{\"label\": \"目录/主题节点\", "
         "\"category\": \"自由类目标签（如 职官/兵事/贡赋/舆地 或自拟）\", "
         "\"page_num\": 页码, \"confidence\": 0到1}], "
+        "\"entities\": [{\"label\": \"实体名（人名/地名/机构/物产等）\", "
+        "\"category\": \"实体类别（如 人名/地名/机构/物产/职官）\", "
+        "\"page_num\": 页码, \"confidence\": 0到1}], "
         "\"summary\": \"100-200字摘要\"}。"
-        "toc 给 3-8 个节点, 只输出 JSON, 不要解释。"
+        "toc 给 3-8 个节点, entities 给 3-15 个, 只输出 JSON, 不要解释。"
     )
     try:
         content, model = chat(
@@ -2311,6 +2394,7 @@ async def api_candidates_generate(collection: str, doc_id: int):
                             content={"error": f"LLM 输出无法解析: {content[:120]}"})
 
     toc_items = parsed.get("toc") or []
+    entity_items = parsed.get("entities") or []
     summary_text = (parsed.get("summary") or "").strip()
 
     conn = get_conn(collection)
@@ -2329,6 +2413,20 @@ async def api_candidates_generate(collection: str, doc_id: int):
                  float(it.get("confidence") or 0.5),
                  int(it.get("page_num") or 0) or None))
             n_toc += 1
+        n_ent = 0
+        for it in entity_items:
+            label = str(it.get("label") or "").strip()
+            if not label:
+                continue
+            conn.execute(
+                """INSERT INTO card_candidates
+                   (doc_id, ctype, label, category, confidence, page_num, status)
+                   VALUES (?, 'entity', ?, ?, ?, ?, 'pending')""",
+                (doc_id, label,
+                 str(it.get("category") or '').strip() or None,
+                 float(it.get("confidence") or 0.5),
+                 int(it.get("page_num") or 0) or None))
+            n_ent += 1
         if summary_text:
             conn.execute(
                 """INSERT INTO doc_cards (doc_id, kind, content, status, updated_at)
@@ -2339,7 +2437,7 @@ async def api_candidates_generate(collection: str, doc_id: int):
                 (doc_id, json.dumps({"text": summary_text},
                                     ensure_ascii=False)))
         conn.commit()
-        return {"ok": True, "toc": n_toc,
+        return {"ok": True, "toc": n_toc, "entities": n_ent,
                 "summary": bool(summary_text), "model": model}
     finally:
         conn.close()
@@ -2353,6 +2451,7 @@ async def cards_view(request: Request, collection: str, doc_id: int):
         return JSONResponse(status_code=404, content={"error": "文献不存在"})
     conn = get_conn(collection)
     try:
+        _migrate_legacy_meta(conn, doc_id)
         cards = conn.execute(
             "SELECT kind, content, status FROM doc_cards WHERE doc_id = ?",
             (doc_id,)).fetchall()
@@ -2369,13 +2468,25 @@ async def cards_view(request: Request, collection: str, doc_id: int):
                 "status": c["status"]}
         except ValueError:
             cards_map[c["kind"]] = {"content": {}, "status": c["status"]}
+    # 元数据合并 (2026-10-17): 卡片页元数据 = bibEditor 编辑 bib_type/bib_data
+    try:
+        bib_type = doc["bib_type"] or ""
+        bib_data = json.loads(doc["bib_data"] or "{}")
+    except ValueError:
+        bib_type, bib_data = "", {}
     return templates.TemplateResponse(
         request,
         "cards.html",
         _nav_ctx("docs", collection,
                  doc=dict(doc),
                  cards=cards_map,
-                 candidates=[dict(c) for c in cands]),
+                 candidates=[dict(c) for c in cands],
+                 bib_type=bib_type,
+                 bib_data=bib_data,
+                 bib_type_labels=BIB_TYPE_LABELS,
+                 bib_field_labels=BIB_FIELD_LABELS,
+                 bib_type_fields=BIB_TYPE_FIELDS,
+                 ),
     )
 
 
