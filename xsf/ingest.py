@@ -281,11 +281,11 @@ def ingest_markdown(md_path: str | Path, collection: str,
     }
 
 
-_OFFICE_EXTS = {'.doc', '.docx', '.docm'}
+_OFFICE_EXTS = {'.doc', '.docx', '.docm', '.epub'}
 
 
 def _office_to_markdown(path: Path) -> str:
-    """anydoc 转 GitHub-Flavored Markdown（Word 三件套）。
+    """anydoc 转 GitHub-Flavored Markdown（Word 三件套 + EPUB）。
 
     import 优先（pyproject [office] 可选组），CLI 兜底（PATH 上的 anydoc），
     两者皆无时报错引导安装；转换失败（加密/损坏/超大）抛 RuntimeError。
@@ -311,7 +311,7 @@ def _office_to_markdown(path: Path) -> str:
             cli = str(candidate)
     if not cli:
         raise RuntimeError(
-            "未安装 anydoc（Word 转换依赖）: "
+            "未安装 anydoc（Word/EPUB 转换依赖）: "
             "pip install firecrawl-anydoc 或将 anydoc CLI 加入 PATH")
 
     try:
@@ -330,7 +330,7 @@ def ingest_office(office_path: str | Path, collection: str,
                   cite_key: str = None, title: str = None,
                   author: str = None,
                   source_tags: str = '["primary"]') -> dict:
-    """Word 文档（.doc/.docx/.docm）入库。anydoc 转 Markdown 后复用
+    """Word/EPUB 文档（.doc/.docx/.docm/.epub）入库。anydoc 转 Markdown 后复用
     ingest_markdown 的行/块管线（ingest_image 同款「转格式再复用」手法）。
 
     doc_type='office'，page_count=1（无页概念），filename 记原文件名。
