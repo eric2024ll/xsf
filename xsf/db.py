@@ -158,6 +158,27 @@ def _migrate(conn):
     if "linked_pdf" not in doc_cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_pdf TEXT DEFAULT NULL")
 
+    # 轻量修订史 (P1, 2026-10-17): 人工文本修订逐块留痕, 依据最终必填
+    # (空 basis=待补, 导出变更包时拒绝), 入包勾选供语料包变更通道
+    # 设计: mem 小书房/design/完善路线图.md P1
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS revision_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            page_num INTEGER NOT NULL,
+            block_num INTEGER NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            basis TEXT DEFAULT '',
+            in_pkg INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_revlog_doc
+            ON revision_log(doc_id, created_at)
+    """)
+
     # 智能校对 (P4, 2026-09-19): 候选缓存 + 人工录入 + 页映射
     # 设计: pqa design/client/19-smart-proofread.md
     conn.execute("""

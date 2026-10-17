@@ -2002,13 +2002,14 @@ async def edit_line(
     doc_id: int,
     line_id: int,
     text: str = Form(...),
+    basis: str = Form(""),
 ):
-    """更新某行文本，并重聚 block 全文更新 FTS。"""
+    """更新某行文本，并重聚 block 全文更新 FTS。修订史同记 (P1)。"""
     try:
         conn = get_conn(collection)
         try:
             line = conn.execute(
-                """SELECT id, doc_id, page_num, block_num
+                """SELECT id, doc_id, page_num, block_num, text
                    FROM lines WHERE id = ?""",
                 (line_id,),
             ).fetchone()
@@ -2021,6 +2022,22 @@ async def edit_line(
                 return JSONResponse(
                     status_code=400,
                     content={"error": "行不属于该文献"},
+                )
+
+            # 修订史 (P1): 旧值留痕
+            if line["text"] != text:
+                conn.execute(
+                    """INSERT INTO revision_log
+                       (doc_id, page_num, block_num, old_value, new_value, basis)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        doc_id,
+                        line["page_num"],
+                        line["block_num"],
+                        line["text"],
+                        text,
+                        basis or "",
+                    ),
                 )
 
             conn.execute(
@@ -2058,6 +2075,110 @@ async def edit_line(
             conn.close()
 
         return {"ok": True}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── 轻量修订史 (P1, 2026-10-17) ──────────────────────────
+# 设计: mem 小书房/design/完善路线图.md P1 (依据最终必填, 入包勾选)
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/revisions")
+async def list_revisions(collection: str, doc_id: int, limit: int = 200):
+    """本文修订史列表 (最新在前). needs_basis=依据待补 (红色标记项)."""
+    try:
+        conn = get_conn(collection)
+        try:
+            rows = conn.execute(
+                """SELECT id, page_num, block_num, old_value, new_value,
+                          basis, in_pkg, created_at
+                   FROM revision_log WHERE doc_id = ?
+                   ORDER BY id DESC LIMIT ?""",
+                (doc_id, min(max(limit, 1), 1000)),
+            ).fetchall()
+            return {
+                "ok": True,
+                "revisions": [
+                    {
+                        "id": r["id"],
+                        "page_num": r["page_num"],
+                        "block_num": r["block_num"],
+                        "old_value": r["old_value"],
+                        "new_value": r["new_value"],
+                        "basis": r["basis"],
+                        "needs_basis": not (r["basis"] or "").strip(),
+                        "in_pkg": bool(r["in_pkg"]),
+                        "created_at": r["created_at"],
+                    }
+                    for r in rows
+                ],
+            }
+        finally:
+            conn.close()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/collections/{collection}/revision/{rev_id}/basis")
+async def set_revision_basis(
+    collection: str,
+    rev_id: int,
+    basis: str = Form(...),
+):
+    """补填/修订依据. 依据为最终必填项: 待补(红)条目须补齐后方可入导出包."""
+    try:
+        conn = get_conn(collection)
+        try:
+            if not basis.strip():
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "依据不能为空"},
+                )
+            cur = conn.execute(
+                "UPDATE revision_log SET basis = ? WHERE id = ?",
+                (basis.strip(), rev_id),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": "修订记录不存在"},
+                )
+            return {"ok": True}
+        finally:
+            conn.close()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/collections/{collection}/revision/{rev_id}/toggle-pkg")
+async def toggle_revision_pkg(collection: str, rev_id: int):
+    """切换「入变更包」勾选 (语料包变更通道, P3 消费)."""
+    try:
+        conn = get_conn(collection)
+        try:
+            row = conn.execute(
+                "SELECT basis, in_pkg FROM revision_log WHERE id = ?",
+                (rev_id,),
+            ).fetchone()
+            if row is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": "修订记录不存在"},
+                )
+            if not row["in_pkg"] and not (row["basis"] or "").strip():
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "依据待补: 补填依据后才能勾选入包"},
+                )
+            conn.execute(
+                "UPDATE revision_log SET in_pkg = ? WHERE id = ?",
+                (0 if row["in_pkg"] else 1, rev_id),
+            )
+            conn.commit()
+            return {"ok": True, "in_pkg": not row["in_pkg"]}
+        finally:
+            conn.close()
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -2286,11 +2407,43 @@ async def edit_page(
     doc_id: int,
     page_num: int,
     text: str = Form(...),
+    basis: str = Form(""),
 ):
-    """更新整页文本：以空行分隔 block，整体替换，FTS 同步。"""
+    """更新整页文本：以空行分隔 block，整体替换，FTS 同步。
+
+    修订史 (P1): DELETE 前对旧块做快照, 与新块按位置对齐 diff,
+    变化块记 revision_log (block 粒度 — 整页重写下行号不稳定).
+    basis 可空 (自动保存不打断编辑流), 空值=待补, 导出变更包时强制.
+    """
     try:
         conn = get_conn(collection)
         try:
+            # 旧块快照 → 修订史 diff (在任何写操作前)
+            old_blocks = [
+                r["text"]
+                for r in conn.execute(
+                    """SELECT text FROM lines
+                       WHERE doc_id = ? AND page_num = ?
+                       ORDER BY block_num, line_num, id""",
+                    (doc_id, page_num),
+                ).fetchall()
+            ]
+            new_blocks = [
+                bt.strip("\n")
+                for bt in text.split("\n\n")
+                if bt.strip()
+            ]
+            for i in range(max(len(old_blocks), len(new_blocks))):
+                old_v = old_blocks[i] if i < len(old_blocks) else None
+                new_v = new_blocks[i] if i < len(new_blocks) else None
+                if old_v != new_v:
+                    conn.execute(
+                        """INSERT INTO revision_log
+                           (doc_id, page_num, block_num, old_value, new_value, basis)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (doc_id, page_num, i + 1, old_v, new_v, basis or ""),
+                    )
+
             # 继承该页原有正文块标签 (整页重写无法逐行映射,
             # 但标签决定检索过滤/智能校对等下游行为, 不能洗成 NULL)
             row = conn.execute(
