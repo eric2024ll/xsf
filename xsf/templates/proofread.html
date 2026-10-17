@@ -594,45 +594,6 @@ mark {
   font-weight: 600;
 }
 
-/* P5 批注: 图钉层 */
-.annot-layer {
-  position: absolute; inset: 0;
-  pointer-events: none;
-  z-index: 30;
-}
-.annot-pin {
-  position: absolute;
-  transform: translate(-50%, -100%);
-  pointer-events: auto;
-  cursor: pointer;
-  background: #b45309;
-  color: #fff;
-  border: 1px solid #92400e;
-  border-radius: 10px;
-  padding: 1px 8px;
-  font-size: 0.72rem;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  box-shadow: 0 1px 3px rgba(0,0,0,.3);
-  z-index: 31;
-}
-.annot-pin::after {
-  content: '';
-  position: absolute;
-  left: 50%; bottom: -5px;
-  transform: translateX(-50%);
-  border: 5px solid transparent;
-  border-top-color: #92400e;
-  border-bottom: none;
-}
-body.annot-on #imageWrap { cursor: copy; }
-body.annot-on #imageWrap .bbox-overlay { pointer-events: none; }
-#annotToggleBtn.on {
-  background: #fff8e1; border-color: #b45309; color: #b45309; font-weight: 600;
-}
-
 /* 拖拽平移 */
 .image-wrap { cursor: grab; }
 .image-wrap.grabbing { cursor: grabbing; }
@@ -855,7 +816,6 @@ body.annot-on #imageWrap .bbox-overlay { pointer-events: none; }
         <button onclick="zoomSetPct(1)" title="实际尺寸 (150dpi)">1:1</button>
         <button class="reocr-btn" id="reocrToggle" onclick="toggleReocrMode()">框选重OCR</button>
         <button class="reocr-btn" id="smartCheckBtn" onclick="runSmartCheck()">智能校对</button>
-        <button id="annotToggleBtn" onclick="toggleAnnotMode()" title="点击影像添加批注图钉（批注不入修订史）">批注</button>
         <button id="showAllBoxes" onclick="toggleShowAllBoxes()">显示全部框</button>
         <span class="hint">滚轮缩放 · 拖拽平移</span>
         <div class="type-legend" id="typeLegend"></div>
@@ -900,15 +860,6 @@ body.annot-on #imageWrap .bbox-overlay { pointer-events: none; }
         {% endfor %}
       {% endfor %}
       <div class="draw-layer" id="drawLayer"></div>
-      <div class="annot-layer" id="annotLayer">
-        {% for a in annotations %}
-        <div class="annot-pin" style="left: {{ a.x }}%; top: {{ a.y }}%;"
-             id="annot-{{ a.id }}"
-             data-full="{{ a.text | escape }}"
-             title="{{ a.text | escape }} ({{ a.created_at }})"
-             onclick="annotView({{ a.id }})">{{ a.text[:12] }}</div>
-        {% endfor %}
-      </div>
     </div>
   </div>
   {% elif is_epub %}
@@ -1496,82 +1447,6 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') hideDocSearchPanel();
 });
 
-// ── P5 批注: 影像图钉, 个人资产不入修订史 ──
-var _annotMode = false;
-function toggleAnnotMode() {
-  _annotMode = !_annotMode;
-  document.body.classList.toggle('annot-on', _annotMode);
-  var b = document.getElementById('annotToggleBtn');
-  if (b) b.classList.toggle('on', _annotMode);
-  if (_annotMode && typeof _reocrMode !== 'undefined' && _reocrMode) exitReocrMode();
-}
-(function initAnnot() {
-  var wrap = document.getElementById('imageWrap');
-  var img = document.getElementById('pageImage');
-  if (!wrap || !img) return;
-  wrap.addEventListener('click', function (e) {
-    if (!_annotMode) return;
-    if (e.target.closest && e.target.closest('.annot-pin')) return;
-    var r = img.getBoundingClientRect();
-    var x = (e.clientX - r.left) / r.width * 100;
-    var y = (e.clientY - r.top) / r.height * 100;
-    if (x < 0 || x > 100 || y < 0 || y > 100) return;
-    var t = prompt('批注内容（锚定此位置）:');
-    if (t === null) return;
-    t = t.trim();
-    if (!t) { showToast('批注内容为空'); return; }
-    annotCreate(x, y, t);
-  });
-})();
-async function annotCreate(x, y, text) {
-  try {
-    var fd = new URLSearchParams({ x: x.toFixed(2), y: y.toFixed(2), text: text });
-    var r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/annotations`, { method: 'POST', body: fd });
-    var d = await r.json();
-    if (d.ok) { addAnnotPin(d.id, x, y, text); showToast('批注已加'); }
-    else showToast('批注失败: ' + (d.error || '未知错误'));
-  } catch (err) { showToast('批注失败: ' + err.message); }
-}
-function addAnnotPin(id, x, y, text) {
-  var layer = document.getElementById('annotLayer');
-  if (!layer) return;
-  var d = document.createElement('div');
-  d.className = 'annot-pin';
-  d.id = 'annot-' + id;
-  d.style.left = x + '%';
-  d.style.top = y + '%';
-  d.setAttribute('data-full', text);
-  d.title = text;
-  d.textContent = text.slice(0, 12);
-  d.onclick = function () { annotView(id); };
-  layer.appendChild(d);
-}
-function annotView(id) {
-  var pin = document.getElementById('annot-' + id);
-  if (!pin) return;
-  var full = pin.getAttribute('data-full') || '';
-  var t = prompt('批注（修改后保存；清空并确定 = 删除）:', full);
-  if (t === null) return;
-  t = t.trim();
-  var base = `/collections/${encodeURIComponent(collection)}/annotations/${id}`;
-  if (!t) {
-    fetch(base, { method: 'DELETE' }).then(r => r.json()).then(d => {
-      if (d.ok) { pin.remove(); showToast('批注已删'); }
-      else showToast('删除失败: ' + (d.error || ''));
-    });
-    return;
-  }
-  fetch(base + '/update', { method: 'POST', body: new URLSearchParams({ text: t }) })
-    .then(r => r.json()).then(d => {
-      if (d.ok) {
-        pin.setAttribute('data-full', t);
-        pin.textContent = t.slice(0, 12);
-        pin.title = t;
-        showToast('批注已改');
-      } else showToast('修改失败: ' + (d.error || ''));
-    });
-}
-
 // ── 拖拽平移 ──
 (function initPan() {
   const wrap = document.getElementById('imageWrap');
@@ -1580,7 +1455,6 @@ function annotView(id) {
   let dragging = false, start = null;
   wrap.addEventListener('mousedown', (e) => {
     if (_reocrMode) return;
-    if (_annotMode) return;
     if (e.button !== 0) return;
     if (e.target.classList.contains('bbox-overlay')) return;
     dragging = true;
