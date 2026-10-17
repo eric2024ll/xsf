@@ -40,7 +40,8 @@ from .bib_utils import (
 )
 from .ingest import (
     ingest_pdf, ingest_scanned_pdf, ingest_markdown, ingest_image,
-    ingest_office, _OFFICE_EXTS, remove_doc, _tokenize,
+    ingest_office, ingest_native_pdf, probe_pdf_text_layer,
+    _OFFICE_EXTS, remove_doc, _tokenize,
 )
 from .reocr import (
     _reocr_lock, _reocr_jobs, _reocr_get, _reocr_set,
@@ -632,19 +633,25 @@ async def api_add(
     cite_key: str = Form(None),
     title: str = Form(None),
     author: str = Form(None),
-    ocr: bool = Form(False),
+    ocr: str = Form('auto'),
     source_tags: str = Form('["primary"]'),
 ):
     """批量上传：支持 pdf / md / word / 图片（图片自动 OCR）。
 
-    - pdf：born-digital 解析；ocr=True 则走 PaddleOCR-VL（前端默认勾选）
+    - pdf + ocr 三态 (2026-10-17 智能分流):
+      * 'auto' (默认): 探测文本层覆盖率 (前5页+中段3页抽样),
+        >= 0.90 走原生管线 ingest_native_pdf (逐页 anydoc, 段落建块),
+        否则走扫描件 OCR ingest_scanned_pdf
+      * 'force_ocr' (旧值 'true' 兼容): 强制扫描件 OCR
+      * 'force_text': 强制原生文本提取 (纯图件会得到空页提示)
     - md/markdown：按段落解析入库（doc_type='markdown'）
-    - doc/docx/docm：anydoc 转 Markdown 入库（doc_type='office'）
+    - doc/docx/docm/epub：anydoc 转 Markdown 入库（doc_type='office'）
     - 图片（jpg/png/...）：包成单页 PDF 后强制 OCR（doc_type='ocr'）
     - source_tags: JSON 数组字符串，如 '["primary","档案"]'
     返回 {status, results, skipped, errors}：
       - skipped: filename 已在本架的重复文件（不算错误）
       - results/skipped 条目带 cross_collection: 其它书架同名提醒
+      - results 条目 pdf 带 note: auto 档分流说明
     """
     try:
         init_db(collection)
@@ -689,8 +696,25 @@ async def api_add(
 
             # 分派
             try:
+                note = None
                 if ext == 'pdf':
-                    ingest_func = ingest_scanned_pdf if ocr else ingest_pdf
+                    mode = str(ocr).strip().lower()
+                    if mode in ('force_ocr', 'true'):   # 'true': 旧勾选值兼容
+                        ingest_func = ingest_scanned_pdf
+                    elif mode == 'force_text':
+                        ingest_func = ingest_native_pdf
+                        note = '强制原生文本提取'
+                    else:                               # 'auto' 及其余值
+                        ratio = await asyncio.to_thread(
+                            probe_pdf_text_layer, dst)
+                        if ratio >= 0.90:
+                            ingest_func = ingest_native_pdf
+                            note = (f'检测到文本层（抽样 {ratio:.0%}），'
+                                    '走原生提取（anydoc 段落建块）')
+                        else:
+                            ingest_func = ingest_scanned_pdf
+                            note = (f'未检测到文本层（抽样 {ratio:.0%}），'
+                                    '走扫描件 OCR')
                 elif ext in ('md', 'markdown'):
                     ingest_func = ingest_markdown
                 elif ext in _OFFICE_EXT:
@@ -708,11 +732,14 @@ async def api_add(
                     source_tags=source_tags,
                 )
                 cross = _cross_collection_hits(fname, collection)
-                results.append({
+                entry = {
                     "filename": fname,
                     "result": r,
                     "cross_collection": cross,
-                })
+                }
+                if note is not None:
+                    entry["note"] = note
+                results.append(entry)
             except Exception as e:
                 errors.append({"filename": fname, "error": str(e)})
 

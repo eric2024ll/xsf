@@ -326,6 +326,124 @@ def _office_to_markdown(path: Path) -> str:
     return r.stdout
 
 
+_MD_PREFIX_RE = re.compile(r'^(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+)+')
+
+
+def probe_pdf_text_layer(pdf_path: str | Path, min_chars: int = 20) -> float:
+    """探测 PDF 文本层覆盖率: 抽样前 5 页 + 中段 3 页, 返回有文本层页占比。
+
+    born-digital PDF 与扫描件的物理判据是文本层字符量, 而非人肉勾选。
+    占比 >= 0.90 判定数字原生 (阈值用户裁定 2026-10-17, 保守取向:
+    混合件倾向走 OCR)。
+    """
+    doc = pymupdf.open(pdf_path)
+    try:
+        n = len(doc)
+        if n == 0:
+            return 0.0
+        idxs = set(range(min(n, 5)))
+        if n > 8:
+            mid = n // 2
+            idxs.update(i for i in (mid - 1, mid, mid + 1) if 0 <= i < n)
+        idxs = sorted(idxs)
+        hits = sum(
+            1 for i in idxs
+            if len(doc[i].get_text().strip()) >= min_chars
+        )
+        return hits / len(idxs)
+    finally:
+        doc.close()
+
+
+def ingest_native_pdf(pdf_path: str | Path, collection: str,
+                      cite_key: str = None, title: str = None,
+                      author: str = None,
+                      source_tags: str = '["primary"]') -> dict:
+    """数字原生 PDF 入库: 逐页拆分 -> anydoc 转 Markdown -> 按段落建块。
+
+    - anydoc 整篇输出无页界标记, 故按页拆转; 页归属 100% 保真,
+      跨页段落按页硬切 (校对工作台按页工作, 页内完整可接受)
+    - 每段落一个 block (单 line), 段内折行合并; 剥 md 标记前缀
+    - doc_type='pdf_native', 与 ingest_pdf (PyMuPDF 直提, 无段落感)
+      及 OCR 管线 (doc_type='ocr') 区分
+    - 已知限制: md 表格语法字符 (| 等) 原样入库, 表格件建议强制 OCR
+    """
+    import tempfile
+    pdf_path = Path(pdf_path)
+    src = pymupdf.open(pdf_path)
+    page_count = len(src)
+    meta = src.metadata or {}
+    if not title:
+        title = meta.get('title') or None
+    if not author:
+        author = meta.get('author') or None
+
+    is_primary, is_secondary, is_reference = _source_flags(source_tags)
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            '''INSERT INTO documents
+               (cite_key, title, author, filename, page_count, doc_type,
+                is_primary, is_secondary, is_reference, source_tags)
+               VALUES (?, ?, ?, ?, ?, 'pdf_native', ?, ?, ?, ?)''',
+            (cite_key, title, author, pdf_path.name, page_count,
+             is_primary, is_secondary, is_reference, source_tags)
+        )
+        doc_id = cur.lastrowid
+
+        total_lines = 0
+        total_blocks = 0
+        empty_pages = []
+        with tempfile.TemporaryDirectory(prefix='xsf_native_') as td:
+            for pno in range(page_count):
+                one = pymupdf.open()
+                one.insert_pdf(src, from_page=pno, to_page=pno)
+                tmp_pdf = Path(td) / f'p{pno + 1}.pdf'
+                one.save(tmp_pdf)
+                one.close()
+
+                md = _office_to_markdown(tmp_pdf)
+                block_num = 0
+                for para in md.split('\n\n'):
+                    para = _MD_PREFIX_RE.sub('', para.strip()).strip()
+                    para = ' '.join(para.split('\n')).strip()
+                    para = para.replace('**', '').replace('`', '')
+                    if not para:
+                        continue
+                    block_num += 1
+                    conn.execute(
+                        '''INSERT INTO lines
+                           (doc_id, page_num, block_num, line_num, text)
+                           VALUES (?, ?, ?, ?, ?)''',
+                        (doc_id, pno + 1, block_num, 1, para)
+                    )
+                    conn.execute(
+                        '''INSERT INTO blocks_fts
+                           (doc_id, page_num, block_num, text)
+                           VALUES (?, ?, ?, ?)''',
+                        (doc_id, pno + 1, block_num, _tokenize(para))
+                    )
+                    total_lines += 1
+                    total_blocks += 1
+                if block_num == 0:
+                    empty_pages.append(pno + 1)
+
+        conn.commit()
+    finally:
+        src.close()
+        conn.close()
+
+    return {
+        'doc_id': doc_id,
+        'pages': page_count,
+        'blocks': total_blocks,
+        'lines': total_lines,
+        'title': title,
+        'mode': 'native (anydoc)',
+        'empty_pages': empty_pages,
+    }
+
+
 def ingest_office(office_path: str | Path, collection: str,
                   cite_key: str = None, title: str = None,
                   author: str = None,

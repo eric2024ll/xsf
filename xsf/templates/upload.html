@@ -141,9 +141,13 @@
         <label>作者 (可选，批量时共用)</label>
         <input type="text" id="upAuthor">
       </div>
-      <div class="field checkbox-row">
-        <input type="checkbox" id="upOcr" checked>
-        <label for="upOcr">PDF 走 OCR 扫描件模式（默认开启，图片始终 OCR）</label>
+      <div class="field">
+        <label>PDF 导入模式（图片始终 OCR）</label>
+        <select id="upMode" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:5px;background:var(--card-bg);color:var(--text);font-size:0.9rem;">
+          <option value="auto" selected>自动检测（推荐）— 有文本层走原生提取，无则 OCR</option>
+          <option value="force_ocr">强制 OCR 扫描件 — 扫描件/表格件/需重新识别</option>
+          <option value="force_text">强制原生文本 — 数字 PDF 保留原生段落（anydoc）</option>
+        </select>
       </div>
       <div class="field">
         <label>来源标签（批量时共用）</label>
@@ -313,7 +317,7 @@ document.getElementById('uploadForm').addEventListener('submit', async function(
   var citeKey=document.getElementById('upCiteKey').value;
   var title=document.getElementById('upTitle').value;
   var author=document.getElementById('upAuthor').value;
-  var ocr=document.getElementById('upOcr').checked;
+  var ocr=document.getElementById('upMode').value;
   var sourceTags=JSON.stringify(_uploadTags);
   btn.disabled=true;statusEl.className='upload-status show loading';
   var itemEls={};
@@ -336,7 +340,7 @@ document.getElementById('uploadForm').addEventListener('submit', async function(
       var errs=(data.errors||[]).filter(function(r){return r.filename===f.name;});
       var cross=(okR[0]&&okR[0].cross_collection)||(skpR[0]&&skpR[0].cross_collection)||[];
       var crossMsg=cross.length?'（同名也存在于: '+cross.join('、')+'）':'';
-      if(okR.length){if(stEl){stEl.className='fstate ok';stEl.textContent='✓'+(okR[0].result.blocks||0)+'块'+(cross.length?'⚠':'');}okCount++;if(cross.length){statusEl.textContent='已入库 '+f.name+crossMsg;}}
+      if(okR.length){if(stEl){stEl.className='fstate ok';stEl.textContent='✓'+(okR[0].result.blocks||0)+'块'+(cross.length?'⚠':'');}okCount++;if(okR[0].note){statusEl.textContent='已入库 '+f.name+': '+okR[0].note;}else if(cross.length){statusEl.textContent='已入库 '+f.name+crossMsg;}}
       else if(skpR.length){if(stEl){stEl.className='fstate wait';stEl.textContent='跳过(重复)'+(cross.length?'⚠':'');}skipCount++;statusEl.textContent='跳过 '+f.name+': 已在本架'+crossMsg;}
       else{if(stEl){stEl.className='fstate err';stEl.textContent='失败';}failCount++;}
     }catch(err){if(stEl){stEl.className='fstate err';stEl.textContent='失败';}failCount++;}
