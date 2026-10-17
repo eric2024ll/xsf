@@ -15,6 +15,17 @@
 .doc-bar a,.btn{font-size:0.85rem;color:var(--primary);text-decoration:none;cursor:pointer;background:none;border:none;padding:4px 8px;}
 .btn-primary{background:var(--primary);color:#fff;border-radius:5px;padding:6px 14px;font-weight:600;}
 .btn-primary:disabled{opacity:0.5;cursor:wait;}
+.cards-layout{display:flex;gap:14px;align-items:flex-start;}
+.ref-pane{flex:0 0 400px;position:sticky;top:64px;}
+.ref-box{background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px;}
+.ref-toolbar{display:flex;gap:6px;align-items:center;justify-content:center;margin-bottom:8px;flex-wrap:wrap;}
+.ref-toolbar button{border:1px solid var(--border);background:var(--bg);border-radius:5px;padding:3px 12px;cursor:pointer;font-size:0.85rem;color:var(--text);}
+.ref-toolbar .pg{font-size:0.85rem;color:var(--text-muted);min-width:90px;text-align:center;}
+.ref-box img{width:100%;border:1px solid var(--border);border-radius:4px;display:block;}
+.ref-box iframe{width:100%;height:480px;border:1px solid var(--border);border-radius:4px;background:#fff;}
+.ref-hint{font-size:0.8rem;color:var(--text-muted);padding:14px 6px;text-align:center;}
+.cards-col{flex:1;min-width:0;}
+@media(max-width:900px){.cards-layout{flex-direction:column;}.ref-pane{flex:none;width:100%;position:static;}}
 .card-sec{background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:14px;}
 .card-sec h3{margin:0 0 10px;font-size:0.95rem;display:flex;align-items:center;gap:8px;}
 .badge{font-size:0.72rem;padding:2px 8px;border-radius:9px;font-weight:500;}
@@ -60,6 +71,34 @@ textarea.summary-ta{width:100%;box-sizing:border-box;min-height:120px;padding:9p
     <span class="gen-note">复用设置页 llm_chat 型 provider；生成后进入下方队列人工审</span>
   </div>
 
+  <div class="cards-layout">
+  {# ── 影像参照栏: 卡片核对须对照原文 ── #}
+  {% set ref_mode = 'epub' if doc.doc_type == 'epub' else ('none' if doc.doc_type in ('md', 'office') else 'img') %}
+  <div class="ref-pane" id="refPane" data-mode="{{ ref_mode }}">
+    <div class="ref-box">
+      {% if ref_mode == 'img' %}
+      <div class="ref-toolbar">
+        <button onclick="refPageNav(-1)">‹</button>
+        <span class="pg" id="refPg">1 / {{ doc.page_count }}</span>
+        <button onclick="refPageNav(1)">›</button>
+        <span class="pg" id="refModeHint" style="min-width:auto;">点候选「对照」跳锚点页</span>
+      </div>
+      <img id="refImg" src="/collections/{{ collection }}/doc/{{ doc.id }}/page/1/image" alt="原文影像">
+      {% elif ref_mode == 'epub' %}
+      <div class="ref-toolbar">
+        <button onclick="refPageNav(-1)">‹</button>
+        <span class="pg" id="refPg">1 / {{ doc.page_count }}</span>
+        <button onclick="refPageNav(1)">›</button>
+      </div>
+      <iframe id="refFrame" src="/collections/{{ collection }}/doc/{{ doc.id }}/page/1/source"></iframe>
+      {% else %}
+      <div class="ref-hint">本文档为转换/纯文本件（{{ doc.doc_type }}），无原文影像可对照。
+      目录/摘要卡请结合「校对页」文本核对。</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="cards-col">
   {# ── 元数据卡 ── #}
   {% set meta = cards.get('meta', {'content': {}, 'status': None}) %}
   <div class="card-sec">
@@ -97,12 +136,13 @@ textarea.summary-ta{width:100%;box-sizing:border-box;min-height:120px;padding:9p
     </h3>
     {% if toc.content.get('nodes') %}
     <table class="toc-table">
-      <tr><th>节点</th><th>类目</th><th>页</th><th>来源</th></tr>
+      <tr><th>节点</th><th>类目</th><th>页</th><th>来源</th><th></th></tr>
       {% for n in toc.content.get('nodes', []) %}
       <tr>
         <td>{{ n.label }}</td><td>{{ n.category or '—' }}</td>
         <td>{{ n.page_num or '—' }}</td>
         <td class="conf">{{ n.from or '手工' }}</td>
+        <td>{% if n.page_num %}<button onclick="setRefPage({{ n.page_num }})">对照</button>{% endif %}</td>
       </tr>
       {% endfor %}
     </table>
@@ -162,6 +202,7 @@ textarea.summary-ta{width:100%;box-sizing:border-box;min-height:120px;padding:9p
           <button onclick="reviewCand({{ c.id }}, 'reject')">驳回</button>
           {% endif %}
           <button onclick="patchCand({{ c.id }})">修订</button>
+          {% if c.page_num %}<button onclick="setRefPage({{ c.page_num }})">对照</button>{% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -170,12 +211,38 @@ textarea.summary-ta{width:100%;box-sizing:border-box;min-height:120px;padding:9p
     <div class="empty-hint">队列为空——点上方「AI 生成候选」或手工建卡</div>
     {% endif %}
   </div>
+  </div>{# /cards-col #}
+  </div>{# /cards-layout #}
 </div>
 <div class="msg" id="msg"></div>
 <script>
 var collection = {{ collection | tojson }};
 var docId = {{ doc.id }};
 var cardIds = {};  // kind -> card_id (状态切换用; 后端按 kind 定位)
+
+// ── 影像参照: 翻页与对照跳页 ──
+var refMode = (document.getElementById('refPane')||{}).dataset ? document.getElementById('refPane').dataset.mode : 'none';
+var refPage = 1, refTotal = {{ doc.page_count or 1 }};
+function setRefPage(n){
+  if(refMode === 'none' || !n) return;
+  n = Math.max(1, Math.min(refTotal, parseInt(n, 10) || 1));
+  refPage = n;
+  document.getElementById('refPg').textContent = n + ' / ' + refTotal;
+  if(refMode === 'img'){
+    document.getElementById('refImg').src =
+      '/collections/' + encodeURIComponent(collection) + '/doc/' + docId + '/page/' + n + '/image';
+  } else if(refMode === 'epub'){
+    document.getElementById('refFrame').src =
+      '/collections/' + encodeURIComponent(collection) + '/doc/' + docId + '/page/' + n + '/source';
+  }
+  if(window.scrollY > 200) document.querySelector('.ref-pane').scrollIntoView({behavior:'smooth', block:'start'});
+}
+function refPageNav(dir){ setRefPage(refPage + dir); }
+// 首个候选锚点页作为初始参照页
+document.addEventListener('DOMContentLoaded', function(){
+  var first = document.querySelector('.cand-table .ops button[onclick^="setRefPage"]');
+  if(first){ var m = first.getAttribute('onclick').match(/setRefPage\((\d+)\)/); if(m) setRefPage(+m[1]); }
+});
 
 function showMsg(t){var m=document.getElementById('msg');m.textContent=t;m.classList.add('show');setTimeout(function(){m.classList.remove('show');},2200);}
 function esc(s){return String(s==null?'':s);}
@@ -238,7 +305,7 @@ function addTocNode(){
   var label = document.getElementById('tnLabel').value.trim();
   if(!label){showMsg('节点名必填'); return;}
   var cat = document.getElementById('tnCat').value.trim();
-  var pg = parseInt(document.getElementById('tnPage').value, 10) || null;
+  var pg = parseInt(document.getElementById('tnPage').value, 10) || (refMode !== 'none' ? refPage : null);
   if(!window.__tocContent){
     window.__tocContent = {nodes: []};
     {% if toc.content.get('nodes') %}
