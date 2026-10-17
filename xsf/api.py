@@ -2539,6 +2539,15 @@ async def proofread_page(
 
             page_num = max(1, min(page, page_count))
 
+            # P5 批注: 当前页图钉 (个人资产, 不入修订史)
+            try:
+                annotations = conn.execute(
+                    "SELECT id, x, y, text, created_at FROM annotations "
+                    "WHERE doc_id = ? AND page_num = ? ORDER BY id",
+                    (doc_id, page_num)).fetchall()
+            except Exception:
+                annotations = []
+
             rows = conn.execute(
                 """SELECT id, page_num, block_num, line_num, text,
                           bbox, block_label, page_w, page_h, suspect,
@@ -2658,6 +2667,7 @@ async def proofread_page(
                 doc=dict(doc),
                 page_num=page_num,
                 page_count=page_count,
+                annotations=[dict(a) for a in annotations],
                 blocks=blocks,
                 keyword=keyword or "",
                 target_block=block,
@@ -2717,6 +2727,72 @@ async def page_source(collection: str, doc_id: int, page_num: int):
         return Response(content=content, media_type='application/xhtml+xml')
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"读取章节失败: {e}"})
+
+
+# ---------- 批注 (P5, 2026-10-17): 影像页级图钉, 个人资产不入修订史 ----------
+# x/y 为相对影像宽/高百分比 (0-100), 与缩放无关
+
+@app.get("/collections/{collection}/doc/{doc_id}/page/{page_num}/annotations")
+async def api_annotations_list(collection: str, doc_id: int, page_num: int):
+    conn = get_conn(collection)
+    try:
+        rows = conn.execute(
+            "SELECT id, x, y, text, created_at FROM annotations "
+            "WHERE doc_id = ? AND page_num = ? ORDER BY id",
+            (doc_id, page_num)).fetchall()
+        return {"annotations": [dict(r) for r in rows]}
+    except sqlite3.OperationalError:
+        return {"annotations": []}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/page/{page_num}/annotations")
+async def api_annotation_create(collection: str, doc_id: int, page_num: int,
+                                x: float = Form(...), y: float = Form(...),
+                                text: str = Form(...)):
+    text = text.strip()
+    if not text:
+        return JSONResponse(status_code=400, content={"error": "批注内容为空"})
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            "INSERT INTO annotations (doc_id, page_num, x, y, text) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (doc_id, page_num, max(0, min(100, x)), max(0, min(100, y)), text))
+        conn.commit()
+        return {"ok": True, "id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/annotations/{annot_id}/update")
+async def api_annotation_update(collection: str, annot_id: int,
+                                text: str = Form(...)):
+    text = text.strip()
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            "UPDATE annotations SET text = ? WHERE id = ?", (text, annot_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            return JSONResponse(status_code=404, content={"error": "批注不存在"})
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.delete("/collections/{collection}/annotations/{annot_id}")
+async def api_annotation_delete(collection: str, annot_id: int):
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute("DELETE FROM annotations WHERE id = ?", (annot_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            return JSONResponse(status_code=404, content={"error": "批注不存在"})
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 @app.get("/collections/{collection}/doc/{doc_id}/page/{page_num}/image")

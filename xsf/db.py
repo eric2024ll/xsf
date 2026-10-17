@@ -253,6 +253,25 @@ def _migrate(conn):
             ON card_candidates(doc_id, status)
     """)
 
+    # 批注 (P5, 2026-10-17): 影像页级图钉批注, 个人资产不入修订史
+    # 设计: mem 小书房/design/完善路线图.md P5 + 石渠原型第四轮
+    # x/y 为相对影像宽/高的百分比 (0-100), 与缩放无关
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS annotations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            page_num INTEGER NOT NULL,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            text TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_annot_doc_page
+            ON annotations(doc_id, page_num)
+    """)
+
     # 智能校对 (P4, 2026-09-19): 候选缓存 + 人工录入 + 页映射
     # 设计: pqa design/client/19-smart-proofread.md
     conn.execute("""
