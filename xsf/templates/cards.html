@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.ico">
+<title>文献卡片 — {{ doc.title or doc.filename }} · 小書房</title>
+<link rel="stylesheet" href="/static/app.css?v={{ static_v }}">
+<style>
+.container{max-width:1100px;margin:0 auto;padding:20px;}
+.doc-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;margin-bottom:14px;}
+.doc-bar .t{font-weight:600;font-size:1.02rem;}
+.doc-bar .sub{font-size:0.82rem;color:var(--text-muted);}
+.doc-bar .spacer{flex:1;}
+.doc-bar a,.btn{font-size:0.85rem;color:var(--primary);text-decoration:none;cursor:pointer;background:none;border:none;padding:4px 8px;}
+.btn-primary{background:var(--primary);color:#fff;border-radius:5px;padding:6px 14px;font-weight:600;}
+.btn-primary:disabled{opacity:0.5;cursor:wait;}
+.card-sec{background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:14px;}
+.card-sec h3{margin:0 0 10px;font-size:0.95rem;display:flex;align-items:center;gap:8px;}
+.badge{font-size:0.72rem;padding:2px 8px;border-radius:9px;font-weight:500;}
+.badge.draft{background:#fff8e1;color:#b45309;}
+.badge.reviewed{background:#e6f4ea;color:#137333;}
+.badge.adopted{background:#e6f4ea;color:#137333;}
+.badge.rejected{background:#fce8e6;color:#c5221f;}
+.badge.pending{background:#e8f0fe;color:var(--primary);}
+.meta-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;}
+.meta-grid label{font-size:0.78rem;color:var(--text-muted);display:block;margin-bottom:3px;}
+.meta-grid input{width:100%;box-sizing:border-box;padding:6px 9px;border:1px solid var(--border);border-radius:5px;font-size:0.88rem;background:var(--bg);color:var(--text);}
+textarea.summary-ta{width:100%;box-sizing:border-box;min-height:120px;padding:9px;border:1px solid var(--border);border-radius:5px;font-size:0.88rem;background:var(--bg);color:var(--text);line-height:1.7;}
+.toc-table,.cand-table{width:100%;border-collapse:collapse;font-size:0.85rem;}
+.toc-table th,.cand-table th{text-align:left;color:var(--text-muted);font-weight:500;padding:5px 8px;border-bottom:1px solid var(--border);font-size:0.78rem;}
+.toc-table td,.cand-table td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:middle;}
+.cand-table .ops button{margin-right:4px;}
+.empty-hint{color:var(--text-muted);font-size:0.84rem;padding:8px 0;}
+.add-row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;}
+.add-row input{padding:6px 9px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;background:var(--bg);color:var(--text);}
+.msg{position:fixed;bottom:20px;right:20px;background:var(--text);color:var(--bg);padding:10px 18px;border-radius:8px;font-size:0.85rem;opacity:0;transition:opacity .25s;pointer-events:none;z-index:50;}
+.msg.show{opacity:1;}
+.conf{color:var(--text-muted);font-size:0.78rem;}
+.card-actions{display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap;}
+.gen-bar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
+.gen-note{font-size:0.8rem;color:var(--text-muted);}
+@media(max-width:700px){.toc-table,.cand-table{font-size:0.78rem;}}
+</style>
+</head>
+<body>
+{% include '_nav.html' %}
+<div class="container">
+  <div class="doc-bar">
+    <span class="t">{{ doc.title or doc.filename }}</span>
+    {% if doc.cite_key %}<span class="sub">{{ doc.cite_key }}</span>{% endif %}
+    <span class="sub">{{ doc.doc_type }} · {{ doc.page_count }}页</span>
+    <span class="spacer"></span>
+    <a href="/collections/{{ collection }}/docs/list">← 文献列表</a>
+    <a href="/collections/{{ collection }}/doc/{{ doc.id }}/proofread">校对页 →</a>
+  </div>
+
+  <div class="gen-bar">
+    <button class="btn-primary" id="genBtn" onclick="genCandidates()">AI 生成候选（目录+摘要草稿）</button>
+    <span class="gen-note">复用设置页 llm_chat 型 provider；生成后进入下方队列人工审</span>
+  </div>
+
+  {# ── 元数据卡 ── #}
+  {% set meta = cards.get('meta', {'content': {}, 'status': None}) %}
+  <div class="card-sec">
+    <h3>元数据卡
+      {% if meta.status %}<span class="badge {{ meta.status }}" id="metaBadge">{{ meta.status }}</span>{% endif %}
+    </h3>
+    <div class="meta-grid">
+      <div><label>著者</label><input id="mAuthor" value="{{ (meta.content.get('author') or '') }}"></div>
+      <div><label>年代/版本</label><input id="mEra" value="{{ (meta.content.get('era') or '') }}"></div>
+      <div><label>版本说明</label><input id="mNote" value="{{ (meta.content.get('note') or '') }}"></div>
+    </div>
+    {% if meta.content.get('entities') %}
+    <table class="toc-table" style="margin-top:10px;">
+      <tr><th>实体（采纳自队列）</th><th>类目</th><th>页</th></tr>
+      {% for e in meta.content.get('entities', []) %}
+      <tr><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td><td>{{ e.page_num or '—' }}</td></tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+    <div class="card-actions">
+      <button class="btn-primary" onclick="saveCard('meta')">保存元数据</button>
+      {% if meta.status %}
+      <button onclick="toggleStatus('meta', '{{ meta.status }}')">
+        {{ '退回 draft' if meta.status == 'reviewed' else '标记 reviewed（进检索）' }}
+      </button>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── 目录卡 ── #}
+  {% set toc = cards.get('toc', {'content': {}, 'status': None}) %}
+  <div class="card-sec">
+    <h3>目录卡
+      {% if toc.status %}<span class="badge {{ toc.status }}">{{ toc.status }}</span>{% endif %}
+    </h3>
+    {% if toc.content.get('nodes') %}
+    <table class="toc-table">
+      <tr><th>节点</th><th>类目</th><th>页</th><th>来源</th></tr>
+      {% for n in toc.content.get('nodes', []) %}
+      <tr>
+        <td>{{ n.label }}</td><td>{{ n.category or '—' }}</td>
+        <td>{{ n.page_num or '—' }}</td>
+        <td class="conf">{{ n.from or '手工' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty-hint">暂无目录节点——AI 生成候选后从队列采纳，或手工添加</div>
+    {% endif %}
+    <div class="add-row">
+      <input id="tnLabel" placeholder="节点名（如 职官·军机处）" style="flex:2;min-width:160px;">
+      <input id="tnCat" placeholder="类目（自由标签）" style="flex:1;min-width:100px;">
+      <input id="tnPage" placeholder="页码" style="width:70px;" type="number" min="1">
+      <button class="btn-primary" onclick="addTocNode()">+ 添加节点</button>
+    </div>
+    <div class="card-actions">
+      <button class="btn-primary" onclick="saveCard('toc')">保存目录</button>
+      {% if toc.status %}
+      <button onclick="toggleStatus('toc', '{{ toc.status }}')">
+        {{ '退回 draft' if toc.status == 'reviewed' else '标记 reviewed（进检索）' }}
+      </button>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── 摘要卡 ── #}
+  {% set summ = cards.get('summary', {'content': {}, 'status': None}) %}
+  <div class="card-sec">
+    <h3>摘要卡
+      {% if summ.status %}<span class="badge {{ summ.status }}">{{ summ.status }}</span>{% endif %}
+    </h3>
+    <textarea class="summary-ta" id="sumText" placeholder="100-200 字文献摘要（可由 AI 生成草稿后修订）">{{ summ.content.get('text', '') }}</textarea>
+    <div class="card-actions">
+      <button class="btn-primary" onclick="saveCard('summary')">保存摘要</button>
+      {% if summ.status %}
+      <button onclick="toggleStatus('summary', '{{ summ.status }}')">
+        {{ '退回 draft' if summ.status == 'reviewed' else '标记 reviewed（进检索）' }}
+      </button>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── 候选队列 ── #}
+  <div class="card-sec">
+    <h3>候选队列（人工审：采纳并入卡 / 驳回 / 修订）</h3>
+    {% if candidates %}
+    <table class="cand-table">
+      <tr><th>类型</th><th>标签</th><th>类目</th><th>置信</th><th>页</th><th>状态</th><th>操作</th></tr>
+      {% for c in candidates %}
+      <tr>
+        <td>{{ '目录' if c.ctype == 'toc' else '实体' }}</td>
+        <td id="cl-{{ c.id }}">{{ c.label }}</td>
+        <td id="cc-{{ c.id }}">{{ c.category or '—' }}</td>
+        <td class="conf">{{ '%.2f' % c.confidence if c.confidence is not none else '—' }}</td>
+        <td>{{ c.page_num or '—' }}</td>
+        <td><span class="badge {{ c.status }}">{{ c.status }}</span></td>
+        <td class="ops">
+          {% if c.status == 'pending' %}
+          <button onclick="reviewCand({{ c.id }}, 'adopt')">采纳</button>
+          <button onclick="reviewCand({{ c.id }}, 'reject')">驳回</button>
+          {% endif %}
+          <button onclick="patchCand({{ c.id }})">修订</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty-hint">队列为空——点上方「AI 生成候选」或手工建卡</div>
+    {% endif %}
+  </div>
+</div>
+<div class="msg" id="msg"></div>
+<script>
+var collection = {{ collection | tojson }};
+var docId = {{ doc.id }};
+var cardIds = {};  // kind -> card_id (状态切换用; 后端按 kind 定位)
+
+function showMsg(t){var m=document.getElementById('msg');m.textContent=t;m.classList.add('show');setTimeout(function(){m.classList.remove('show');},2200);}
+function esc(s){return String(s==null?'':s);}
+
+async function postJson(url, data){
+  var fd = new URLSearchParams(data);
+  var r = await fetch(url, {method:'POST', body:fd});
+  return r.json();
+}
+
+async function saveCard(kind){
+  var content = {};
+  if(kind === 'meta'){
+    content = {author: document.getElementById('mAuthor').value,
+               era: document.getElementById('mEra').value,
+               note: document.getElementById('mNote').value};
+    // 已有 entities 保留 (服务端 upsert 整卡——先取现值)
+    content = await mergeExisting(kind, content);
+  } else if(kind === 'toc'){
+    content = window.__tocContent || {nodes: []};
+  } else if(kind === 'summary'){
+    content = {text: document.getElementById('sumText').value};
+  }
+  var st = currentStatus(kind);
+  var d = await postJson('/collections/'+encodeURIComponent(collection)+'/doc/'+docId+'/cards/save',
+                         {kind: kind, content: JSON.stringify(content), status: st || 'draft'});
+  if(d.ok){showMsg('已保存'); setTimeout(function(){location.reload();}, 500);}
+  else{showMsg('保存失败: '+(d.error||''));}
+}
+
+async function mergeExisting(kind, base){
+  // 元数据卡保存时保留 entities 等未在表单中的字段
+  try{
+    var r = await fetch('/collections/'+encodeURIComponent(collection)+'/doc/'+docId+'/cards');
+    var d = await r.json();
+    var cur = (d.cards||[]).filter(function(c){return c.kind===kind;})[0];
+    if(cur){for(var k in cur.content){if(!(k in base))base[k]=cur.content[k];}}
+  }catch(e){}
+  return base;
+}
+
+function currentStatus(kind){
+  var b = document.querySelector('#' + kind + 'Badge, .card-sec .badge');
+  return null;  // 状态由 toggle 管理, 保存不改变
+}
+
+async function toggleStatus(kind, cur){
+  // 无 card_id——按 doc+kind 定位: 用卡片数据接口查 id
+  var r = await fetch('/collections/'+encodeURIComponent(collection)+'/doc/'+docId+'/cards');
+  var d = await r.json();
+  var card = (d.cards||[]).filter(function(c){return c.kind===kind;})[0];
+  if(!card){showMsg('先保存卡片'); return;}
+  var next = cur === 'reviewed' ? 'draft' : 'reviewed';
+  var res = await postJson('/collections/'+encodeURIComponent(collection)+'/cards/'+card.id+'/status', {status: next});
+  if(res.ok){showMsg(next === 'reviewed' ? '已 reviewed（进检索路）' : '已退回 draft'); setTimeout(function(){location.reload();}, 400);}
+  else{showMsg('失败: '+(res.error||''));}
+}
+
+function addTocNode(){
+  var label = document.getElementById('tnLabel').value.trim();
+  if(!label){showMsg('节点名必填'); return;}
+  var cat = document.getElementById('tnCat').value.trim();
+  var pg = parseInt(document.getElementById('tnPage').value, 10) || null;
+  if(!window.__tocContent){
+    window.__tocContent = {nodes: []};
+    {% if toc.content.get('nodes') %}
+    window.__tocContent.nodes = {{ toc.content.get('nodes') | tojson }};
+    {% endif %}
+  }
+  window.__tocContent.nodes.push({label: label, category: cat || null, page_num: pg, from: '手工'});
+  document.getElementById('tnLabel').value='';
+  document.getElementById('tnCat').value='';
+  document.getElementById('tnPage').value='';
+  showMsg('已暂存（保存目录后生效）— 当前 ' + window.__tocContent.nodes.length + ' 节点');
+}
+
+async function reviewCand(id, action){
+  var d = await postJson('/collections/'+encodeURIComponent(collection)+'/candidates/'+id+'/review', {action: action});
+  if(d.ok){showMsg(action==='adopt'?'已采纳（并入卡）':'已驳回'); setTimeout(function(){location.reload();}, 400);}
+  else{showMsg('失败: '+(d.error||''));}
+}
+
+async function patchCand(id){
+  var curL = (document.getElementById('cl-'+id)||{}).textContent||'';
+  var curC = (document.getElementById('cc-'+id)||{}).textContent||'';
+  var l = prompt('修订标签:', curL); if(l===null) return;
+  var c = prompt('修订类目（自由标签）:', curC==='—'?'':curC); if(c===null) return;
+  var d = await postJson('/collections/'+encodeURIComponent(collection)+'/candidates/'+id+'/review',
+                         {action:'patch', label:l.trim(), category:c.trim()});
+  if(d.ok){showMsg('已修订'); setTimeout(function(){location.reload();}, 400);}
+}
+
+async function genCandidates(){
+  var btn = document.getElementById('genBtn');
+  btn.disabled = true; btn.textContent = '生成中…';
+  try{
+    var r = await fetch('/collections/'+encodeURIComponent(collection)+'/doc/'+docId+'/candidates/generate', {method:'POST'});
+    var d = await r.json();
+    if(d.ok){showMsg('生成 '+d.toc+' 个目录候选'+(d.summary?' + 摘要草稿':'')+' ('+d.model+')'); setTimeout(function(){location.reload();}, 600);}
+    else{showMsg('生成失败: '+(d.error||'')); btn.disabled=false; btn.textContent='AI 生成候选（目录+摘要草稿）';}
+  }catch(e){showMsg('请求失败'); btn.disabled=false; btn.textContent='AI 生成候选（目录+摘要草稿）';}
+}
+</script>
+</body>
+</html>

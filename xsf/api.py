@@ -370,6 +370,47 @@ async def api_set_ocr_default(id: str = Form(...),
 
 # ── 搜索 ──────────────────────────────────────────────
 
+def _card_hits(collection: str, q: str, limit: int = 20) -> list:
+    """P4 (2026-10-17): reviewed 卡进检索路 (卡片内容量小, LIKE 匹配)."""
+    hits = []
+    conn = get_conn(collection)
+    try:
+        esc_q = q.replace('\\', '\\\\').replace('%', r'\%') \
+                .replace('_', r'\_')
+        rows = conn.execute(
+            """SELECT dc.id AS card_id, dc.kind, dc.content,
+                      d.id AS doc_id, d.title
+               FROM doc_cards dc JOIN documents d ON d.id = dc.doc_id
+               WHERE dc.status = 'reviewed'
+                 AND dc.content LIKE ? ESCAPE '\\'
+               LIMIT ?""",
+            (f"%{esc_q}%", limit)).fetchall()
+    except Exception:
+        rows = []   # 旧库无 doc_cards 表等 → 空命中兜底
+    finally:
+        conn.close()
+    for row in rows:
+        try:
+            content = json.loads(row["content"] or "{}")
+        except ValueError:
+            continue
+        flat = " / ".join(
+            f"{k}: {v}" for k, v in content.items()
+            if isinstance(v, (str, int, float)))
+        if q.lower() not in flat.lower():
+            # 嵌套结构 (nodes/entities) 逐项匹配
+            deep = json.dumps(content, ensure_ascii=False)
+            if q.lower() not in deep.lower():
+                continue
+            flat = ""
+        snippet = flat or deep[:160]
+        hits.append({
+            "card_id": row["card_id"], "kind": row["kind"],
+            "doc_id": row["doc_id"],
+            "title": row["title"], "snippet": snippet[:200]})
+    return hits
+
+
 @app.get("/collections/{collection}/search")
 async def api_search(collection: str, q: str, limit: int = 20,
                      offset: int = 0, source_type: str = None,
@@ -402,6 +443,7 @@ async def api_search(collection: str, q: str, limit: int = 20,
                            source_type=source_type, doc_id=doc_id)["blocks"]
         return {"query": q, "collection": collection,
                 "count": len(out), "results": out,
+                "cards": _card_hits(collection, q),
                 "total": total, "offset": offset, "limit": limit,
                 "has_more": offset + len(out) < total}
     except Exception as e:
@@ -421,6 +463,7 @@ async def api_search_grouped(collection: str, q: str,
         stats = count_hits(q, collection=collection, source_type=source_type)
         return {"query": q, "collection": collection,
                 "groups": groups,
+                "cards": _card_hits(collection, q),
                 "total_blocks": stats["blocks"], "total_docs": stats["docs"],
                 "groups_truncated": len(groups) >= limit}
     except Exception as e:
@@ -2043,6 +2086,298 @@ async def api_autofill(collection: str, doc_id: int, page_num: int,
 
 
 # ── 文献内容浏览 ────────────────────────────────────────
+
+# ---------- 卡片资产层 (P4, 2026-10-17) ----------
+# 设计: mem 小书房/design/完善路线图.md P4 + 石渠 20 号稿
+# 三卡 (meta/toc/summary) + 候选队列 (toc/entity), draft→reviewed,
+# reviewed 进检索路; 词表延后, category 自由标签起步 (用户裁定)
+
+
+def _get_card_doc(collection: str, doc_id: int):
+    conn = get_conn(collection)
+    try:
+        doc = conn.execute(
+            "SELECT id, title, author, cite_key, filename, page_count, "
+            "doc_type FROM documents WHERE id = ?",
+            (doc_id,),
+        ).fetchone()
+        return doc
+    finally:
+        conn.close()
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/cards")
+async def api_cards(collection: str, doc_id: int):
+    """三卡 + 候选队列数据."""
+    doc = _get_card_doc(collection, doc_id)
+    if doc is None:
+        return JSONResponse(status_code=404, content={"error": "文献不存在"})
+    conn = get_conn(collection)
+    try:
+        cards = conn.execute(
+            "SELECT id, kind, content, status, updated_at FROM doc_cards "
+            "WHERE doc_id = ?", (doc_id,)).fetchall()
+        cands = conn.execute(
+            "SELECT id, ctype, label, category, confidence, page_num, "
+            "block_num, status, created_at FROM card_candidates "
+            "WHERE doc_id = ? ORDER BY status, ctype, id", (doc_id,)).fetchall()
+        return {
+            "doc": dict(doc),
+            "cards": [
+                {"id": c["id"], "kind": c["kind"],
+                 "content": json.loads(c["content"] or "{}"),
+                 "status": c["status"], "updated_at": c["updated_at"]}
+                for c in cards],
+            "candidates": [dict(c) for c in cands],
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/cards/save")
+async def api_card_save(collection: str, doc_id: int,
+                        kind: str = Form(...), content: str = Form(...),
+                        status: str = Form('draft')):
+    """保存/更新单卡 (每 doc 每 kind 一张, upsert)."""
+    if kind not in ('meta', 'toc', 'summary'):
+        return JSONResponse(status_code=400,
+                            content={"error": "kind 只支持 meta/toc/summary"})
+    if status not in ('draft', 'reviewed'):
+        return JSONResponse(status_code=400,
+                            content={"error": "status 只支持 draft/reviewed"})
+    try:
+        json.loads(content)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "content 需 JSON"})
+    doc = _get_card_doc(collection, doc_id)
+    if doc is None:
+        return JSONResponse(status_code=404, content={"error": "文献不存在"})
+    conn = get_conn(collection)
+    try:
+        conn.execute(
+            """INSERT INTO doc_cards (doc_id, kind, content, status, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(doc_id, kind) DO UPDATE SET
+                 content = excluded.content,
+                 status = excluded.status,
+                 updated_at = datetime('now')""",
+            (doc_id, kind, content, status))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/cards/{card_id}/status")
+async def api_card_status(collection: str, card_id: int,
+                          status: str = Form(...)):
+    """draft↔reviewed 切换 (reviewed 卡进检索路)."""
+    if status not in ('draft', 'reviewed'):
+        return JSONResponse(status_code=400, content={"error": "非法 status"})
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            "UPDATE doc_cards SET status = ?, updated_at = datetime('now') "
+            "WHERE id = ?", (status, card_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            return JSONResponse(status_code=404, content={"error": "卡片不存在"})
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/candidates/{cand_id}/review")
+async def api_candidate_review(collection: str, cand_id: int,
+                               action: str = Form(...),
+                               label: str = Form(None),
+                               category: str = Form(None)):
+    """候选处置: adopt(采纳并入卡)/reject(驳回)/patch(修订字段)."""
+    if action not in ('adopt', 'reject', 'patch'):
+        return JSONResponse(status_code=400,
+                            content={"error": "action 只支持 adopt/reject/patch"})
+    conn = get_conn(collection)
+    try:
+        cand = conn.execute(
+            "SELECT * FROM card_candidates WHERE id = ?", (cand_id,)).fetchone()
+        if cand is None:
+            return JSONResponse(status_code=404, content={"error": "候选不存在"})
+
+        if action == 'patch':
+            conn.execute(
+                "UPDATE card_candidates SET label = ?, category = ? WHERE id = ?",
+                (label or cand["label"], category or cand["category"], cand_id))
+            conn.commit()
+            return {"ok": True, "status": cand["status"]}
+
+        # adopt / reject: 置状态
+        new_status = 'adopted' if action == 'adopt' else 'rejected'
+        conn.execute(
+            "UPDATE card_candidates SET status = ? WHERE id = ?",
+            (new_status, cand_id))
+
+        # adopt 时并入对应卡:
+        #   toc 候选 → toc 卡 nodes 数组追加节点
+        #   entity 候选 → meta 卡 entities 数组追加
+        if action == 'adopt':
+            card_kind = 'toc' if cand["ctype"] == 'toc' else 'meta'
+            card = conn.execute(
+                "SELECT id, content FROM doc_cards "
+                "WHERE doc_id = ? AND kind = ?",
+                (cand["doc_id"], card_kind)).fetchone()
+            if card is None:
+                content = {"nodes": []} if card_kind == 'toc' \
+                    else {"entities": []}
+                cur = conn.execute(
+                    """INSERT INTO doc_cards
+                       (doc_id, kind, content, status, updated_at)
+                       VALUES (?, ?, ?, 'draft', datetime('now'))""",
+                    (cand["doc_id"], card_kind, json.dumps(content, ensure_ascii=False)))
+                card_id, card_content = cur.lastrowid, content
+            else:
+                card_id = card["id"]
+                try:
+                    card_content = json.loads(card["content"] or "{}")
+                except ValueError:
+                    card_content = {}
+            if card_kind == 'toc':
+                nodes = card_content.setdefault("nodes", [])
+                nodes.append({"label": label or cand["label"],
+                              "category": category or cand["category"],
+                              "page_num": cand["page_num"],
+                              "block_num": cand["block_num"],
+                              "from": f"candidate#{cand_id}"})
+            else:
+                entities = card_content.setdefault("entities", [])
+                entities.append({"label": label or cand["label"],
+                                 "category": category or cand["category"],
+                                 "page_num": cand["page_num"],
+                                 "from": f"candidate#{cand_id}"})
+            conn.execute(
+                "UPDATE doc_cards SET content = ?, updated_at = datetime('now') "
+                "WHERE id = ?",
+                (json.dumps(card_content, ensure_ascii=False), card_id))
+        conn.commit()
+        return {"ok": True, "status": new_status}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/candidates/generate")
+async def api_candidates_generate(collection: str, doc_id: int):
+    """LLM 生成候选: 抽样文献前部块文本, 出目录候选 + 摘要草稿.
+
+    复用 P2c 的 llm_chat provider 配置 (default_llm).
+    """
+    from .llm import chat, LLMNotConfigured
+    doc = _get_card_doc(collection, doc_id)
+    if doc is None:
+        return JSONResponse(status_code=404, content={"error": "文献不存在"})
+    conn = get_conn(collection)
+    try:
+        blocks = conn.execute(
+            "SELECT page_num, block_num, text FROM blocks_fts "
+            "WHERE doc_id = ? ORDER BY page_num, block_num LIMIT 40",
+            (doc_id,)).fetchall()
+        if not blocks:
+            return JSONResponse(status_code=400,
+                                content={"error": "文献无文本块，无法生成"})
+    finally:
+        conn.close()
+
+    sample = "\n".join(
+        f"[p{b['page_num']}b{b['block_num']}] {b['text'][:120]}"
+        for b in blocks)
+    system = (
+        "你是文献编目助手。基于给定的文献块样本（每行前缀 [p页b块]），"
+        "输出严格 JSON：{\"toc\": [{\"label\": \"目录/主题节点\", "
+        "\"category\": \"自由类目标签（如 职官/兵事/贡赋/舆地 或自拟）\", "
+        "\"page_num\": 页码, \"confidence\": 0到1}], "
+        "\"summary\": \"100-200字摘要\"}。"
+        "toc 给 3-8 个节点, 只输出 JSON, 不要解释。"
+    )
+    try:
+        content, model = chat(
+            [{"role": "system", "content": system},
+             {"role": "user", "content": sample}])
+    except LLMNotConfigured:
+        return JSONResponse(status_code=503,
+                            content={"error": "未配置翻译/LLM provider（设置页添加 llm_chat 型）"})
+
+    try:
+        parsed = json.loads(content[content.index('{'):content.rindex('}') + 1])
+    except (ValueError, AttributeError):
+        return JSONResponse(status_code=502,
+                            content={"error": f"LLM 输出无法解析: {content[:120]}"})
+
+    toc_items = parsed.get("toc") or []
+    summary_text = (parsed.get("summary") or "").strip()
+
+    conn = get_conn(collection)
+    try:
+        n_toc = 0
+        for it in toc_items:
+            label = str(it.get("label") or "").strip()
+            if not label:
+                continue
+            conn.execute(
+                """INSERT INTO card_candidates
+                   (doc_id, ctype, label, category, confidence, page_num, status)
+                   VALUES (?, 'toc', ?, ?, ?, ?, 'pending')""",
+                (doc_id, label,
+                 str(it.get("category") or '').strip() or None,
+                 float(it.get("confidence") or 0.5),
+                 int(it.get("page_num") or 0) or None))
+            n_toc += 1
+        if summary_text:
+            conn.execute(
+                """INSERT INTO doc_cards (doc_id, kind, content, status, updated_at)
+                   VALUES (?, 'summary', ?, 'draft', datetime('now'))
+                   ON CONFLICT(doc_id, kind) DO UPDATE SET
+                     content = excluded.content,
+                     updated_at = datetime('now')""",
+                (doc_id, json.dumps({"text": summary_text},
+                                    ensure_ascii=False)))
+        conn.commit()
+        return {"ok": True, "toc": n_toc,
+                "summary": bool(summary_text), "model": model}
+    finally:
+        conn.close()
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/cards/view")
+async def cards_view(request: Request, collection: str, doc_id: int):
+    """卡片工作页 (三卡 + 候选队列)."""
+    doc = _get_card_doc(collection, doc_id)
+    if doc is None:
+        return JSONResponse(status_code=404, content={"error": "文献不存在"})
+    conn = get_conn(collection)
+    try:
+        cards = conn.execute(
+            "SELECT kind, content, status FROM doc_cards WHERE doc_id = ?",
+            (doc_id,)).fetchall()
+        cands = conn.execute(
+            "SELECT * FROM card_candidates WHERE doc_id = ? "
+            "ORDER BY status, ctype, id", (doc_id,)).fetchall()
+    finally:
+        conn.close()
+    cards_map = {}
+    for c in cards:
+        try:
+            cards_map[c["kind"]] = {
+                "content": json.loads(c["content"] or "{}"),
+                "status": c["status"]}
+        except ValueError:
+            cards_map[c["kind"]] = {"content": {}, "status": c["status"]}
+    return templates.TemplateResponse(
+        request,
+        "cards.html",
+        _nav_ctx("docs", collection,
+                 doc=dict(doc),
+                 cards=cards_map,
+                 candidates=[dict(c) for c in cands]),
+    )
+
 
 @app.get("/collections/{collection}/doc/{doc_id}/content")
 async def api_doc_content(collection: str, doc_id: int,

@@ -214,6 +214,45 @@ def _migrate(conn):
             ON revision_log(doc_id, created_at)
     """)
 
+    # 卡片资产层 (P4, 2026-10-17): 文献卡片 (元数据/目录/摘要) + 候选队列
+    # (目录节点/实体提及), draft→reviewed 生命周期, reviewed 卡进检索路
+    # 词表按用户裁定延后——category 为自由标签起步
+    # 设计: mem 小书房/design/完善路线图.md P4 + 石渠 20 号稿
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS doc_cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '{}',
+            status TEXT DEFAULT 'draft',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT,
+            UNIQUE(doc_id, kind)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS card_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            ctype TEXT NOT NULL,
+            label TEXT NOT NULL,
+            category TEXT,
+            confidence REAL,
+            page_num INTEGER,
+            block_num INTEGER,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_cards_doc
+            ON doc_cards(doc_id, kind)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_cand_doc
+            ON card_candidates(doc_id, status)
+    """)
+
     # 智能校对 (P4, 2026-09-19): 候选缓存 + 人工录入 + 页映射
     # 设计: pqa design/client/19-smart-proofread.md
     conn.execute("""
