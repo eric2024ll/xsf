@@ -1,14 +1,16 @@
-# AGENTS.md — xsf
+# AGENTS.md — xsf (小書房)
 
-> histflow-plan / pqa 设计的代码落地仓库. 本文件定义**本机 GPU 机开发 + 部署一体**的标准流程 (WSL 为备用).
-> 设计依据: pqa `design/client/14-ocr-pipeline.md`（2026-09-19 自 histflow-plan 移交，mem vault 内路径 `/mnt/d/workspace/mem/pqa/`）
+> **石渠客户端的分叉实现仓** (2026-10-17 分叉, 见 mem vault `石渠/design/client/25-小书房分叉声明.md`). 纯本地运行·单独维护.
+> 本文件定义**本机 GPU 机开发 + 部署一体**的标准流程 (WSL 为备用).
+> 设计依据: 石渠 `design/client/14-ocr-pipeline.md` 等 14-24 号稿 (上游规格; mem vault 本机路径 `/home/eric/workspace/mem/石渠/`, WSL `/mnt/d/workspace/mem/石渠/`)
 
 ## 项目定位
 
-xsf 是史学研究工具链的**感知层上游**——把 PDF 变成可检索的文本池，以 Web『小書房』(FastAPI) 为主入口、CLI 为辅.
+小書房 (xsf) 是史学研究工具链的**感知层上游**——把 PDF 变成可检索的文本池，以 Web『小書房』(FastAPI) 为主入口、CLI 为辅.
 
-- **设计来源**: histflow-plan（体系/方法论）+ pqa（L0 语料层设计，`/mnt/d/workspace/mem/pqa/design/`，2026-09-19 起小书房设计文档统一管理于此）+ litsearch（L1-L2 检索执行体策划，`/mnt/d/workspace/mem/litsearch/`，2026-09-20 起；对 xsf API 的消费契约见其 `design/02-分层契约.md`）. 各库分工与关系方向的权威定义见各自 `schema.md`；本文件只聚焦 xsf 的开发与部署.
-- **原则**: 设计决策在 mem vault 记录（体系设计在 histflow-plan，L0 语料层设计在 pqa，L1-L2 检索执行体策划在 litsearch）; 代码与数据实验在 xsf; Bug/约束反馈回相应设计库修订（检索能力问题按层归口: 语料层→pqa `design/20-检索问题库.md` X 组, 策略层→litsearch `design/20-检索问题库-L组.md`）
+- **分叉定位 (2026-10-17)**: 石渠 = 主线项目 (服务端图书馆 + 完整版客户端, 上游规格在 mem `石渠/design/client/`); 本仓 = 客户端 fork, 保留工位核心 (书架/检索/校对/卡片/导入), 不实现 API 借还与账本回传, 语料包 (.sqpkg) 格式兼容. 分叉线策划与经验在 mem `小书房/` (`完善路线图.md` = P1-P7 逐步完善清单)
+- **设计来源**: 石渠 (上游客户端设计, 14-24 号稿; 其中 18 号稿 Windows 便携版已迁 mem `小书房/design/`) + histflow-plan (体系/方法论) + litsearch (L1-L2 检索执行体策划, 对 xsf API 的消费契约见其 `design/02-分层契约.md`). 各库分工与关系方向的权威定义见各自 `schema.md`/`README.md`; 本文件只聚焦 xsf 的开发与部署.
+- **原则**: 设计决策在 mem vault 记录 (上游规格在石渠, 分叉线策划在小书房库, 体系在 histflow-plan, 检索策划在 litsearch); 代码与数据实验在 xsf; Bug/约束反馈回相应设计库修订 (检索能力问题按层归口: 语料层→石渠 `design/20-检索问题库.md` X 组, 策略层→litsearch `design/20-检索问题库-L组.md`; 分叉线问题→mem `小书房/`)
 - **数据分离**: 代码在本仓库, 数据在 `~/xsf-data/` (`XSF_DATA` 环境变量可覆盖)
 
 ## 多机架构
@@ -126,7 +128,7 @@ cd ~/xsf
 
 ## Windows 便携版打包
 
-> 设计依据: pqa `design/client/18-windows-portable.md`. CLI + skill + MCP 全保留, 零 API 改动.
+> 设计依据: mem `小书房/design/18-windows-portable.md` (2026-10-17 自石渠迁入小书房库; 分叉线件). CLI + skill + MCP 全保留, 零 API 改动.
 
 - **构建**: GitHub Actions `windows-portable` workflow (workflow_dispatch 手动触发, 或 push tag `v*` 自动构建并附 release)
 - **本地复现** (Windows + Python 3.12): `pip install -e ".[desktop,build,office,mcp]"` → `pyinstaller packaging/xsf.spec --noconfirm` → `pwsh packaging/make_portable.ps1`
@@ -195,5 +197,5 @@ uv pip install -e .                                  # 安装/更新依赖
 - 中文思考、中文回复; commit message 用英文
 - **不自行 push**: 写完代码后 commit, 报告 hash, 提示用户手动 push
 - **不自行跑 OCR 测试** (省 token): 给出验证命令让用户执行
-- 代码改动遵循 pqa 的设计文档 (`design/client/14-ocr-pipeline.md` 是 OCR 直接依据)
-- 发现的设计问题 (新 block_label / 坐标问题等) 反馈到 histflow-plan 设计文档
+- 代码改动遵循设计文档: 上游规格在 mem 石渠 `design/client/` (14-24 号稿, `14-ocr-pipeline.md` 是 OCR 直接依据); 分叉线取舍与完善路线在 mem `小书房/design/完善路线图.md` (P1-P7)
+- 发现的设计问题 (新 block_label / 坐标问题等) 反馈到石渠设计文档 (主线) 或小书房库 (分叉线); 「小書房」名字在本仓及小书房库合法, 石渠仓主线叙事禁用 (仅限分叉声明)
