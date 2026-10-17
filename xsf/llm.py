@@ -59,7 +59,17 @@ def chat(messages: list[dict], provider_id: str = None,
     if max_tokens:
         body['max_tokens'] = max_tokens
     resp = requests.post(url, json=body, headers=headers, timeout=timeout)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        # 透传服务端错误详情 (模型格式限制/鉴权/参数等诊断关键)
+        try:
+            err = resp.json()
+            detail = (err.get('error') or {}).get('message') or resp.text
+        except (ValueError, AttributeError):
+            detail = resp.text
+        raise RuntimeError(
+            f'LLM 请求失败 HTTP {resp.status_code}: {str(detail)[:400]} '
+            f'(model={body["model"]}; 专用翻译模型如 qwen-mt 仅支持固定 '
+            f'Translate 指令模式, 请改用通用对话模型)')
     data = resp.json()
     content = data['choices'][0]['message']['content']
     return content, data.get('model', body['model'])
