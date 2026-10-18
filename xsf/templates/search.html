@@ -161,7 +161,7 @@ function renderGroups(data){
     data.cards.forEach(function(c){
       var a=document.createElement('a');
       a.className='card-hit-item';
-      a.href='/collections/'+encodeURIComponent(currentCollection)+'/doc/'+c.doc_id+'/cards/view';
+      a.href='/collections/'+encodeURIComponent(currentCollection)+'/doc/'+c.doc_id+'/proofread';
       var kindName=c.kind==='toc'?'目录卡':(c.kind==='summary'?'摘要卡':'元数据卡');
       a.innerHTML='<span class="ch-kind">'+kindName+'</span>'+
         '<span class="ch-title">'+escapeHtml(c.title||'')+'</span>'+

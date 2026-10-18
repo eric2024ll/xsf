@@ -35,7 +35,7 @@ from .search import (search, search_grouped, count_hits, get_block_lines,
                      get_context, get_highlight_terms)
 from .bib_utils import (
     generate_cite_key, sync_doc_fields, parse_bib_data, to_bibtex,
-    parse_bib_entries, match_docs_to_entries,
+    parse_bib_entries, match_docs_to_entries, normalize_bib_type,
     BIB_TYPE_FIELDS, BIB_TYPE_LABELS, BIB_FIELD_LABELS,
 )
 from .ingest import (
@@ -2475,9 +2475,12 @@ async def api_candidates_generate(collection: str, doc_id: int,
     if "summary" in want:
         fields.append('"summary": "100-200字摘要"')
     if "meta" in want:
-        fields.append('"meta": {"title": "文献题名", "author": "著者", '
-                      '"year": "出版/成文年代", "publisher": "出版者", '
-                      '"note": "版本/册次等备注"}（从题名页/序跋/卷端识别, '
+        _bt = normalize_bib_type(doc["bib_type"])
+        _fields_desc = ", ".join(
+            f'"{f}": "{BIB_FIELD_LABELS.get(f, f)}"'
+            for f in BIB_TYPE_FIELDS.get(_bt, BIB_TYPE_FIELDS["@book"]))
+        fields.append('"meta": {' + _fields_desc + '}（从题名页/序跋/卷端/'
+                      '版权页识别, 按 ' + (_bt or "@book") + ' 字段, '
                       '不确定的字段给空串）')
     system = (
         "你是文献编目助手。基于给定的文献块样本（每行前缀 [p页b块]），"
@@ -2549,22 +2552,30 @@ async def api_candidates_generate(collection: str, doc_id: int,
             conn_m = get_conn(collection)
             try:
                 drow = conn_m.execute(
-                    "SELECT bib_data FROM documents WHERE id = ?",
+                    "SELECT bib_type, bib_data FROM documents WHERE id = ?",
                     (doc_id,)).fetchone()
                 try:
                     bib = json.loads(
                         drow["bib_data"] or "{}") if drow else {}
                 except ValueError:
                     bib = {}
-                for fk in ("title", "author", "year", "publisher", "note"):
+                doc_bt = normalize_bib_type(
+                    drow["bib_type"] if drow else doc.get("bib_type"))
+                # 回填键集对齐 bibEditor 字段表 (按 bib_type) + note 兜底
+                fk_set = set(BIB_TYPE_FIELDS.get(
+                    doc_bt, BIB_TYPE_FIELDS["@book"])) | {"note"}
+                for fk in fk_set:
                     v = str(meta_items.get(fk) or "").strip()
                     if v and not bib.get(fk):
                         bib[fk] = v
                         n_meta += 1
                 if n_meta:
+                    synced = sync_doc_fields(bib)
                     conn_m.execute(
-                        "UPDATE documents SET bib_data = ? WHERE id = ?",
-                        (json.dumps(bib, ensure_ascii=False), doc_id))
+                        "UPDATE documents SET bib_data = ?, title = ?, "
+                        "author = ? WHERE id = ?",
+                        (json.dumps(bib, ensure_ascii=False),
+                         synced["title"], synced["author"], doc_id))
                     conn_m.commit()
             finally:
                 conn_m.close()
@@ -2836,53 +2847,6 @@ def _wiki_hits(collection: str, q: str, limit: int = 10):
     except Exception:
         rows = []
     return rows
-
-
-@app.get("/collections/{collection}/doc/{doc_id}/cards/view")
-async def cards_view(request: Request, collection: str, doc_id: int):
-    """卡片工作页 (三卡 + 候选队列)."""
-    doc = _get_card_doc(collection, doc_id)
-    if doc is None:
-        return JSONResponse(status_code=404, content={"error": "文献不存在"})
-    conn = get_conn(collection)
-    try:
-        _migrate_legacy_meta(conn, doc_id)
-        cards = conn.execute(
-            "SELECT kind, content, status FROM doc_cards WHERE doc_id = ?",
-            (doc_id,)).fetchall()
-        cands = conn.execute(
-            "SELECT * FROM card_candidates WHERE doc_id = ? "
-            "ORDER BY status, ctype, id", (doc_id,)).fetchall()
-    finally:
-        conn.close()
-    cards_map = {}
-    for c in cards:
-        try:
-            cards_map[c["kind"]] = {
-                "content": json.loads(c["content"] or "{}"),
-                "status": c["status"]}
-        except ValueError:
-            cards_map[c["kind"]] = {"content": {}, "status": c["status"]}
-    # 元数据合并 (2026-10-17): 卡片页元数据 = bibEditor 编辑 bib_type/bib_data
-    try:
-        bib_type = doc["bib_type"] or ""
-        bib_data = json.loads(doc["bib_data"] or "{}")
-    except ValueError:
-        bib_type, bib_data = "", {}
-    return templates.TemplateResponse(
-        request,
-        "cards.html",
-        _nav_ctx("docs", collection,
-                 doc=dict(doc),
-                 cards=cards_map,
-                 candidates=[dict(c) for c in cands],
-                 bib_type=bib_type,
-                 bib_data=bib_data,
-                 bib_type_labels=BIB_TYPE_LABELS,
-                 bib_field_labels=BIB_FIELD_LABELS,
-                 bib_type_fields=BIB_TYPE_FIELDS,
-                 ),
-    )
 
 
 @app.get("/collections/{collection}/doc/{doc_id}/content")
