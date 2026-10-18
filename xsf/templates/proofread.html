@@ -1212,18 +1212,19 @@ window.BIB_TYPE_LABELS = {{ bib_type_labels | default({}) | tojson }};
 window.BIB_TYPE_FIELDS = {{ bib_type_fields | default({}) | tojson }};
 window.BIB_FIELD_LABELS = {{ bib_field_labels | default({}) | tojson }};
 
-(function initBib() {
-  var citeKey = (doc && doc.cite_key) || '';
-  bibEditor.mount('proofBibPanel', {
-    type: {{ bib_type | default('') | tojson }},
-    data: Object.assign({}, {{ bib_data | default({}) | tojson }}),
-    docId: docId,
-    coll: collection,
-    docTitle: (doc && doc.title) || '',
-    citeKey: citeKey,
-    readOnlyCiteKey: true
-  });
-})();
+window.__bibOpts = {
+  type: {{ bib_type | default('') | tojson }},
+  data: Object.assign({}, {{ bib_data | default({}) | tojson }}),
+  docId: docId,
+  coll: collection,
+  docTitle: (doc && doc.title) || '',
+  citeKey: (doc && doc.cite_key) || '',
+  readOnlyCiteKey: true
+};
+function initBib() {
+  bibEditor.mount('proofBibPanel', window.__bibOpts);
+}
+initBib();
 
 // ── 伸缩左栏 ──
 // (2026-10-17 布局裁定: 文献信息侧栏取消, 元数据入卡片组; toggleSidebar 移除)
@@ -1524,11 +1525,44 @@ async function toggleRevPkg(cb, id) {
   } catch (e) { alert('操作失败: ' + e); cb.checked = !cb.checked; }
 }
 
-function goPage(page) {
-  // 页码校准: 卡片侧页码一律原书页 (printed), 已校准则换算 pdf 物理页再跳
-  var url = new URL(location.href);
+// 翻页: AJAX 局部替换 #main (2026-10-18 裁定: 不整页刷新, tab/滚动/卡片状态保持)
+async function goPage(page, extraParams) {
+  page = parseInt(page, 10) || 1;
+  const url = new URL(location.href);
   url.searchParams.set('page', page);
-  location.href = url;
+  url.searchParams.delete('block');
+  url.searchParams.delete('line');
+  if (extraParams) {
+    for (const k of Object.keys(extraParams)) {
+      if (extraParams[k] === null) url.searchParams.delete(k);
+      else url.searchParams.set(k, extraParams[k]);
+    }
+  }
+  if (_pageDirty) { try { await autoSavePage(); } catch (e) { /* 翻页不因保存失败受阻 */ } }
+  let html;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) { location.href = url; return; }
+    html = await res.text();
+  } catch (e) { location.href = url; return; }
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const newMain = doc.getElementById('main');
+  const oldMain = document.getElementById('main');
+  if (!newMain || !oldMain) { location.href = url; return; }
+  oldMain.replaceWith(newMain);
+  history.pushState({}, '', url);
+  rebindWorkArea();
+}
+function rebindWorkArea() {
+  if (typeof initBib === 'function' && window.bibEditor) { try { initBib(); } catch (e) {} }
+  if (typeof initPan === 'function') initPan();
+  if (typeof initWheel === 'function') initWheel();
+  if (typeof initDraw === 'function') initDraw();
+  if (typeof initDivider === 'function') initDivider();
+  if (typeof renderTocTree === 'function') renderTocTree();
+  if (typeof pmRender === 'function') pmRender();
+  if (window.__tpCur) switchTP(window.__tpCur);
+  window.scrollTo(0, 0);
 }
 function pmInterp(printed) {
   var a = window.__pageMap;
@@ -1604,17 +1638,12 @@ function renderDocSearchPanel(data, kw) {
 }
 
 function docSearchJump(pageNum) {
-  const url = new URL(window.location.href);
-  url.searchParams.set('page', pageNum);
-  url.searchParams.set('keyword', document.getElementById('inPageSearch').value.trim());
-  url.searchParams.delete('block');
-  url.searchParams.delete('line');
-  window.location.href = url.toString();
+  goPage(pageNum, { keyword: document.getElementById('inPageSearch').value.trim() });
 }
 
 
 // ── 拖拽平移 ──
-(function initPan() {
+function initPan() {
   const wrap = document.getElementById('imageWrap');
   const left = document.getElementById('leftPanel');
   if (!wrap || !left) return;
@@ -1636,10 +1665,11 @@ function docSearchJump(pageNum) {
   window.addEventListener('mouseup', () => {
     if (dragging) { dragging = false; wrap.classList.remove('grabbing'); }
   });
-})();
+}
+initPan();
 
 // ── 滚轮缩放（光标锚定） ──
-(function initWheel() {
+function initWheel() {
   const wrap = document.getElementById('imageWrap');
   const left = document.getElementById('leftPanel');
   if (!wrap || !left) return;
@@ -1657,7 +1687,8 @@ function docSearchJump(pageNum) {
     left.scrollLeft = (left.scrollLeft + mx) * ratio - mx;
     left.scrollTop = (left.scrollTop + my) * ratio - my;
   }, { passive: false });
-})();
+}
+initWheel();
 
 // ── 重OCR 框选 ──
 let _reocrMode = false;
@@ -1730,7 +1761,7 @@ var _dragIdx = -1;
 var _dragCorner = null;
 var _dragOrigin = null; // {mx,my,x0,y0,x1,y1}
 
-(function initDraw() {
+function initDraw() {
   const wrap = document.getElementById('imageWrap');
   const layer = document.getElementById('drawLayer');
   if (!wrap || !layer) return;
@@ -1861,7 +1892,8 @@ var _dragOrigin = null; // {mx,my,x0,y0,x1,y1}
     if (t) _move(t.clientX, t.clientY);
   }, { passive: false });
   window.addEventListener('touchend', () => { _up(); });
-})();
+}
+initDraw();
 
 async function doReocr() {
   if (!_reocrRegions.length) { alert('请先框选区域'); return; }
@@ -1883,10 +1915,7 @@ async function doReocr() {
     if (res.ok && data.status === 'ok') {
       _pageDirty = false;  // 用户明确选择替换本页，弃用编辑器中的旧内容
       alert('重OCR完成：替换/新增 ' + data.new_blocks + ' 个文本块');
-      const url = new URL(window.location.href);
-      url.searchParams.delete('block');
-      url.searchParams.delete('line');
-      window.location.href = url.toString();
+      goPage(new URL(location.href).searchParams.get('page') || 1);
     } else {
       alert('重OCR失败: ' + (data.error || JSON.stringify(data)));
       btn.disabled = false;
@@ -1958,10 +1987,7 @@ async function reorderPage() {
     if (res.ok && data.ok) {
       _pageDirty = false;  // 服务端已重写本页, 弃用编辑器旧内容
       alert(`重组完成: ${data.blocks} 块` + (data.unassigned ? `（${data.unassigned} 块未落入选中栏, 已按原序放末尾）` : ''));
-      const url = new URL(window.location.href);
-      url.searchParams.delete('block');
-      url.searchParams.delete('line');
-      window.location.href = url.toString();
+      goPage(new URL(location.href).searchParams.get('page') || 1);
     } else {
       alert('重组失败: ' + (data.error || res.status));
       if (btn) { btn.disabled = false; btn.textContent = '按栏重组'; }
@@ -2064,11 +2090,11 @@ async function pollReocrRange(from, to) {
   if (job.status === 'done') {
     if (txt) txt.textContent = `分栏OCR 完成 ✓ (${total} 页)`;
     setReocrButtonsDisabled(false);
-    if (curInRange) { setTimeout(() => location.reload(), 1500); return; }
+    if (curInRange) { setTimeout(() => goPage(new URL(location.href).searchParams.get('page') || 1), 1500); return; }
   } else if (job.status === 'cancelled') {
     if (txt) txt.textContent = `已取消 (${job.done}/${total})`;
     setReocrButtonsDisabled(false);
-    if (curInRange && (job.done || 0) > 0) { setTimeout(() => location.reload(), 1500); return; }
+    if (curInRange && (job.done || 0) > 0) { setTimeout(() => goPage(new URL(location.href).searchParams.get('page') || 1), 1500); return; }
   } else {
     if (txt) txt.textContent = '失败';
     alert('批量重OCR失败: ' + (job.error || '未知错误'));
@@ -2293,7 +2319,7 @@ document.addEventListener('click', (e) => {
 });
 
 // ── 右栏拖拽分割条 (localStorage 记住宽度, 桌面端) ──
-(function initDivider() {
+function initDivider() {
   const divider = document.getElementById('panelDivider');
   const right = document.getElementById('textPanel');
   if (!divider || !right) return;
@@ -2324,7 +2350,8 @@ document.addEventListener('click', (e) => {
     if (w >= 280) localStorage.setItem(KEY, String(Math.round(w)));
     setTimeout(applyScale, 60);
   });
-})();
+}
+initDivider();
 
 // ── 专注模式: F11 进入 / Esc 退出 (仅桌面端) ──
 (function initFocusMode() {
@@ -2428,6 +2455,7 @@ function smartToast(msg) {
 
 // ── 文本面板 tab 切换 (2026-10-17: 四卡与全文并列) ──
 function switchTP(name) {
+  window.__tpCur = name;
   document.querySelectorAll('.tp-tab').forEach(b => b.classList.toggle('on', b.dataset.pane === name));
   document.querySelectorAll('.tp-pane').forEach(p => p.classList.toggle('on', p.dataset.pane === name));
   const ta = document.getElementById('textActions');
@@ -2447,7 +2475,7 @@ async function saveCard(kind) {
   else if (kind === 'summary') content = { text: document.getElementById('sumText').value };
   const d = await postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
     { kind, content: JSON.stringify(content), status: 'draft' });
-  if (d.ok) { showToast('已保存'); setTimeout(() => location.reload(), 450); }
+  if (d.ok) showToast('已保存');
   else showToast('保存失败: ' + (d.error || ''));
 }
 async function toggleStatus(kind, cur) {
@@ -2457,8 +2485,17 @@ async function toggleStatus(kind, cur) {
   if (!card) { showToast('先保存卡片'); return; }
   const next = cur === 'reviewed' ? 'draft' : 'reviewed';
   const res = await postCard(`/collections/${encodeURIComponent(collection)}/cards/${card.id}/status`, { status: next });
-  if (res.ok) { showToast(next === 'reviewed' ? '已 reviewed（进检索路）' : '已退回 draft'); setTimeout(() => location.reload(), 400); }
-  else showToast('失败: ' + (res.error || ''));
+  if (!res.ok) { showToast('失败: ' + (res.error || '')); return; }
+  showToast(next === 'reviewed' ? '已 reviewed（进检索路）' : '已退回 draft');
+  if (kind === 'toc') window.__tocStatus = next;
+  if (kind === 'entity') window.__entityStatus = next;
+  const pane = document.querySelector('.tp-pane[data-pane="' + (kind === 'entity' ? 'entity' : (kind === 'summary' ? 'meta' : kind)) + '"]');
+  if (pane) {
+    const badge = pane.querySelector('.cg-hint .badge');
+    if (badge) { badge.textContent = next; badge.className = 'badge ' + next; }
+    const btn = [...pane.querySelectorAll('button')].find(b => (b.getAttribute('onclick') || '').includes("toggleStatus('" + kind + "'"));
+    if (btn) { btn.setAttribute('onclick', "toggleStatus('" + kind + "', '" + next + "')"); btn.textContent = next === 'reviewed' ? '退回 draft' : '标记 reviewed（进检索）'; }
+  }
 }
 // ── 目录树: 数据/渲染/操作 ──
 window.__tocTree = [];
