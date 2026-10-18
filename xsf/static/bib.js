@@ -84,15 +84,6 @@ var bibEditor = (function() {
     }
     html += '</select></div>';
 
-    // 导入区
-    html += '<div class="bib-import-row">';
-    html += '<input type="file" id="' + el.id + '_bibFile" accept=".bib,.bibtex,.txt" style="display:none" onchange="bibEditor.importFile(event)">';
-    html += '<button type="button" class="bib-import-btn" onclick="document.getElementById(\'' + el.id + '_bibFile\').click()">导入 .bib</button>';
-    html += '<textarea class="bib-paste-input" placeholder="粘贴 BibTeX 后点「识别」" rows="3"></textarea>';
-    html += '<button type="button" class="bib-import-btn" onclick="bibEditor.onPaste(this.parentElement.querySelector(\'.bib-paste-input\'))">识别</button>';
-    html += '<span class="bib-import-msg" id="' + el.id + '_msg"></span>';
-    html += '</div>';
-
     // 字段区
     html += '<div id="' + el.id + '_fields"></div>';
 
