@@ -986,8 +986,7 @@ mark {
     </div>
 
     <div class="cards-group" id="cardsGroup">
-      <div class="cg-head"><span class="cg-title">候选队列</span><span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span>
-        <button class="btn-primary" id="genBtn" onclick="genCandidates()" style="margin-left:auto;">AI 生成候选</button>
+      <div class="cg-head"><span class="cg-title">候选队列</span><span class="cg-hint">AI 生成（各 tab 内触发）→ 人工审（采纳并入卡/驳回/修订）</span>
       </div>
         {% if candidates %}
         <table class="cand-table">
@@ -1039,6 +1038,7 @@ mark {
           <button class="btn-primary" onclick="addTocNode()">+ 添加节点</button>
         </div>
         <div class="card-actions">
+          <button class="btn-primary" onclick="genCards('toc')">AI 生成候选</button>
           <button class="btn-primary" onclick="saveCard('toc')">保存目录</button>
           {% if toc.status %}<button onclick="toggleStatus('toc', '{{ toc.status }}')">{{ '退回 draft' if toc.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
         </div>
@@ -1062,6 +1062,7 @@ mark {
           <button class="btn-primary" onclick="addEntityItem()">+ 添加实体</button>
         </div>
         <div class="card-actions">
+          <button class="btn-primary" onclick="genCards('entities')">AI 生成候选</button>
           <button class="btn-primary" onclick="saveCard('entity')">保存实体索引</button>
           {% if entity.status %}<button onclick="toggleStatus('entity', '{{ entity.status }}')">{{ '退回 draft' if entity.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
         </div>
@@ -1070,6 +1071,7 @@ mark {
       {% if summ.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ summ.status }}">{{ summ.status }}</span></div>{% endif %}
         <textarea class="summary-ta" id="sumText" placeholder="100-200 字文献摘要（可由 AI 生成草稿后修订）">{{ summ.content.get('text', '') }}</textarea>
         <div class="card-actions">
+          <button class="btn-primary" onclick="genCards('summary')">AI 生成草稿</button>
           <button class="btn-primary" onclick="saveCard('summary')">保存摘要</button>
           {% if summ.status %}<button onclick="toggleStatus('summary', '{{ summ.status }}')">{{ '退回 draft' if summ.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
         </div>
@@ -2456,15 +2458,25 @@ async function patchCand(id) {
     { action: 'patch', label: l.trim(), category: c.trim() });
   if (d.ok) { showToast('已修订'); setTimeout(() => location.reload(), 400); }
 }
-async function genCandidates() {
-  const btn = document.getElementById('genBtn');
-  btn.disabled = true; btn.textContent = '生成中…';
+async function genCards(target) {
+  const labels = { toc: '目录候选', entities: '实体候选', summary: '摘要草稿' };
+  const btns = [...document.querySelectorAll(`.tp-pane[data-pane="${target === 'entities' ? 'entity' : target}"] .card-actions button`)];
+  const btn = btns.find(b => b.textContent.includes('AI '));
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
   try {
-    const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/candidates/generate`, { method: 'POST' });
+    const body = new URLSearchParams({ targets: target });
+    const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/candidates/generate`, { method: 'POST', body });
     const d = await r.json();
-    if (d.ok) { showToast(`生成 ${d.toc} 目录 + ${d.entities} 实体候选${d.summary ? ' + 摘要草稿' : ''} (${d.model})`); setTimeout(() => location.reload(), 600); }
-    else { showToast('生成失败: ' + (d.error || '')); btn.disabled = false; btn.textContent = 'AI 生成候选'; }
-  } catch (e) { showToast('请求失败'); btn.disabled = false; btn.textContent = 'AI 生成候选'; }
+    if (d.ok) {
+      let msg = `(${d.model}) `;
+      if (target === 'toc') msg += `生成 ${d.toc} 个目录候选`;
+      else if (target === 'entities') msg += `生成 ${d.entities} 个实体候选`;
+      else msg += d.summary ? '摘要草稿已生成' : '摘要未变化';
+      showToast(msg); setTimeout(() => location.reload(), 600);
+    }
+    else { showToast('生成失败: ' + (d.error || '')); if (btn) { btn.disabled = false; btn.textContent = orig; } }
+  } catch (e) { showToast('请求失败'); if (btn) { btn.disabled = false; btn.textContent = orig; } }
 }
 
 async function runSmartCheck(channel = 'engine') {

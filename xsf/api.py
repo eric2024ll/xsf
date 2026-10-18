@@ -2346,12 +2346,18 @@ async def api_candidate_review(collection: str, cand_id: int,
 
 
 @app.post("/collections/{collection}/doc/{doc_id}/candidates/generate")
-async def api_candidates_generate(collection: str, doc_id: int):
-    """LLM 生成候选: 抽样文献前部块文本, 出目录候选 + 摘要草稿.
+async def api_candidates_generate(collection: str, doc_id: int,
+                                  targets: str = Form(None)):
+    """LLM 生成候选: 抽样文献前部块文本, 按目标生成目录候选/实体候选/摘要草稿.
 
+    targets 逗号分隔子集 (toc/entities/summary), 默认全部。
     复用 P2c 的 llm_chat provider 配置 (default_llm).
     """
     from .llm import chat, LLMNotConfigured
+    want = {t.strip() for t in (targets or "toc,entities,summary").split(",")
+            if t.strip() in ("toc", "entities", "summary")}
+    if not want:
+        want = {"toc", "entities", "summary"}
     doc = _get_card_doc(collection, doc_id)
     if doc is None:
         return JSONResponse(status_code=404, content={"error": "文献不存在"})
@@ -2370,16 +2376,21 @@ async def api_candidates_generate(collection: str, doc_id: int):
     sample = "\n".join(
         f"[p{b['page_num']}b{b['block_num']}] {b['text'][:120]}"
         for b in blocks)
+    fields = []
+    if "toc" in want:
+        fields.append('"toc": [{"label": "目录/主题节点", '
+                      '"category": "自由类目标签（如 职官/兵事/贡赋/舆地 或自拟）", '
+                      '"page_num": 页码, "confidence": 0到1}]（3-8 个）')
+    if "entities" in want:
+        fields.append('"entities": [{"label": "实体名（人名/地名/机构/物产等）", '
+                      '"category": "实体类别（如 人名/地名/机构/物产/职官）", '
+                      '"page_num": 页码, "confidence": 0到1}]（3-15 个）')
+    if "summary" in want:
+        fields.append('"summary": "100-200字摘要"')
     system = (
         "你是文献编目助手。基于给定的文献块样本（每行前缀 [p页b块]），"
-        "输出严格 JSON：{\"toc\": [{\"label\": \"目录/主题节点\", "
-        "\"category\": \"自由类目标签（如 职官/兵事/贡赋/舆地 或自拟）\", "
-        "\"page_num\": 页码, \"confidence\": 0到1}], "
-        "\"entities\": [{\"label\": \"实体名（人名/地名/机构/物产等）\", "
-        "\"category\": \"实体类别（如 人名/地名/机构/物产/职官）\", "
-        "\"page_num\": 页码, \"confidence\": 0到1}], "
-        "\"summary\": \"100-200字摘要\"}。"
-        "toc 给 3-8 个节点, entities 给 3-15 个, 只输出 JSON, 不要解释。"
+        "输出严格 JSON：{" + ", ".join(fields) + "}。"
+        "只输出要求的字段, 只输出 JSON, 不要解释。"
     )
     try:
         content, model = chat(
@@ -2395,9 +2406,9 @@ async def api_candidates_generate(collection: str, doc_id: int):
         return JSONResponse(status_code=502,
                             content={"error": f"LLM 输出无法解析: {content[:120]}"})
 
-    toc_items = parsed.get("toc") or []
-    entity_items = parsed.get("entities") or []
-    summary_text = (parsed.get("summary") or "").strip()
+    toc_items = parsed.get("toc") or [] if "toc" in want else []
+    entity_items = parsed.get("entities") or [] if "entities" in want else []
+    summary_text = (parsed.get("summary") or "").strip() if "summary" in want else ""
 
     conn = get_conn(collection)
     try:
