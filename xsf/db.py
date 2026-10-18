@@ -127,6 +127,17 @@ def _migrate(conn):
     if "page_map" not in doc_cols2:
         conn.execute("ALTER TABLE documents ADD COLUMN page_map TEXT DEFAULT NULL")
     # 语料包台账 (P3, 2026-10-17): .sqpkg 导出记录 (导出中心数据源)
+    # 受控词表 (P4 渐进, 2026-10-18 实体类别先行): kind='entity_category' 等
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS vocabs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            term TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(kind, term)
+        )
+    """)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS export_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -2451,6 +2451,43 @@ async def api_candidate_review(collection: str, cand_id: int,
         conn.close()
 
 
+@app.get("/collections/{collection}/vocab")
+async def api_vocab_get(collection: str, kind: str = "entity_category"):
+    """受控词表 (实体类别等), 一行一词."""
+    if collection not in list_collections():
+        return JSONResponse({"error": "书架不存在"}, status_code=404)
+    conn = get_conn(collection)
+    try:
+        rows = conn.execute(
+            "SELECT term FROM vocabs WHERE kind = ? ORDER BY id", (kind,)).fetchall()
+        return {"ok": True, "kind": kind, "terms": [r["term"] for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/vocab")
+async def api_vocab_import(collection: str, kind: str = Form("entity_category"),
+                           terms: str = Form(...),
+                           replace: str = Form(None)):
+    """导入词表 (多行文本一行一词); replace=1 先清空该 kind."""
+    items = [t.strip() for t in (terms or "").splitlines() if t.strip()]
+    if not items:
+        return JSONResponse({"error": "无有效词条"}, status_code=400)
+    conn = get_conn(collection)
+    try:
+        if replace == "1":
+            conn.execute("DELETE FROM vocabs WHERE kind = ?", (kind,))
+        conn.executemany(
+            "INSERT OR IGNORE INTO vocabs (kind, term) VALUES (?, ?)",
+            [(kind, t) for t in items])
+        n = conn.execute("SELECT COUNT(*) c FROM vocabs WHERE kind = ?",
+                         (kind,)).fetchone()["c"]
+        conn.commit()
+        return {"ok": True, "imported": len(items), "total": n}
+    finally:
+        conn.close()
+
+
 @app.get("/collections/{collection}/doc/{doc_id}/page-map")
 async def api_page_map_get(collection: str, doc_id: int):
     if collection not in list_collections():
@@ -2616,8 +2653,21 @@ async def api_candidates_generate(collection: str, doc_id: int,
                       '"children": [同构子节点数组, 最多嵌套3层, 叶子可省略]}]'
                       '（根节点 3-8 个, 层级按目录实际结构）')
     if "entities" in want:
+        _ev = []
+        try:
+            _vc = get_conn(collection)
+            try:
+                _ev = [r["term"] for r in _vc.execute(
+                    "SELECT term FROM vocabs WHERE kind = 'entity_category' ORDER BY id"
+                ).fetchall()]
+            finally:
+                _vc.close()
+        except sqlite3.OperationalError:
+            _ev = []
+        _cat_desc = ('实体类别（从词表选择: ' + '/'.join(_ev) + '）'
+                     if _ev else '实体类别（如 人名/地名/机构/物产/职官）')
         fields.append('"entities": [{"label": "实体名（人名/地名/机构/物产等）", '
-                      '"category": "实体类别（如 人名/地名/机构/物产/职官）", '
+                      '"category": "' + _cat_desc + '", '
                       '"page_num": 页码, "confidence": 0到1}]（3-15 个）')
     if "summary" in want:
         fields.append('"summary": "100-200字摘要"')
@@ -3183,6 +3233,12 @@ async def proofread_page(
                     (doc_id,)).fetchall()
             except sqlite3.OperationalError:
                 card_rows, cand_rows = [], []
+            try:
+                entity_cats = [r["term"] for r in conn.execute(
+                    "SELECT term FROM vocabs WHERE kind = 'entity_category' ORDER BY id"
+                ).fetchall()]
+            except sqlite3.OperationalError:
+                entity_cats = []
             cards_map = {}
             for cr in card_rows:
                 try:
@@ -3325,6 +3381,7 @@ async def proofread_page(
                 bib_type=bib_type,
                 bib_data=bib_data,
                 cards_map=cards_map,
+                entity_cats=entity_cats,
                 candidates=[dict(cr) for cr in cand_rows],
                 bib_type_labels=BIB_TYPE_LABELS,
                 bib_field_labels=BIB_FIELD_LABELS,

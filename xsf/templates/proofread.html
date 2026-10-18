@@ -1049,16 +1049,15 @@ mark {
       {% if entity.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ entity.status }}">{{ entity.status }}</span></div>{% endif %}
         {% if entity.content.get('items') %}
         <table class="toc-table" id="entityTable"><tbody id="entityBody">
-          <tr><th>实体</th><th>类别</th><th>页</th><th>来源</th><th></th></tr>
+          <tr><th>实体</th><th>类别</th><th>来源</th></tr>
           {% for e in entity.content.get('items', []) %}
-          <tr><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td><td>{{ e.page_num or '—' }}</td>
-              <td class="conf">{{ e.from or '手工' }}</td>
-              <td>{% if e.page_num %}<button onclick="goPrinted({{ e.page_num }})">对照</button>{% endif %}</td></tr>
+          <tr><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td>
+              <td class="conf">{{ e.from or '手工' }}</td></tr>
           {% endfor %}
         </tbody></table>
         {% else %}
         <table class="toc-table" id="entityTable" style="display:none;"><tbody id="entityBody">
-          <tr><th>实体</th><th>类别</th><th>页</th><th>来源</th><th></th></tr>
+          <tr><th>实体</th><th>类别</th><th>来源</th></tr>
         </tbody></table>
         <div class="empty-hint" id="entityEmpty">暂无实体——AI 生成候选后采纳，或手工添加</div>
         {% endif %}
@@ -1066,13 +1065,12 @@ mark {
         {% if ent_cands %}
         <div class="cg-head" style="margin-top:12px;"><span class="cg-title">实体候选</span><span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span></div>
         <table class="cand-table">
-          <tr><th>标签</th><th>类别</th><th>置信</th><th>页</th><th>状态</th><th>操作</th></tr>
+          <tr><th>标签</th><th>类别</th><th>置信</th><th>状态</th><th>操作</th></tr>
           {% for c in ent_cands %}
           <tr data-cand="{{ c.id }}" data-ctype="{{ c.ctype }}">
             <td id="cl-{{ c.id }}">{{ c.label }}</td>
             <td id="cc-{{ c.id }}">{{ c.category or '—' }}</td>
             <td class="conf">{{ '%.2f' % c.confidence if c.confidence is not none else '—' }}</td>
-            <td>{{ c.page_num or '—' }}</td>
             <td><span class="badge {{ c.status }}">{{ c.status }}</span></td>
             <td class="ops">
               {% if c.status == 'pending' %}
@@ -1088,10 +1086,24 @@ mark {
         {% endif %}
         <div class="add-row">
           <input id="enLabel" placeholder="实体名" style="flex:2;min-width:120px;">
-          <input id="enCat" placeholder="类别（人名/地名/…）" style="flex:1;min-width:90px;">
-          <input id="enPage" placeholder="页码" style="width:60px;" type="number" min="1">
+          <input id="enCat" placeholder="类别（人名/地名/…）" list="entityCats" style="flex:1;min-width:90px;">
+          <datalist id="entityCats">
+            {% for t in entity_cats %}<option value="{{ t }}"></option>{% endfor %}
+          </datalist>
           <button class="btn-primary" onclick="addEntityItem()">+ 添加实体</button>
         </div>
+        <details class="card-sec" style="margin-top:8px;">
+          <summary>导入类别词表{{ '（当前 ' ~ (entity_cats | length) ~ ' 词）' if entity_cats else '' }}</summary>
+          <div style="padding:8px 2px; display:flex; flex-direction:column; gap:6px;">
+            <div class="cg-hint">一行一词（书架级共享）。导入后: 类别输入可选可自输, AI 生成实体的类别将从词表选择。</div>
+            <textarea id="vocabTa" rows="5" placeholder="人名&#10;地名&#10;机构&#10;物产&#10;职官" style="width:100%;max-width:420px;"></textarea>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <input type="file" id="vocabFile" accept=".txt,.csv" onchange="loadVocabFile(this)">
+              <label style="font-size:0.85rem;"><input type="checkbox" id="vocabReplace"> 替换现有词表</label>
+              <button class="btn-primary" onclick="importVocab()">导入</button>
+            </div>
+          </div>
+        </details>
         <div class="card-actions">
           <button class="btn-primary" onclick="genCards('entities')">AI 生成候选</button>
           <button class="btn-primary" onclick="saveCard('entity')">保存实体索引</button>
@@ -2667,21 +2679,43 @@ function addTocNode() {
   document.getElementById('tnPage').value = '';
   renderTocTree();
 }
+function loadVocabFile(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => { document.getElementById('vocabTa').value = reader.result || ''; };
+  reader.readAsText(f, 'utf-8');
+}
+async function importVocab() {
+  const ta = document.getElementById('vocabTa');
+  const terms = (ta.value || '').trim();
+  if (!terms) { showToast('词表为空'); return; }
+  const fd = new URLSearchParams({ kind: 'entity_category', terms: terms });
+  if (document.getElementById('vocabReplace').checked) fd.append('replace', '1');
+  const r = await fetch(`/collections/${encodeURIComponent(collection)}/vocab`, { method: 'POST', body: fd });
+  const d = await r.json();
+  if (!d.ok) { showToast('导入失败: ' + (d.error || '')); return; }
+  const dl = document.getElementById('entityCats');
+  dl.innerHTML = (await (await fetch(`/collections/${encodeURIComponent(collection)}/vocab?kind=entity_category`)).json())
+    .terms.map(t => `<option value="${__escT(t)}"></option>`).join('');
+  const sum = document.querySelector('.tp-pane[data-pane="entity"] details summary');
+  if (sum) sum.textContent = '导入类别词表（当前 ' + dl.children.length + ' 词）';
+  showToast('已导入 ' + d.imported + ' 词（共 ' + d.total + '）');
+}
+
 function addEntityItem() {
   const label = document.getElementById('enLabel').value.trim();
   if (!label) { showToast('实体名必填'); return; }
   const cat = document.getElementById('enCat').value.trim();
-  const pg = parseInt(document.getElementById('enPage').value, 10) || page;
   if (!window.__entityContent) {
     window.__entityContent = { items: [] };
     {% if entity.content.get('items') %}
     window.__entityContent.items = {{ entity.content.get('items') | tojson }};
     {% endif %}
   }
-  window.__entityContent.items.push({ label, category: cat || null, page_num: pg, from: '手工' });
+  window.__entityContent.items.push({ label, category: cat || null, from: '手工' });
   document.getElementById('enLabel').value = '';
   document.getElementById('enCat').value = '';
-  document.getElementById('enPage').value = '';
   // 即落库 (2026-10-18: 与目录树同语义, 防刷新丢失)
   postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
     { kind: 'entity', content: JSON.stringify(window.__entityContent), status: window.__entityStatus })
@@ -2758,15 +2792,14 @@ async function reviewCand(id, action) {
       renderTocTree();
       showToast('已采纳并入目录树（已落库）');
     } else if (ctype === 'entity') {
-      if (window.__entityContent) window.__entityContent.items.push({ label: lab, category: cat, page_num: pg, from: 'candidate#' + id });
+      if (window.__entityContent) window.__entityContent.items.push({ label: lab, category: cat, from: 'candidate#' + id });
       const body = document.getElementById('entityBody');
       if (body) {
         const tb = document.getElementById('entityTable'); if (tb) tb.style.display = '';
         const em = document.getElementById('entityEmpty'); if (em) em.style.display = 'none';
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${__escT(lab)}</td><td>${cat ? __escT(cat) : '—'}</td><td>${pg || '—'}</td>` +
-          `<td class="conf">candidate#${id}</td>` +
-          `<td>${pg ? `<button onclick="goPrinted(${pg})">对照</button>` : ''}</td>`;
+        tr.innerHTML = `<td>${__escT(lab)}</td><td>${cat ? __escT(cat) : '—'}</td>` +
+          `<td class="conf">candidate#${id}</td>`;
         body.appendChild(tr);
       }
       showToast('已采纳并入实体索引（已落库）');
