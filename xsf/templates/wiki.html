@@ -1,0 +1,123 @@
+{% include "_nav.html" %}
+<div class="wrap">
+  <div class="page-head">
+    <h1>知识地图 <span class="coll-name">{{ collection }}</span></h1>
+    <div class="wiki-meta">
+      <span class="ai-generated-badge" title="本页由 LLM 编译生成, 资料更新后可重新生成; 未经人工审核, 引用前请核对原文">AI 生成</span>
+      {% if wiki_generated_at %}<span class="gen-at">生成于 {{ wiki_generated_at }}</span>{% endif %}
+      <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 文献列表</a>
+    </div>
+  </div>
+
+  {% if wiki_status != 'ready' or not wiki_pages %}
+  <div class="empty-state">
+    <p>尚未生成知识地图。</p>
+    <p class="hint">在文献列表页点「知识地图」按钮生成（需设置页配置 llm_chat provider）。</p>
+  </div>
+  {% else %}
+  <div class="wiki-layout">
+    <aside class="wiki-side">
+      {% for p in wiki_pages %}
+      <button class="wiki-toc-item{{ ' on' if loop.first }}" data-slug="{{ p.slug }}"
+              onclick="showWikiPage('{{ p.slug }}')">{{ p.title }}</button>
+      {% endfor %}
+    </aside>
+    <main class="wiki-main">
+      {% for p in wiki_pages %}
+      <article class="wiki-page{{ ' on' if loop.first }}" id="wp-{{ p.slug }}">
+        <h1 class="wiki-title">{{ p.title }}</h1>
+        <div class="wiki-body" data-raw="{{ p.content }}"></div>
+        {% if p.refs %}
+        <div class="wiki-refs">
+          <div class="refs-title">相关原文</div>
+          {% for r in p.refs %}
+          {% if r.doc_id and r.page_num %}
+          <a class="ref-link" href="/collections/{{ collection | urlencode }}/doc/{{ r.doc_id }}/proofread?page={{ r.page_num }}">
+            doc {{ r.doc_id }} · p{{ r.page_num }} ↗</a>
+          {% endif %}
+          {% endfor %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </main>
+  </div>
+  {% endif %}
+</div>
+
+<style>
+.page-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
+.page-head h1 { font-size: 1.3rem; margin: 0; }
+.coll-name { color: var(--text-muted); font-weight: 400; font-size: 1rem; }
+.wiki-meta { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: var(--text-muted); }
+.ai-generated-badge { background: #ede9fe; color: #6d28d9; padding: 2px 10px; border-radius: 10px; font-size: 0.75rem; cursor: help; }
+.gen-at { font-size: 0.78rem; }
+.back-link { color: var(--primary); text-decoration: none; }
+.empty-state { text-align: center; padding: 60px 0; color: var(--text-muted); }
+.empty-state .hint { font-size: 0.85rem; }
+.wiki-layout { display: flex; gap: 18px; margin-top: 14px; align-items: flex-start; }
+.wiki-side { flex: 0 0 200px; position: sticky; top: calc(var(--nav-h) + 12px); display: flex; flex-direction: column; gap: 2px; }
+.wiki-toc-item { text-align: left; padding: 8px 12px; border: none; background: none; cursor: pointer;
+  font-size: 0.88rem; color: var(--text-muted); border-left: 3px solid transparent; border-radius: 0 6px 6px 0; }
+.wiki-toc-item:hover { color: var(--text); background: var(--accent); }
+.wiki-toc-item.on { color: var(--primary); border-left-color: var(--primary); font-weight: 600; }
+.wiki-main { flex: 1; min-width: 0; }
+.wiki-page { display: none; background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 22px 28px; }
+.wiki-page.on { display: block; }
+.wiki-title { font-size: 1.25rem; margin: 0 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+.wiki-body { font-size: 0.92rem; line-height: 1.75; }
+.wiki-body h2 { font-size: 1.05rem; margin: 18px 0 8px; }
+.wiki-body ul { padding-left: 22px; margin: 6px 0; }
+.wiki-body p { margin: 8px 0; }
+.wiki-link { color: var(--primary); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.wiki-refs { margin-top: 18px; padding-top: 10px; border-top: 1px dashed var(--border); display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.refs-title { font-size: 0.8rem; color: var(--text-muted); }
+.ref-link { font-size: 0.82rem; color: var(--primary); text-decoration: none; background: var(--accent); padding: 2px 10px; border-radius: 10px; }
+@media (max-width: 760px) {
+  .wiki-layout { flex-direction: column; }
+  .wiki-side { position: static; flex-direction: row; flex-wrap: wrap; flex: none; }
+  .wiki-toc-item { border-left: none; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; }
+  .wiki-toc-item.on { border-bottom-color: var(--primary); }
+}
+</style>
+
+<script>
+function showWikiPage(slug) {
+  document.querySelectorAll('.wiki-toc-item').forEach(b => b.classList.toggle('on', b.dataset.slug === slug));
+  document.querySelectorAll('.wiki-page').forEach(p => p.classList.toggle('on', p.id === 'wp-' + slug));
+}
+
+// mini markdown 渲染: 标题/列表/加粗/[[双链]]; 先 escape 防注入
+function renderWikiMd(el) {
+  var raw = el.dataset.raw || '';
+  var esc = raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  var lines = esc.split('\n');
+  var out = [], inList = false;
+  for (var ln of lines) {
+    ln = ln.trim();
+    if (!ln) { if (inList) { out.push('</ul>'); inList = false; } continue; }
+    var inline = ln
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\[\[(.+?)\]\]/g, '<span class="wiki-link" onclick="wikiJump(this)">$1</span>');
+    if (ln.startsWith('## ')) { if (inList) { out.push('</ul>'); inList = false; } out.push('<h2>' + inline.slice(3) + '</h2>'); }
+    else if (ln.startsWith('# ')) { if (inList) { out.push('</ul>'); inList = false; } out.push('<h2>' + inline.slice(2) + '</h2>'); }
+    else if (/^[-*]\s+/.test(ln)) { if (!inList) { out.push('<ul>'); inList = true; } out.push('<li>' + inline.replace(/^[-*]\s+/, '') + '</li>'); }
+    else { if (inList) { out.push('</ul>'); inList = false; } out.push('<p>' + inline + '</p>'); }
+  }
+  if (inList) out.push('</ul>');
+  el.innerHTML = out.join('');
+}
+
+function wikiJump(span) {
+  var title = span.textContent.trim();
+  var btn = document.querySelector('.wiki-toc-item');
+  var items = document.querySelectorAll('.wiki-toc-item');
+  for (var b of items) {
+    if (b.textContent.trim() === title) { showWikiPage(b.dataset.slug); return; }
+  }
+  alert('概念页「' + title + '」不在本地图中（链接指向未生成的页）');
+}
+
+document.querySelectorAll('.wiki-body').forEach(renderWikiMd);
+</script>

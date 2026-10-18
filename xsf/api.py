@@ -444,6 +444,7 @@ async def api_search(collection: str, q: str, limit: int = 20,
         return {"query": q, "collection": collection,
                 "count": len(out), "results": out,
                 "cards": _card_hits(collection, q),
+                "wiki": _wiki_hits(collection, q),
                 "total": total, "offset": offset, "limit": limit,
                 "has_more": offset + len(out) < total}
     except Exception as e:
@@ -464,6 +465,7 @@ async def api_search_grouped(collection: str, q: str,
         return {"query": q, "collection": collection,
                 "groups": groups,
                 "cards": _card_hits(collection, q),
+                "wiki": _wiki_hits(collection, q),
                 "total_blocks": stats["blocks"], "total_docs": stats["docs"],
                 "groups_truncated": len(groups) >= limit}
     except Exception as e:
@@ -2441,6 +2443,211 @@ async def api_candidates_generate(collection: str, doc_id: int):
                 "summary": bool(summary_text), "model": model}
     finally:
         conn.close()
+
+
+# ════════════════════════════════════════════════════════════
+# 知识地图 Wiki (P6, 2026-10-18): collection 级编译产物
+# 模型: LLM 一键生成, 无人审核, 可再生, 不入修订史; stale=资料修订数超基线
+# ════════════════════════════════════════════════════════════
+
+WIKI_SYSTEM_PROMPT = """你是研究知识库的编辑。基于给定的文献库资料（文献列表、已审定卡片、正文采样），
+为这个文献库编写一组「知识地图」概念页——帮助研究者快速把握库内核心主题与脉络。
+
+要求：
+- 输出 3-8 个概念页, 覆盖库内最重要的主题/实体/脉络
+- 每页 content 用简体中文 markdown（可用 ## 小节、列表、**加粗**）
+- 相关概念用 [[概念页标题]] 互链（必须对应你输出的某个 title）
+- 引证具体文献时在 refs 里给 doc_id 与 page_num（正文可提「见某文献」但不要编造页码）
+- 不得虚构资料中没有的事实; 资料不足时如实写「资料尚未覆盖」
+- 只输出 JSON, 格式:
+{"pages": [{"title": "...", "slug": "ascii-kebab", "content": "markdown", "refs": [{"doc_id": 1, "page_num": 2}]}]}"""
+
+
+def _wiki_llm_payload(conn):
+    """组装生成输入: 文献列表 + reviewed 卡 + 每文献前 3 块采样."""
+    docs = conn.execute(
+        "SELECT id, title, cite_key, filename, page_count FROM documents "
+        "ORDER BY id").fetchall()
+    doc_lines = []
+    for d in docs:
+        doc_lines.append(f"- doc_id={d['id']} 《{d['title'] or d['filename']}》"
+                         f" (cite: {d['cite_key'] or '-'}, {d['page_count']}页)")
+    cards_txt = []
+    for r in conn.execute(
+            "SELECT dc.kind, dc.content, dc.status, d.title FROM doc_cards dc "
+            "JOIN documents d ON d.id = dc.doc_id "
+            "WHERE dc.status = 'reviewed' ORDER BY dc.doc_id, dc.kind").fetchall():
+        try:
+            c = json.loads(r["content"]) if r["content"] else {}
+        except Exception:
+            c = {}
+        if r["kind"] == "toc" and c.get("nodes"):
+            nodes = "; ".join(f"{n.get('label')}({n.get('category') or '?'})"
+                              for n in c["nodes"][:12])
+            cards_txt.append(f"[目录卡·{r['title']}] {nodes}")
+        elif r["kind"] == "entity" and c.get("items"):
+            items = "; ".join(f"{i.get('label')}({i.get('category') or '?'})"
+                              for i in c["items"][:15])
+            cards_txt.append(f"[实体卡·{r['title']}] {items}")
+        elif r["kind"] == "summary" and c.get("text"):
+            cards_txt.append(f"[摘要卡·{r['title']}] {c['text'][:200]}")
+    samples = []
+    for d in docs[:10]:
+        rows = conn.execute(
+            "SELECT page_num, block_num, text FROM blocks_fts "
+            "WHERE doc_id = ? ORDER BY page_num, block_num LIMIT 3",
+            (d["id"],)).fetchall()
+        if rows:
+            frag = " / ".join((r["text"] or "")[:80] for r in rows)
+            samples.append(f"《{d['title'] or d['filename']}》(doc_id={d['id']}): {frag}")
+    return {"documents": doc_lines, "reviewed_cards": cards_txt[:20],
+            "text_samples": samples[:10]}
+
+
+@app.post("/collections/{collection}/wiki/generate")
+async def wiki_generate(collection: str):
+    """一键生成知识地图: LLM 编译 → 清旧插新 → ready + 基线戳."""
+    from .llm import chat, LLMNotConfigured
+    from .config import get_default_llm_provider_id, get_llm_provider_cfg
+    if collection not in list_collections():
+        return JSONResponse(status_code=404, content={"error": "书架不存在"})
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            "SELECT status FROM wiki_status WHERE collection = ?",
+            (collection,)).fetchone()
+        if cur and cur["status"] == 'generating':
+            return JSONResponse(status_code=409,
+                                content={"error": "正在生成中，请稍候"})
+        conn.execute(
+            "INSERT INTO wiki_status(collection, status, base_edits, generated_at) "
+            "VALUES(?, 'generating', 0, NULL) "
+            "ON CONFLICT(collection) DO UPDATE SET status = 'generating'",
+            (collection,))
+        conn.commit()
+        try:
+            provider_id = get_default_llm_provider_id()
+            cfg = get_llm_provider_cfg(provider_id)
+            payload = json.dumps(_wiki_llm_payload(conn), ensure_ascii=False)
+            content, model = chat(
+                [{"role": "system", "content": WIKI_SYSTEM_PROMPT},
+                 {"role": "user", "content": payload}], cfg)
+            i0, i1 = content.find('{'), content.rfind('}') + 1
+            if i0 < 0 or i1 <= i0:
+                raise ValueError("LLM 输出未包含 JSON 对象")
+            pages = json.loads(content[i0:i1]).get("pages", [])
+            if not pages:
+                raise ValueError("LLM 输出 pages 为空")
+            rev_now = conn.execute("SELECT COUNT(*) c FROM revision_log").fetchone()["c"]
+            conn.execute("DELETE FROM wiki_pages WHERE collection = ?", (collection,))
+            for pos, pg in enumerate(pages):
+                slug = (pg.get("slug") or pg.get("title") or f"page-{pos}")[:60]
+                conn.execute(
+                    "INSERT INTO wiki_pages(collection, slug, title, content, refs, position) "
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(collection, slug) DO NOTHING",
+                    (collection, slug, pg.get("title") or slug,
+                     pg.get("content") or "", json.dumps(pg.get("refs") or []), pos))
+            conn.execute(
+                "UPDATE wiki_status SET status = 'ready', base_edits = ?, "
+                "generated_at = datetime('now', 'localtime') WHERE collection = ?",
+                (rev_now, collection))
+            conn.commit()
+            return {"ok": True, "pages": len(pages), "model": model}
+        except (LLMNotConfigured, RuntimeError) as e:
+            conn.execute("UPDATE wiki_status SET status = 'none' WHERE collection = ?",
+                         (collection,))
+            conn.commit()
+            return JSONResponse(status_code=503, content={"error": str(e)})
+        except Exception as e:
+            conn.execute("UPDATE wiki_status SET status = 'none' WHERE collection = ?",
+                         (collection,))
+            conn.commit()
+            return JSONResponse(status_code=500,
+                                content={"error": f"生成失败: {e}"})
+    finally:
+        conn.close()
+
+
+@app.get("/collections/{collection}/wiki/status")
+async def wiki_status(collection: str):
+    """状态: ready/generating/none + 页数 + stale 判定(修订数超基线)."""
+    conn = get_conn(collection)
+    try:
+        st = conn.execute("SELECT * FROM wiki_status WHERE collection = ?",
+                          (collection,)).fetchone()
+        n_pages = conn.execute(
+            "SELECT COUNT(*) c FROM wiki_pages WHERE collection = ?",
+            (collection,)).fetchone()["c"]
+        stale = False
+        rev_now = 0
+        try:
+            rev_now = conn.execute(
+                "SELECT COUNT(*) c FROM revision_log").fetchone()["c"]
+        except sqlite3.OperationalError:
+            pass
+        if st and st["status"] == 'ready':
+            stale = rev_now > (st["base_edits"] or 0)
+        return {"status": (st["status"] if st else ("ready" if n_pages else "none")),
+                "pages": n_pages, "stale": stale,
+                "generated_at": st["generated_at"] if st else None,
+                "base_edits": st["base_edits"] if st else 0, "rev_now": rev_now}
+    finally:
+        conn.close()
+
+
+@app.get("/collections/{collection}/wiki/view")
+async def wiki_view(request: Request, collection: str):
+    """知识地图阅读页: 左概念列表 + 右正文 (ai-generated 标 + 双链 + refs 跳工位)."""
+    conn = get_conn(collection)
+    try:
+        pages = conn.execute(
+            "SELECT slug, title, content, refs, position FROM wiki_pages "
+            "WHERE collection = ? ORDER BY position, id",
+            (collection,)).fetchall()
+        st = conn.execute("SELECT * FROM wiki_status WHERE collection = ?",
+                          (collection,)).fetchone()
+        pages_data = []
+        for p in pages:
+            try:
+                refs = json.loads(p["refs"]) if p["refs"] else []
+            except Exception:
+                refs = []
+            pages_data.append({"slug": p["slug"], "title": p["title"],
+                               "content": p["content"], "refs": refs})
+        status = (st["status"] if st else ("ready" if pages_data else "none"))
+        return templates.TemplateResponse(
+            request, "wiki.html",
+            _nav_ctx("docs", collection, wiki_pages=pages_data,
+                     wiki_status=status,
+                     wiki_generated_at=(st["generated_at"] if st else None)))
+    finally:
+        conn.close()
+
+
+def _wiki_hits(collection: str, q: str, limit: int = 10):
+    """Wiki 命中组: LIKE 检索概念页 (标题+正文), 供两 search 端点."""
+    rows = []
+    try:
+        conn = get_conn(collection)
+        try:
+            esc_q = q.replace('\\', '\\\\').replace('%', r'\%') \
+                    .replace('_', r'\_')
+            for r in conn.execute(
+                    "SELECT slug, title, content FROM wiki_pages "
+                    "WHERE collection = ? AND (title LIKE ? ESCAPE '\\' "
+                    "OR content LIKE ? ESCAPE '\\') LIMIT ?",
+                    (collection, f"%{esc_q}%", f"%{esc_q}%", limit)).fetchall():
+                pos = (r["content"] or "").lower().find(q.lower())
+                snippet = (r["content"] or "")[
+                    max(0, pos - 20):max(0, pos - 20) + 80] if pos >= 0 else \
+                    (r["content"] or "")[:80]
+                rows.append({"slug": r["slug"], "title": r["title"],
+                             "snippet": snippet})
+        finally:
+            conn.close()
+    except Exception:
+        rows = []
+    return rows
 
 
 @app.get("/collections/{collection}/doc/{doc_id}/cards/view")

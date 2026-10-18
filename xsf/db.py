@@ -253,6 +253,35 @@ def _migrate(conn):
             ON card_candidates(doc_id, status)
     """)
 
+    # ── 知识地图 Wiki (P6, 2026-10-18): collection 级编译产物 ──
+    # 模型: 编译产物——LLM 一键生成, 无人审核, 可再生(清旧插新), 不入修订史。
+    # stale 判定: wiki_status.base_edits < 当前 revision_log 总数 → 前端提示重新生成。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS wiki_pages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            collection TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT,
+            refs TEXT,
+            position INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(collection, slug)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS wiki_status (
+            collection TEXT PRIMARY KEY,
+            status TEXT DEFAULT 'none',
+            base_edits INTEGER DEFAULT 0,
+            generated_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_wiki_coll
+            ON wiki_pages(collection, position)
+    """)
+
     # 智能校对 (P4, 2026-09-19): 候选缓存 + 人工录入 + 页映射
     # 设计: pqa design/client/19-smart-proofread.md
     conn.execute("""

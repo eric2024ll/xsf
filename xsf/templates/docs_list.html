@@ -26,6 +26,7 @@
 .toolbar label{font-size:0.85rem;display:flex;align-items:center;gap:4px;cursor:pointer;}
 .toolbar .spacer{flex:1;}
 .toolbar select{padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;background:var(--card-bg);}
+.wiki-btn-wrap{display:flex;gap:8px;align-items:center;}
 .toolbar .divider{width:1px;align-self:stretch;background:var(--border);margin:0 2px;}
 .toolbar .pager{margin-top:0;}
 .export-menu-wrap{position:relative;display:inline-block;}
@@ -77,7 +78,8 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
 @media(max-width:768px){
   .filter-row,.toolbar{flex-direction:column;align-items:stretch;}
   .toolbar .spacer{display:none;}
-  .toolbar .divider{display:none;}
+  .wiki-btn-wrap{display:flex;gap:8px;align-items:center;}
+.toolbar .divider{display:none;}
   table{font-size:0.75rem;}
   th,td{padding:8px;}
   .actions a{display:inline-block;margin-bottom:4px;}
@@ -121,6 +123,11 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
     </div>
     <button class="btn" onclick="openBibMatch()" id="btnBibMatch">批量导入 BibTeX</button>
     <button class="btn" onclick="btOpen()" id="btnBatchTags">批量标签</button>
+    <div class="wiki-btn-wrap">
+      <button class="btn" id="wikiGenBtn" onclick="wikiGenerate()">生成知识地图</button>
+      <a class="btn" id="wikiViewLink" href="#" style="display:none;">查看知识地图</a>
+      <span id="wikiBadge" style="display:none;"></span>
+    </div>
   </div>
 
   <div class="toolbar">
@@ -789,6 +796,46 @@ async function applyBibMatch(){
 }
 
 init();
+
+// ── 知识地图 (P6, 2026-10-18): 编译产物一键生成/查看/stale 提示 ──
+async function wikiRefreshStatus(){
+  try{
+    var r = await fetch('/collections/'+collEnc+'/wiki/status');
+    var st = await r.json();
+    var gen = document.getElementById('wikiGenBtn');
+    var view = document.getElementById('wikiViewLink');
+    var badge = document.getElementById('wikiBadge');
+    view.href = '/collections/'+collEnc+'/wiki/view';
+    if(st.status === 'generating'){
+      gen.disabled = true; gen.textContent = '生成中…';
+      view.style.display = 'none'; badge.style.display = 'none';
+    } else if(st.status === 'ready'){
+      gen.disabled = false; gen.textContent = '重新生成';
+      view.style.display = '';
+      if(st.stale){
+        badge.style.display = '';
+        badge.textContent = '⚠ 资料已更新（'+st.rev_now+' 修订 > 基线 '+st.base_edits+'），建议重新生成';
+        badge.style.cssText = 'color:#92400e;background:#fffbeb;padding:2px 10px;border-radius:10px;font-size:0.78rem;';
+      } else { badge.style.display = 'none'; }
+    } else {
+      gen.disabled = false; gen.textContent = '生成知识地图';
+      view.style.display = 'none'; badge.style.display = 'none';
+    }
+  }catch(e){}
+}
+async function wikiGenerate(){
+  var btn = document.getElementById('wikiGenBtn');
+  if(!confirm('LLM 将编译当前书架的已审卡片与正文采样，生成知识地图概念页（覆盖旧版）。继续？')) return;
+  btn.disabled = true; btn.textContent = '生成中…';
+  try{
+    var r = await fetch('/collections/'+collEnc+'/wiki/generate', {method:'POST'});
+    var data = await r.json();
+    if(data.error){ alert('生成失败: '+data.error); }
+    else { showToast('知识地图已生成：'+data.pages+' 页（'+data.model+'）'); location.href = '/collections/'+collEnc+'/wiki/view'; }
+  }catch(e){ alert('生成失败: '+e.message); }
+  wikiRefreshStatus();
+}
+wikiRefreshStatus();
 </script>
 </body>
 </html>
