@@ -6,7 +6,8 @@
 - chat(): OpenAI 兼容 chat/completions 薄封装 (provider 来自 config v3
   type='llm_chat', default 走 cfg['default_llm'] 独立解析链)
 - autofill_rows(): 页级批量生成 — LGR word 级词对照/流畅译文/拉丁转写,
-  整页一次请求, JSON 返回, 数量对齐校验
+  分批请求 (每批 ≤6 块且 ≤1200 字符, 批内数量对齐校验 + 失败重试 1 次,
+  再失败该批空行占位), 2026-10-18 改 (整页一次请求长文本丢项不稳)
 
 设计契约: mem 小书房/design/完善路线图.md P2c (用户裁定 2026-10-17:
 全实现/页级/落库 draft 态)。
@@ -35,7 +36,11 @@ AUTOFILL_SYSTEM_PROMPT = """\
 - trans (流畅译文): 通顺流畅的中文翻译, 可按中文语序重组。
 
 只输出 JSON 数组 (如 [{"translit":"...","gloss":"...","trans":"..."}]), \
-不要任何解释文字。未被要求的字段直接省略。"""
+不要任何解释文字。未被要求的字段直接省略。
+
+硬性要求: 数组中每个对象对应输入的一个文本块, 顺序一致、一个不漏; \
+被要求的字段每块都必须给出 (实在无法确定也给出最佳猜测), 不得留空、\
+不得省略对象、不得合并相邻块。"""
 
 
 def chat(messages: list[dict], provider_id: str = None,
@@ -88,25 +93,14 @@ def _extract_json_array(text: str) -> list:
     return json.loads(text)
 
 
-def autofill_rows(blocks: list[dict], src_lang: str,
-                  targets: list[str], provider_id: str = None,
-                  ) -> tuple[list[dict], str]:
-    """页级批量生成 draft 层。
-
-    blocks: [{text: 原文(原语或拉丁化), gloss?, trans?, translit?}, ...]
-    targets: ['translit', 'gloss', 'trans'] 子集
-    返回 (results, model): results 与 blocks 等长, 每项只含 targets 中字段。
-    """
-    if not blocks:
-        return [], ''
-    targets = [t for t in targets if t in ('translit', 'gloss', 'trans')]
-    if not targets:
-        raise ValueError('targets 至少含 translit/gloss/trans 之一')
+def _autofill_batch(batch: list[dict], src_lang: str, targets: list[str],
+                    provider_id: str = None):
+    """单批生成: 返回 (rows, model), 数量不对齐/解析失败返回 None。"""
     user_prompt = (
         f"源语种码: {src_lang}\n"
         f"需要生成的字段: {', '.join(targets)}\n"
         f"文本块数组:\n{json.dumps(
-            [{'text': b.get('text', '')} for b in blocks],
+            [{'text': b.get('text', '')} for b in batch],
             ensure_ascii=False)}\n"
     )
     content, model = chat(
@@ -115,17 +109,71 @@ def autofill_rows(blocks: list[dict], src_lang: str,
         provider_id=provider_id,
     )
     data = _extract_json_array(content)
-    if not isinstance(data, list) or len(data) != len(blocks):
-        raise ValueError(
-            f'LLM 返回数量不对齐: 期望 {len(blocks)} 块, 得到 '
-            f'{len(data) if isinstance(data, list) else type(data).__name__}'
-        )
-    results = []
+    if not isinstance(data, list) or len(data) != len(batch):
+        return None
+    rows = []
     for item in data:
         row = {}
         for t in targets:
             v = str(item.get(t, '') or '').strip()
             if v:
                 row[t] = v
-        results.append(row)
+        rows.append(row)
+    return rows, model
+
+
+def autofill_rows(blocks: list[dict], src_lang: str,
+                  targets: list[str], provider_id: str = None,
+                  batch_blocks: int = 6, batch_chars: int = 1200,
+                  ) -> tuple[list[dict], str]:
+    """页级批量生成 draft 层 (分批: 稳定性优先).
+
+    blocks: [{text: 原文(原语或拉丁化), gloss?, trans?, translit?}, ...]
+    targets: ['translit', 'gloss', 'trans'] 子集
+    返回 (results, model): results 与 blocks 等长, 每项只含 targets 中字段。
+
+    长文本整页一次请求易丢项 (gloss 缺失/数量不齐), 故按批生成:
+    每批 ≤ batch_blocks 块且累计原文 ≤ batch_chars 字符 (先到为准);
+    单批失败自动重试 1 次, 再失败该批置空行 (不炸整页, 可重按补缺)。
+    """
+    if not blocks:
+        return [], ''
+    targets = [t for t in targets if t in ('translit', 'gloss', 'trans')]
+    if not targets:
+        raise ValueError('targets 至少含 translit/gloss/trans 之一')
+
+    batches: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_chars = 0
+    for b in blocks:
+        t_len = len(b.get('text', '') or '')
+        if cur and (len(cur) >= batch_blocks or cur_chars + t_len > batch_chars):
+            batches.append(cur)
+            cur, cur_chars = [], 0
+        cur.append(b)
+        cur_chars += t_len
+    if cur:
+        batches.append(cur)
+
+    results: list[dict] = []
+    model = ''
+    failed_batches = 0
+    for batch in batches:
+        got = None
+        for _attempt in range(2):  # 失败重试 1 次
+            try:
+                got = _autofill_batch(batch, src_lang, targets, provider_id)
+            except Exception:
+                got = None
+            if got:
+                break
+        if got:
+            results.extend(got[0])
+            model = got[1]
+        else:
+            results.extend([{} for _ in batch])
+            failed_batches += 1
+    if failed_batches:
+        # 部分批次失败: 空行占位, 前端再按一次只补缺 (值不变跳过)
+        pass
     return results, model

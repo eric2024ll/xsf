@@ -2080,7 +2080,8 @@ async def api_autofill(collection: str, doc_id: int, page_num: int,
             conn.close()
 
         return {"ok": True, "filled": filled, "model": model,
-                "targets": targets}
+                "targets": targets,
+                "empty": sum(1 for d in results if not d)}
     except LLMNotConfigured as e:
         return JSONResponse(status_code=503, content={"error": str(e)})
     except Exception as e:

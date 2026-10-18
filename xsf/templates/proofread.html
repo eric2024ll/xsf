@@ -1345,7 +1345,9 @@ async function autofillDraft() {
       });
     const data = await res.json();
     if (!res.ok) { alert(data.error || 'AI 填充失败'); return; }
-    alert(`AI 填充完成：${data.filled} 处草稿已落库（模型 ${data.model}）`);
+    let msg = `AI 填充完成：${data.filled} 处草稿已落库（模型 ${data.model}）`;
+    if (data.empty > 0) msg += `\n\n另有 ${data.empty} 块未生成（分批稳定性限制）——再按一次「AI 填充」只补缺失块，已有内容不变。`;
+    alert(msg);
     location.reload();
   } catch (e) {
     alert('AI 填充失败: ' + (e.message || e));
