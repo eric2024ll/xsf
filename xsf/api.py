@@ -411,6 +411,40 @@ async def api_set_ocr_default(id: str = Form(...),
 
 # ── 搜索 ──────────────────────────────────────────────
 
+def _pm_map(anchors, x, reverse=False):
+    """page_map 分段线性换算. anchors: [[printed, pdf], ..] 升序.
+    正向 printed->pdf (跳转); reverse=True pdf->printed (落库/反算).
+    段内插值取整, 段外按相邻段斜率外推, 单锚点=固定偏移."""
+    pts = sorted((a[1], a[0]) for a in anchors) if reverse else sorted(tuple(a) for a in anchors)
+    if not pts:
+        return x
+    if len(pts) == 1:
+        return int(x + (pts[0][1] - pts[0][0]))
+    for i in range(len(pts) - 1):
+        x0, y0 = pts[i]
+        x1, y1 = pts[i + 1]
+        if x <= x1:
+            k = (y1 - y0) / (x1 - x0) if x1 != x0 else 1.0
+            return int(round(y0 + (x - x0) * k))
+    x0, y0 = pts[-2]
+    x1, y1 = pts[-1]
+    k = (y1 - y0) / (x1 - x0) if x1 != x0 else 1.0
+    return int(round(y1 + (x - x1) * k))
+
+
+def _load_page_map(conn, doc_id):
+    row = conn.execute("SELECT page_map FROM documents WHERE id = ?",
+                       (doc_id,)).fetchone()
+    if row and row["page_map"]:
+        try:
+            v = json.loads(row["page_map"])
+            if isinstance(v, list) and v:
+                return v
+        except ValueError:
+            pass
+    return None
+
+
 def _card_hits(collection: str, q: str, limit: int = 20) -> list:
     """P4 (2026-10-17): reviewed 卡进检索路 (卡片内容量小, LIKE 匹配)."""
     hits = []
@@ -2417,6 +2451,119 @@ async def api_candidate_review(collection: str, cand_id: int,
         conn.close()
 
 
+@app.get("/collections/{collection}/doc/{doc_id}/page-map")
+async def api_page_map_get(collection: str, doc_id: int):
+    if collection not in list_collections():
+        return JSONResponse({"error": "书架不存在"}, status_code=404)
+    conn = get_conn(collection)
+    try:
+        anchors = _load_page_map(conn, doc_id) or []
+        return {"ok": True, "anchors": anchors}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/page-map")
+async def api_page_map_add(collection: str, doc_id: int,
+                           printed: int = Form(...), pdf: int = Form(...)):
+    """加校准锚点: 翻到 pdf 页, 填该页原书页码 printed."""
+    if collection not in list_collections():
+        return JSONResponse({"error": "书架不存在"}, status_code=404)
+    if printed < 1 or pdf < 1:
+        return JSONResponse({"error": "页码须为正整数"}, status_code=400)
+    conn = get_conn(collection)
+    try:
+        if not conn.execute("SELECT 1 FROM documents WHERE id = ?",
+                            (doc_id,)).fetchone():
+            return JSONResponse({"error": "文献不存在"}, status_code=404)
+        anchors = _load_page_map(conn, doc_id) or []
+        anchors = [a for a in anchors if int(a[0]) != printed]
+        anchors.append([printed, pdf])
+        anchors.sort(key=lambda a: a[0])
+        conn.execute(
+            "UPDATE documents SET page_map = ? WHERE id = ?",
+            (json.dumps(anchors), doc_id))
+        conn.commit()
+        return {"ok": True, "anchors": anchors}
+    finally:
+        conn.close()
+
+
+@app.delete("/collections/{collection}/doc/{doc_id}/page-map")
+async def api_page_map_del(collection: str, doc_id: int,
+                           printed: int = Form(...)):
+    conn = get_conn(collection)
+    try:
+        anchors = _load_page_map(conn, doc_id) or []
+        anchors = [a for a in anchors if int(a[0]) != printed]
+        conn.execute(
+            "UPDATE documents SET page_map = ? WHERE id = ?",
+            (json.dumps(anchors), doc_id))
+        conn.commit()
+        return {"ok": True, "anchors": anchors}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/page-map/convert")
+async def api_page_map_convert(collection: str, doc_id: int):
+    """一键反算: 树/实体 items/待审候选的 page_num 从 pdf 物理页换算为原书页.
+    前提 page_map 已校准; 幂等不可逆 (重复执行会二次换算), 前端需双重确认."""
+    if collection not in list_collections():
+        return JSONResponse({"error": "书架不存在"}, status_code=404)
+    conn = get_conn(collection)
+    try:
+        anchors = _load_page_map(conn, doc_id)
+        if not anchors:
+            return JSONResponse({"error": "尚未校准页码 (page_map 为空)"}, status_code=400)
+        toc_n = ent_n = cand_n = 0
+
+        def _conv_tree(nodes):
+            n2 = 0
+            for nd in nodes:
+                pn = nd.get("page_num")
+                if pn:
+                    nd["page_num"] = _pm_map(anchors, int(pn), reverse=True)
+                    n2 += 1
+                n2 += _conv_tree(nd.get("children") or [])
+            return n2
+
+        for kind in ("toc", "entity"):
+            row = conn.execute(
+                "SELECT id, content FROM doc_cards WHERE doc_id = ? AND kind = ?",
+                (doc_id, kind)).fetchone()
+            if not row:
+                continue
+            try:
+                content = json.loads(row["content"] or "{}")
+            except ValueError:
+                content = {}
+            if kind == "toc" and content.get("tree"):
+                toc_n = _conv_tree(content["tree"])
+            elif kind == "entity" and content.get("items"):
+                for it in content["items"]:
+                    if it.get("page_num"):
+                        it["page_num"] = _pm_map(anchors, int(it["page_num"]),
+                                                 reverse=True)
+                        ent_n += 1
+            conn.execute(
+                "UPDATE doc_cards SET content = ?, updated_at = datetime('now') "
+                "WHERE id = ?",
+                (json.dumps(content, ensure_ascii=False), row["id"]))
+        for c in conn.execute(
+                """SELECT id, page_num FROM card_candidates
+                   WHERE doc_id = ? AND status = 'pending' AND page_num IS NOT NULL""",
+                (doc_id,)).fetchall():
+            conn.execute(
+                "UPDATE card_candidates SET page_num = ? WHERE id = ?",
+                (_pm_map(anchors, int(c["page_num"]), reverse=True), c["id"]))
+            cand_n += 1
+        conn.commit()
+        return {"ok": True, "toc": toc_n, "entities": ent_n, "candidates": cand_n}
+    finally:
+        conn.close()
+
+
 @app.post("/collections/{collection}/doc/{doc_id}/candidates/generate")
 async def api_candidates_generate(collection: str, doc_id: int,
                                   targets: str = Form(None),
@@ -2582,6 +2729,20 @@ async def api_candidates_generate(collection: str, doc_id: int,
 
         conn = get_conn(collection)
         try:
+            # 页码校准钩子: 采样页码是 pdf 物理页, 已校准则换算为原书页 (printed) 落库
+            pm_anchors = _load_page_map(conn, doc_id)
+            if pm_anchors:
+                def _conv_toc(nodes):
+                    for nd in nodes:
+                        pn = nd.get("page_num")
+                        if pn:
+                            nd["page_num"] = _pm_map(pm_anchors, int(pn), reverse=True)
+                        _conv_toc(nd.get("children") or [])
+                _conv_toc(toc_tree)
+                for it in entity_items:
+                    if it.get("page_num"):
+                        it["page_num"] = _pm_map(pm_anchors, int(it["page_num"]),
+                                                 reverse=True)
             n_toc = 0   # toc 改树形: 不插平铺候选, 树经 result.tree 前端确认
             n_ent = 0
             for it in entity_items:
@@ -2981,7 +3142,7 @@ async def proofread_page(
             doc = conn.execute(
                 """SELECT id, title, author, filename, page_count, doc_type,
                           source_tags, bib_type, bib_data, cite_key, linked_pdf,
-                          lang, tri_rows
+                          lang, tri_rows, page_map
                    FROM documents WHERE id = ?""",
                 (doc_id,),
             ).fetchone()
@@ -3170,6 +3331,8 @@ async def proofread_page(
                 bib_type_fields=BIB_TYPE_FIELDS,
                 linked_pdf=linked_pdf,
                 doc_lang=(doc["lang"] or "zh") if "lang" in doc.keys() else "zh",
+                page_map=json.loads(doc["page_map"]) if (
+                    "page_map" in doc.keys() and doc["page_map"]) else None,
                 doc_rows=_tri_rows_for(doc),
             ),
         )

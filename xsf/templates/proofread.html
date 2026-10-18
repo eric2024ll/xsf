@@ -979,6 +979,23 @@ mark {
     </div>
     <div class="tp-pane" data-pane="toc">
       {% if toc.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ toc.status }}">{{ toc.status }}</span>（reviewed 进检索路）</div>{% endif %}
+        <details class="card-sec" id="pmCalib" style="margin-bottom:8px;">
+          <summary>页码校准{{ '（已校准 ' ~ (page_map | length) ~ ' 锚点）' if page_map else '（未校准——原书页码与 PDF 页不一致时跳转会漂移）' }}</summary>
+          <div style="padding:8px 2px; display:flex; flex-direction:column; gap:6px;">
+            <div class="cg-hint">翻到某页（用左侧翻页），填该页的<b>原书页码</b>，即成一个锚点；一锚=固定偏移，多锚=分段（多卷/罗马前言各加一锚）。</div>
+            <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+              <span class="cg-hint">当前 PDF 页:</span><b id="pmCurPdf">{{ page_num }}</b>
+              <span class="cg-hint">原书页码:</span>
+              <input type="number" id="pmPrinted" min="1" style="width:70px;" placeholder="如 3">
+              <button class="btn" onclick="pmAdd()">加锚点</button>
+            </div>
+            <div id="pmList"></div>
+            <div>
+              <button class="btn" style="color:var(--danger);" onclick="pmConvert()">按校准反算现有页码（PDF 页 → 原书页）</button>
+              <span class="cg-hint">仅当已有页码实为 PDF 物理页时用（一次性）；粘贴目录解析出的原书页码勿用。</span>
+            </div>
+          </div>
+        </details>
         <div id="tocTreeBox" class="toc-tree"></div>
         <div class="empty-hint" id="tocEmptyHint" style="display:none;">暂无目录节点——AI 生成 / 粘贴目录解析 / 手工添加</div>
         {% set toc_cands = candidates | selectattr('ctype', 'equalto', 'toc') | selectattr('status', 'equalto', 'pending') | list %}
@@ -999,7 +1016,7 @@ mark {
               <button onclick="reviewCand({{ c.id }}, 'reject')">驳回</button>
               {% endif %}
               <button onclick="patchCand({{ c.id }})">修订</button>
-              {% if c.page_num %}<button onclick="goPage({{ c.page_num }})">对照</button>{% endif %}
+              {% if c.page_num %}<button onclick="goPrinted({{ c.page_num }})">对照</button>{% endif %}
             </td>
           </tr>
           {% endfor %}
@@ -1036,7 +1053,7 @@ mark {
           {% for e in entity.content.get('items', []) %}
           <tr><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td><td>{{ e.page_num or '—' }}</td>
               <td class="conf">{{ e.from or '手工' }}</td>
-              <td>{% if e.page_num %}<button onclick="goPage({{ e.page_num }})">对照</button>{% endif %}</td></tr>
+              <td>{% if e.page_num %}<button onclick="goPrinted({{ e.page_num }})">对照</button>{% endif %}</td></tr>
           {% endfor %}
         </tbody></table>
         {% else %}
@@ -1063,7 +1080,7 @@ mark {
               <button onclick="reviewCand({{ c.id }}, 'reject')">驳回</button>
               {% endif %}
               <button onclick="patchCand({{ c.id }})">修订</button>
-              {% if c.page_num %}<button onclick="goPage({{ c.page_num }})">对照</button>{% endif %}
+              {% if c.page_num %}<button onclick="goPrinted({{ c.page_num }})">对照</button>{% endif %}
             </td>
           </tr>
           {% endfor %}
@@ -1099,6 +1116,7 @@ mark {
 <script>
 const collection = {{ collection | tojson }};
 const docId = {{ doc.id | default('null') | tojson }};
+window.__pageMap = {{ page_map | tojson if page_map is defined else 'null' }};   // [[printed, pdf], ..] 页码校准锚点
 const doc = {{ doc | tojson }};
 const page = {{ page_num | default(1) }};
 const docLang = {{ (doc_lang or 'zh') | tojson }};
@@ -1507,9 +1525,34 @@ async function toggleRevPkg(cb, id) {
 }
 
 function goPage(page) {
-  const url = new URL(window.location.href);
+  // 页码校准: 卡片侧页码一律原书页 (printed), 已校准则换算 pdf 物理页再跳
+  var url = new URL(location.href);
   url.searchParams.set('page', page);
-  window.location.href = url.toString();
+  location.href = url;
+}
+function pmInterp(printed) {
+  var a = window.__pageMap;
+  if (!a || !a.length) return printed;
+  var pts = a.map(function (x) { return [x[0], x[1]]; }).sort(function (p, q) { return p[0] - q[0]; });
+  if (pts.length === 1) return printed + (pts[0][1] - pts[0][0]);
+  for (var i = 0; i < pts.length - 1; i++) {
+    var x0 = pts[i][0], y0 = pts[i][1], x1 = pts[i + 1][0], y1 = pts[i + 1][1];
+    if (printed <= x1) {
+      var k = x1 !== x0 ? (y1 - y0) / (x1 - x0) : 1;
+      return Math.round(y0 + (printed - x0) * k);
+    }
+  }
+  var lx = pts[pts.length - 2][0], ly = pts[pts.length - 2][1];
+  var mx = pts[pts.length - 1][0], my = pts[pts.length - 1][1];
+  var kk = mx !== lx ? (my - ly) / (mx - lx) : 1;
+  return Math.round(my + (printed - mx) * kk);
+}
+function goPrinted(p) {
+  if (!p) return;
+  var target = pmInterp(p);
+  var drift = window.__pageMap && window.__pageMap.length ? '（原书 p' + p + ' → PDF p' + target + '）' : '';
+  if (drift) showToast('页码校准跳转 ' + drift);
+  goPage(target);
 }
 
 function highlightLine(lineId) {
@@ -2451,7 +2494,7 @@ function renderTocTree() {
     return `<div class="toc-row${sel ? ' sel' : ''}" style="margin-left:${depth * 22}px;">
       <span class="toc-label" onclick="tocSel(${JSON.stringify(path).replace(/"/g, '&quot;')})">${__escT(n.label)}</span>
       ${n.category ? `<span class="toc-cat">${__escT(n.category)}</span>` : ''}
-      ${n.page_num ? `<button onclick="goPage(${n.page_num})" title="跳到 p${n.page_num}" style="padding:1px 6px;font-size:0.75rem;">p${n.page_num}</button>` : ''}
+      ${n.page_num ? `<button onclick="goPrinted(${n.page_num})" title="跳到原书 p${n.page_num}" style="padding:1px 6px;font-size:0.75rem;">p${n.page_num}</button>` : ''}
       <span class="toc-ops">
         ${btn('tocEdit', path, '改', '修改名称/类目/页码')}
         ${btn('tocAddChild', path, '+子', '添加子节点')}
@@ -2547,6 +2590,8 @@ function tocAcceptTree(tree, n) {
   // 立即落库 (2026-10-18 修复: 之前仅暂存内存, 点页码跳转刷新即丢)
   __tocPersist();
   showToast('目录树已保存（可继续调整）');
+  if (!window.__pageMap || !window.__pageMap.length)
+    showToast('提示: 尚未页码校准, 目录页码跳转可能漂移——目录 tab 顶部「页码校准」加一锚即精确', 6000);
 }
 function loadTocFile(input) {
   const f = input.files && input.files[0];
@@ -2606,6 +2651,48 @@ function addEntityItem() {
     .then(d => showToast(d.ok ? '已添加并落库 — 当前 ' + window.__entityContent.items.length + ' 条'
                               : '落库失败: ' + (d.error || '')));
 }
+// ── 页码校准 (page_map 锚点对) ──
+function pmRender() {
+  var box = document.getElementById('pmList');
+  if (!box) return;
+  var a = window.__pageMap || [];
+  box.innerHTML = a.length ? '<table class="cand-table"><tr><th>原书页</th><th>PDF 页</th><th>偏移</th><th></th></tr>' +
+    a.map(function (x) {
+      return '<tr><td>' + x[0] + '</td><td>' + x[1] + '</td><td>' + (x[1] - x[0] >= 0 ? '+' : '') + (x[1] - x[0]) +
+        '</td><td><button onclick="pmDel(' + x[0] + ')">删</button></td></tr>';
+    }).join('') + '</table>' : '';
+  var s = document.getElementById('pmCalib') ? document.getElementById('pmCalib').querySelector('summary') : null;
+  if (s) s.textContent = a.length ? '页码校准（已校准 ' + a.length + ' 锚点）' : '页码校准（未校准）';
+}
+async function pmAdd() {
+  var printed = parseInt(document.getElementById('pmPrinted').value, 10);
+  if (!printed || printed < 1) { showToast('请填原书页码'); return; }
+  var d = await postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/page-map`,
+    { printed: printed, pdf: document.getElementById('pmCurPdf').textContent });
+  if (!d.ok) { showToast('失败: ' + (d.error || '')); return; }
+  window.__pageMap = d.anchors;
+  document.getElementById('pmPrinted').value = '';
+  pmRender();
+  showToast('锚点已存（共 ' + d.anchors.length + ' 个）');
+}
+async function pmDel(printed) {
+  var r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/page-map`,
+    { method: 'DELETE', body: new URLSearchParams({ printed: printed }) });
+  var d = await r.json();
+  if (!d.ok) { showToast('失败: ' + (d.error || '')); return; }
+  window.__pageMap = d.anchors;
+  pmRender();
+}
+async function pmConvert() {
+  if (!window.__pageMap || !window.__pageMap.length) { showToast('先加至少一个锚点'); return; }
+  if (!confirm('将目录树/实体/待审候选的页码按校准换算为原书页（一次性，重复执行会二次换算）。继续？')) return;
+  if (!confirm('确认执行？已有页码若本就是原书页（如粘贴目录解析），请取消。')) return;
+  var d = await postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/page-map/convert`, {});
+  if (!d.ok) { showToast('失败: ' + (d.error || '')); return; }
+  showToast('已反算: 目录 ' + d.toc + ' · 实体 ' + d.entities + ' · 候选 ' + d.candidates + ' 条');
+}
+document.addEventListener('DOMContentLoaded', pmRender);
+
 // 候选处置: 局部更新, 不整页刷新 (2026-10-18: reload 会把未保存的手工调整回滚)
 async function reviewCand(id, action) {
   const row = document.querySelector(`tr[data-cand="${id}"]`);
@@ -2642,7 +2729,7 @@ async function reviewCand(id, action) {
         const tr = document.createElement('tr');
         tr.innerHTML = `<td>${__escT(lab)}</td><td>${cat ? __escT(cat) : '—'}</td><td>${pg || '—'}</td>` +
           `<td class="conf">candidate#${id}</td>` +
-          `<td>${pg ? `<button onclick="goPage(${pg})">对照</button>` : ''}</td>`;
+          `<td>${pg ? `<button onclick="goPrinted(${pg})">对照</button>` : ''}</td>`;
         body.appendChild(tr);
       }
       showToast('已采纳并入实体索引（已落库）');
