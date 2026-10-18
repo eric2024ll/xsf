@@ -2437,7 +2437,13 @@ async def api_candidate_review(collection: str, cand_id: int,
                                "from": f"candidate#{cand_id}"})
             else:
                 items = card_content.setdefault("items", [])
-                items.append({"label": label or cand["label"],
+                _lbl = label or cand["label"]
+                if any((it.get("label") or "").strip() == (_lbl or "").strip()
+                       for it in items):
+                    conn.commit()   # 候选处置先落盘
+                    return JSONResponse(   # 已存在: 候选仍处置, 卡不重复并入
+                        {"ok": True, "status": new_status, "merged": True})
+                items.append({"label": _lbl,
                               "category": category or cand["category"],
                               "page_num": cand["page_num"],
                               "from": f"candidate#{cand_id}"})

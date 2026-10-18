@@ -6,14 +6,15 @@
 - chat(): OpenAI 兼容 chat/completions 薄封装 (provider 来自 config v3
   type='llm_chat', default 走 cfg['default_llm'] 独立解析链)
 - autofill_rows(): 页级批量生成 — LGR word 级词对照/流畅译文/拉丁转写,
-  分批请求 (每批 ≤6 块且 ≤1200 字符, 批内数量对齐校验 + 失败重试 1 次,
-  再失败该批空行占位), 2026-10-18 改 (整页一次请求长文本丢项不稳)
+  分批请求 (每批 ≤4 块且 ≤800 字符, 批内数量对齐校验 + 失败重试 1 次,
+  再失败该批空行占位), 2026-10-19 改 (法语块翻不出: 降低批大小+增强 JSON 容错)
 
 设计契约: mem 小书房/design/完善路线图.md P2c (用户裁定 2026-10-17:
 全实现/页级/落库 draft 态)。
 """
 import json
 import re
+import sys
 
 import requests
 
@@ -44,7 +45,7 @@ AUTOFILL_SYSTEM_PROMPT = """\
 
 
 def chat(messages: list[dict], provider_id: str = None,
-         max_tokens: int = None, timeout: float = 120.0) -> tuple[str, str]:
+         max_tokens: int = None, timeout: float = 180.0) -> tuple[str, str]:
     """调用 LLM (OpenAI 兼容)。返回 (content, model_name)。"""
     try:
         cfg = get_llm_provider_cfg(provider_id)
@@ -81,21 +82,49 @@ def chat(messages: list[dict], provider_id: str = None,
 
 
 def _extract_json_array(text: str) -> list:
-    """容错提取 JSON 数组: 裸数组 / ```json 围栏 / 前后杂文。"""
+    """容错提取 JSON 数组: 裸数组 / ```json 围栏 / 前后杂文 / 截断补全。
+
+    增强容错 (2026-10-19): 法语等块翻不出多因 JSON 提取失败 (LLM 返回截断
+    或不完整数组)。尝试: 围栏→裸匹配→截断补全→补闭合括号。
+    """
     text = text.strip()
+    # 1. fenced code block
     m = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', text, re.S)
     if m:
         text = m.group(1)
-    else:
-        m = re.search(r'\[.*\]', text, re.S)
-        if m:
-            text = m.group(0)
-    return json.loads(text)
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    # 2. bare bracket match (greedy)
+    m = re.search(r'(\[.*\])', text, re.S)
+    if m:
+        candidate = m.group(1)
+        try:
+            return json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            # 3. try truncating at last valid ]
+            for i in range(len(candidate) - 1, -1, -1):
+                if candidate[i] == ']':
+                    try:
+                        return json.loads(candidate[:i + 1])
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+            # 4. try adding closing bracket
+            try:
+                return json.loads(candidate + ']')
+            except (json.JSONDecodeError, ValueError):
+                pass
+    return []
 
 
 def _autofill_batch(batch: list[dict], src_lang: str, targets: list[str],
                     provider_id: str = None):
-    """单批生成: 返回 (rows, model), 数量不对齐/解析失败返回 None。"""
+    """单批生成: 返回 (rows, model), 数量不对齐/解析失败返回 None。
+
+    增强容错 (2026-10-19): 失败时打印 raw response 前 200 字符到 stderr
+    辅助排查 LLM 输出异常。
+    """
     user_prompt = (
         f"源语种码: {src_lang}\n"
         f"需要生成的字段: {', '.join(targets)}\n"
@@ -110,6 +139,9 @@ def _autofill_batch(batch: list[dict], src_lang: str, targets: list[str],
     )
     data = _extract_json_array(content)
     if not isinstance(data, list) or len(data) != len(batch):
+        # debug: 打印原始 response 和提取结果
+        raw = content[:200].replace('\n', ' ')
+        print(f'[autofill] batch FAIL: expected {len(batch)} items, got {len(data)} (raw: {raw}...)', file=sys.stderr)
         return None
     rows = []
     for item in data:
@@ -124,7 +156,7 @@ def _autofill_batch(batch: list[dict], src_lang: str, targets: list[str],
 
 def autofill_rows(blocks: list[dict], src_lang: str,
                   targets: list[str], provider_id: str = None,
-                  batch_blocks: int = 6, batch_chars: int = 1200,
+                  batch_blocks: int = 4, batch_chars: int = 800,
                   ) -> tuple[list[dict], str]:
     """页级批量生成 draft 层 (分批: 稳定性优先).
 
