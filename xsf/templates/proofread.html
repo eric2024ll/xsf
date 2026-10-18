@@ -99,38 +99,12 @@
 }
 .page-nav button:hover:not(:disabled) { background: var(--accent); }
 .page-nav button:disabled { opacity: 0.5; cursor: not-allowed; }
-.page-nav .in-page-search input { font-size: 0.76rem; width: 88px; padding: 4px 6px; }
-
-.in-page-search {
-  display: flex;
-  gap: 4px;
-  margin-left: 6px;
-  position: relative;
-}
-.in-page-search input {
-  padding: 4px 7px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 0.8rem;
-  width: 104px;
-}
-.in-page-search button {
-  padding: 4px 8px;
-  background: var(--primary);
-  color: white;
-  border: none;
-  border-radius: var(--radius);
-  cursor: pointer;
-  font-size: 0.8rem;
-}
-.in-page-search button:hover { background: var(--primary-hover); }
-.doc-search-panel {
-  display: none;
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  width: min(420px, 90vw);
-  max-height: 60vh;
+.doc-search-panel.dsp-static {
+  display: block;
+  margin-top: 10px;
+  max-height: 55vh;
+  overflow-y: auto;
+  background: var(--card-bg, #fff);
   overflow-y: auto;
   background: var(--card-bg, #fff);
   border: 1px solid var(--border);
@@ -292,6 +266,8 @@ body.focus-mode .page-nav,
 body.focus-mode .cards-group { display: none; }
 
 /* ── 文本面板 tab (2026-10-17: 全文/元数据/目录/实体/摘要 并列切换) ── */
+.sp-box { display: flex; align-items: center; gap: 8px; padding: 6px 0; flex-wrap: wrap; }
+.sp-box input { flex: 1; min-width: 160px; max-width: 420px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 5px; font-size: 0.86rem; }
 .tp-tabs {
   display: flex;
   gap: 2px;
@@ -793,7 +769,6 @@ mark {
   .main[data-tab="txt"] .right { display: block; }
   .page-nav { gap: 4px; }
   .page-nav select, .page-nav button { font-size: 0.76rem; padding: 4px 6px; }
-  .in-page-search input { font-size: 16px; width: 92px; }
   .divider { display: none; }
   .img-toolbar { position: static; margin-bottom: 8px; opacity: 1; flex-wrap: wrap; }
   .img-toolbar .hint { display: none; }
@@ -822,11 +797,6 @@ mark {
         {% endfor %}
       </select>
       <button onclick="goPage({{ page_num + 1 }})" {% if page_num >= page_count %}disabled{% endif %} title="下一页">›</button>
-      <div class="in-page-search">
-        <input type="text" id="inPageSearch" placeholder="搜索本文献..." value="{{ keyword }}" onkeydown="if(event.key==='Enter')doDocSearch()" oninput="hideDocSearchPanel()">
-        <button onclick="doDocSearch()">搜索</button>
-        <div class="doc-search-panel" id="docSearchPanel"></div>
-      </div>
     </div>
 {% endmacro %}
 
@@ -926,11 +896,6 @@ mark {
     {% if is_md and not has_pdf %}
     <div class="page-nav">
       <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 列表</a>
-      <div class="in-page-search">
-        <input type="text" id="inPageSearch" placeholder="搜索本文献..." value="{{ keyword }}" onkeydown="if(event.key==='Enter')doDocSearch()" oninput="hideDocSearchPanel()">
-        <button onclick="doDocSearch()">搜索</button>
-        <div class="doc-search-panel" id="docSearchPanel"></div>
-      </div>
     </div>
     {% endif %}
 
@@ -944,12 +909,12 @@ mark {
       <button class="tp-tab" data-pane="toc" onclick="switchTP('toc')">目录{% if toc.status %}<span class="tp-dot {{ toc.status }}" title="{{ toc.status }}"></span>{% endif %}</button>
       <button class="tp-tab" data-pane="entity" onclick="switchTP('entity')">实体{% if entity.status %}<span class="tp-dot {{ entity.status }}" title="{{ entity.status }}"></span>{% endif %}</button>
       <button class="tp-tab" data-pane="summary" onclick="switchTP('summary')">摘要{% if summ.status %}<span class="tp-dot {{ summ.status }}" title="{{ summ.status }}"></span>{% endif %}</button>
+      <button class="tp-tab" data-pane="search" onclick="switchTP('search')">搜索</button>
     </div>
     <div class="text-actions" id="textActions">
       <span class="ta-title">识别文本</span>
       <span id="langBadge" class="lang-badge{{ ' tri' if (doc_rows and doc_rows >= 3) else '' }}">{{ (doc_lang ~ (doc_rows ~ '行') if (doc_rows and doc_rows >= 3 and doc_lang != 'zh') else '') if (doc_rows and doc_rows >= 3) else '' }}</span>
       <button class="reocr-btn" id="smartCheckBtn" onclick="runSmartCheck()" title="双通道对照校对（存量 OCR vs 第二引擎/人工录入）">智能校对</button>
-      <input type="text" id="basisInput" placeholder="修订依据（选填）" style="width:150px; padding:2px 8px; font-size:12px; border:1px solid var(--border,#ccc); border-radius:4px; color:var(--text-muted,#666);" title="选填，随本次编辑附注到修订史；可随时在修订史中补填或修改">
       {% if doc_rows and doc_rows >= 3 %}<button id="autofillBtn" onclick="autofillDraft()" style="padding:2px 10px; font-size:12px; cursor:pointer; border:1px solid #f59e0b; border-radius:4px; background:#fffbeb; color:#92400e;" title="翻译大模型生成本页词对照/译文草稿（落库标 AI, 人工修订后标记自动清除）">AI 填充</button>{% endif %}
       <span class="save-status" id="saveStatus"></span>
       <div class="ta-menu-wrap">
@@ -1096,6 +1061,14 @@ mark {
           <button class="btn-primary" onclick="saveCard('summary')">保存摘要</button>
           {% if summ.status %}<button onclick="toggleStatus('summary', '{{ summ.status }}')">{{ '退回 draft' if summ.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
         </div>
+    </div>
+    <div class="tp-pane" data-pane="search">
+      <div class="sp-box">
+        <input type="text" id="inPageSearch" placeholder="搜索本文献全文（FTS）…" value="{{ keyword }}" onkeydown="if(event.key==='Enter')doDocSearch()">
+        <button class="btn-primary" onclick="doDocSearch()">搜索</button>
+        <span class="cg-hint">全文检索本篇命中处，点击跳转对应页</span>
+      </div>
+      <div class="doc-search-panel dsp-static" id="docSearchPanel"><div class="dsp-empty">输入关键词检索本篇全文</div></div>
     </div>
   </div>
 </div>
@@ -1276,18 +1249,6 @@ function applyScale() {
 }
 
 // ── 修订依据 (P1): 页面级状态, sessionStorage 持久化, 随保存携带 ──
-const BASIS_KEY = `xsf_basis_${docId}_${page}`;
-(function () {
-  const el = document.getElementById('basisInput');
-  if (!el) return;
-  const saved = sessionStorage.getItem(BASIS_KEY);
-  if (saved) el.value = saved;
-  el.addEventListener('change', () => sessionStorage.setItem(BASIS_KEY, el.value));
-})();
-function getBasis() {
-  const el = document.getElementById('basisInput');
-  return el ? (el.value || '').trim() : '';
-}
 
 // ── 整页自动保存 (debounce 1s) ──
 let _saveTimer = null;
@@ -1407,7 +1368,6 @@ async function autoSavePage() {  const el = document.getElementById('pageText');
     const params = new URLSearchParams();
     if (isTri) params.append('blocks_json', blocksJson);
     else params.append('text', text);
-    params.append('basis', getBasis());
     const res = await fetch(
       `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/edit`,
       {
@@ -1441,7 +1401,6 @@ window.addEventListener('beforeunload', () => {
     } else {
       params.append('text', el.innerText || '');
     }
-    params.append('basis', getBasis());
     navigator.sendBeacon(
       `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/edit`,
       params
@@ -1554,7 +1513,6 @@ async function doDocSearch() {
   if (!kw || !docId) return;
   const panel = _dsp;
   panel.innerHTML = '<div class="dsp-empty">搜索中…</div>';
-  panel.classList.add('open');
   try {
     const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/hits?keyword=` + encodeURIComponent(kw));
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -1570,7 +1528,7 @@ function renderDocSearchPanel(data, kw) {
   const nPages = new Set(data.hits.map(h => h.page_num)).size;
   let html = '<div class="dsp-head"><span>「' + escapeHtml(kw) + '」 共 ' + nPages + ' 页 ' + data.total + ' 处'
     + (data.truncated ? '（仅显示前 ' + data.hits.length + ' 处）' : '')
-    + '</span><button class="dsp-close" onclick="hideDocSearchPanel()">&times;</button></div>';
+    + '</span></div>';
   if (!data.hits.length) {
     html += '<div class="dsp-empty">无匹配</div>';
   } else {
@@ -1581,11 +1539,9 @@ function renderDocSearchPanel(data, kw) {
     });
   }
   panel.innerHTML = html;
-  panel.classList.add('open');
 }
 
 function docSearchJump(pageNum) {
-  hideDocSearchPanel();
   const url = new URL(window.location.href);
   url.searchParams.set('page', pageNum);
   url.searchParams.set('keyword', document.getElementById('inPageSearch').value.trim());
@@ -1594,18 +1550,6 @@ function docSearchJump(pageNum) {
   window.location.href = url.toString();
 }
 
-function hideDocSearchPanel() {
-  if (_dsp) _dsp.classList.remove('open');
-}
-
-document.addEventListener('click', function(e) {
-  if (!_dsp) return;
-  const wrap = document.getElementById('inPageSearch');
-  if (wrap && !wrap.parentElement.contains(e.target) && !_dsp.contains(e.target)) hideDocSearchPanel();
-});
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') hideDocSearchPanel();
-});
 
 // ── 拖拽平移 ──
 (function initPan() {
