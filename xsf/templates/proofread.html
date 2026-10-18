@@ -987,7 +987,7 @@ mark {
         <table class="cand-table">
           <tr><th>标签</th><th>类目</th><th>置信</th><th>页</th><th>状态</th><th>操作</th></tr>
           {% for c in toc_cands %}
-          <tr>
+          <tr data-cand="{{ c.id }}" data-ctype="{{ c.ctype }}">
             <td id="cl-{{ c.id }}">{{ c.label }}</td>
             <td id="cc-{{ c.id }}">{{ c.category or '—' }}</td>
             <td class="conf">{{ '%.2f' % c.confidence if c.confidence is not none else '—' }}</td>
@@ -1031,22 +1031,27 @@ mark {
     <div class="tp-pane" data-pane="entity">
       {% if entity.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ entity.status }}">{{ entity.status }}</span></div>{% endif %}
         {% if entity.content.get('items') %}
-        <table class="toc-table">
+        <table class="toc-table" id="entityTable"><tbody id="entityBody">
           <tr><th>实体</th><th>类别</th><th>页</th><th>来源</th><th></th></tr>
           {% for e in entity.content.get('items', []) %}
           <tr><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td><td>{{ e.page_num or '—' }}</td>
               <td class="conf">{{ e.from or '手工' }}</td>
               <td>{% if e.page_num %}<button onclick="goPage({{ e.page_num }})">对照</button>{% endif %}</td></tr>
           {% endfor %}
-        </table>
-        {% else %}<div class="empty-hint">暂无实体——AI 生成候选后采纳，或手工添加</div>{% endif %}
+        </tbody></table>
+        {% else %}
+        <table class="toc-table" id="entityTable" style="display:none;"><tbody id="entityBody">
+          <tr><th>实体</th><th>类别</th><th>页</th><th>来源</th><th></th></tr>
+        </tbody></table>
+        <div class="empty-hint" id="entityEmpty">暂无实体——AI 生成候选后采纳，或手工添加</div>
+        {% endif %}
         {% set ent_cands = candidates | selectattr('ctype', 'equalto', 'entity') | selectattr('status', 'equalto', 'pending') | list %}
         {% if ent_cands %}
         <div class="cg-head" style="margin-top:12px;"><span class="cg-title">实体候选</span><span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span></div>
         <table class="cand-table">
           <tr><th>标签</th><th>类别</th><th>置信</th><th>页</th><th>状态</th><th>操作</th></tr>
           {% for c in ent_cands %}
-          <tr>
+          <tr data-cand="{{ c.id }}" data-ctype="{{ c.ctype }}">
             <td id="cl-{{ c.id }}">{{ c.label }}</td>
             <td id="cc-{{ c.id }}">{{ c.category or '—' }}</td>
             <td class="conf">{{ '%.2f' % c.confidence if c.confidence is not none else '—' }}</td>
@@ -2420,6 +2425,8 @@ window.__tocTree = {{ toc.content.get('tree') | tojson }};
 window.__tocTree = {{ toc.content.get('nodes') | tojson }}.map(n => ({ label: n.label, category: n.category, page_num: n.page_num, block_num: n.block_num, from: n.from }));
 {% endif %}
 window.__tocSel = null;   // 选中路径, 如 [0,2]
+window.__tocStatus = '{{ toc.status or "draft" }}';
+window.__entityStatus = '{{ entity.status or "draft" }}';
 
 function __tocFind(path) {
   let list = window.__tocTree, node = null;
@@ -2462,12 +2469,19 @@ function tocSel(path) {
   window.__tocSel = JSON.stringify(window.__tocSel) === JSON.stringify(path) ? null : path;
   renderTocTree();
 }
+// 目录树静默落库 (2026-10-18: 手工操作即落库, 防止未保存的操作被刷新回滚)
+function __tocPersist() {
+  postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
+    { kind: 'toc', content: JSON.stringify({ tree: window.__tocTree }), status: window.__tocStatus })
+    .then(d => { if (!d.ok) showToast('目录自动落库失败: ' + (d.error || '')); });
+}
 function tocAddChild(path) {
   const label = prompt('子节点名:'); if (!label) return;
   const { node } = __tocFind(path); if (!node) return;
   node.children = node.children || [];
   node.children.push({ label, category: null, page_num: node.page_num, from: '手工' });
   renderTocTree();
+  __tocPersist();
 }
 function tocEdit(path) {
   const { node } = __tocFind(path); if (!node) return;
@@ -2478,6 +2492,7 @@ function tocEdit(path) {
   node.category = cat.trim() || null;
   node.page_num = parseInt(pg, 10) || null;
   renderTocTree();
+  __tocPersist();
 }
 function tocDel(path) {
   const { parent } = __tocFind(path.slice(0, -1)); if (!parent) return;
@@ -2487,6 +2502,7 @@ function tocDel(path) {
   if (!confirm(msg)) return;
   parent.splice(idx, 1, ...(node.children || []));
   renderTocTree();
+  __tocPersist();
 }
 function tocMove(arg) {
   const dir = arg.pop(), path = arg;
@@ -2496,6 +2512,7 @@ function tocMove(arg) {
   [parent[idx], parent[to]] = [parent[to], parent[idx]];
   window.__tocSel = path.slice(0, -1).concat(to);
   renderTocTree();
+  __tocPersist();
 }
 function tocLevel(arg) {
   const dir = arg.pop(), path = arg;
@@ -2519,6 +2536,7 @@ function tocLevel(arg) {
     window.__tocSel = path.slice(0, -1).concat([idx - 1, prev.children.length - 1]);
   }
   renderTocTree();
+  __tocPersist();
 }
 function tocAcceptTree(tree, n) {
   if (!tree || !tree.length) { showToast('解析结果为空'); return; }
@@ -2527,9 +2545,8 @@ function tocAcceptTree(tree, n) {
   else window.__tocTree = tree;
   renderTocTree();
   // 立即落库 (2026-10-18 修复: 之前仅暂存内存, 点页码跳转刷新即丢)
-  postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
-    { kind: 'toc', content: JSON.stringify({ tree: window.__tocTree }), status: 'draft' })
-    .then(d => showToast(d.ok ? '目录树已保存（可继续调整）' : '保存失败: ' + (d.error || ''), 4000));
+  __tocPersist();
+  showToast('目录树已保存（可继续调整）');
 }
 function loadTocFile(input) {
   const f = input.files && input.files[0];
@@ -2583,14 +2600,54 @@ function addEntityItem() {
   document.getElementById('enLabel').value = '';
   document.getElementById('enCat').value = '';
   document.getElementById('enPage').value = '';
-  showToast('已暂存（保存实体索引后生效）— 当前 ' + window.__entityContent.items.length + ' 条');
+  // 即落库 (2026-10-18: 与目录树同语义, 防刷新丢失)
+  postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
+    { kind: 'entity', content: JSON.stringify(window.__entityContent), status: window.__entityStatus })
+    .then(d => showToast(d.ok ? '已添加并落库 — 当前 ' + window.__entityContent.items.length + ' 条'
+                              : '落库失败: ' + (d.error || '')));
 }
+// 候选处置: 局部更新, 不整页刷新 (2026-10-18: reload 会把未保存的手工调整回滚)
 async function reviewCand(id, action) {
+  const row = document.querySelector(`tr[data-cand="${id}"]`);
+  const ctype = row ? row.dataset.ctype : '';
+  const lab = (document.getElementById('cl-' + id) || {}).textContent || '';
+  const catRaw = (document.getElementById('cc-' + id) || {}).textContent || '';
+  const cat = catRaw === '—' ? null : catRaw;
+  const pg = row ? parseInt((row.children[3] || {}).textContent, 10) || null : null;
   const extra = {};
-  if (action === 'adopt' && window.__tocSel) extra.mount = JSON.stringify(window.__tocSel);
+  if (action === 'adopt' && ctype === 'toc' && window.__tocSel) extra.mount = JSON.stringify(window.__tocSel);
   const d = await postCard(`/collections/${encodeURIComponent(collection)}/candidates/${id}/review`, Object.assign({ action }, extra));
-  if (d.ok) { showToast(action === 'adopt' ? '已采纳（挂到选中节点下）' : '已驳回'); setTimeout(() => location.reload(), 400); }
-  else showToast('失败: ' + (d.error || ''));
+  if (!d.ok) { showToast('失败: ' + (d.error || '')); return; }
+  if (row) row.remove();
+  if (action === 'adopt') {
+    if (ctype === 'toc') {
+      // 镜像后端 mount: 沿选中路径进 children, 失效挂根级
+      let list = window.__tocTree, ok = true;
+      if (window.__tocSel) {
+        for (const i of window.__tocSel) {
+          const n = list[i]; if (!n) { ok = false; break; }
+          n.children = n.children || []; list = n.children;
+        }
+      }
+      if (ok) list.push({ label: lab, category: cat, page_num: pg, from: 'candidate#' + id });
+      else window.__tocTree.push({ label: lab, category: cat, page_num: pg, from: 'candidate#' + id });
+      renderTocTree();
+      showToast('已采纳并入目录树（已落库）');
+    } else if (ctype === 'entity') {
+      if (window.__entityContent) window.__entityContent.items.push({ label: lab, category: cat, page_num: pg, from: 'candidate#' + id });
+      const body = document.getElementById('entityBody');
+      if (body) {
+        const tb = document.getElementById('entityTable'); if (tb) tb.style.display = '';
+        const em = document.getElementById('entityEmpty'); if (em) em.style.display = 'none';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${__escT(lab)}</td><td>${cat ? __escT(cat) : '—'}</td><td>${pg || '—'}</td>` +
+          `<td class="conf">candidate#${id}</td>` +
+          `<td>${pg ? `<button onclick="goPage(${pg})">对照</button>` : ''}</td>`;
+        body.appendChild(tr);
+      }
+      showToast('已采纳并入实体索引（已落库）');
+    } else showToast('已采纳');
+  } else showToast('已驳回');
 }
 async function patchCand(id) {
   const curL = (document.getElementById('cl-' + id) || {}).textContent || '';
@@ -2599,7 +2656,12 @@ async function patchCand(id) {
   const c = prompt('修订类目（自由标签）:', curC === '—' ? '' : curC); if (c === null) return;
   const d = await postCard(`/collections/${encodeURIComponent(collection)}/candidates/${id}/review`,
     { action: 'patch', label: l.trim(), category: c.trim() });
-  if (d.ok) { showToast('已修订'); setTimeout(() => location.reload(), 400); }
+  if (d.ok) {
+    const tl = document.getElementById('cl-' + id), tc = document.getElementById('cc-' + id);
+    if (tl) tl.textContent = l.trim();
+    if (tc) tc.textContent = c.trim() || '—';
+    showToast('已修订');
+  }
 }
 function loadBibFile(input) {
   const f = input.files && input.files[0];
