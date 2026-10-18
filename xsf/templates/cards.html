@@ -384,11 +384,28 @@ async function patchCand(id){
 
 async function genCandidates(){
   var btn = document.getElementById('genBtn');
-  btn.disabled = true; btn.textContent = '生成中…';
+  btn.disabled = true; btn.textContent = '后台生成中…';
   try{
     var r = await fetch('/collections/'+encodeURIComponent(collection)+'/doc/'+docId+'/candidates/generate', {method:'POST'});
     var d = await r.json();
-    if(d.ok){showMsg('生成 '+d.toc+' 个目录候选 + '+d.entities+' 个实体候选'+(d.summary?' + 摘要草稿':'')+' ('+d.model+')'); setTimeout(function(){location.reload();}, 600);}
+    if(d.ok){
+      showMsg('已提交后台生成，可继续操作');
+      var t = setInterval(async function(){
+        try{
+          var jr = await fetch('/jobs/'+d.job);
+          if(!jr.ok){ clearInterval(t); showMsg('任务丢失（服务重启？）'); btn.disabled=false; btn.textContent='AI 生成候选（目录+实体+摘要草稿）'; return; }
+          var j = await jr.json();
+          if(j.status==='done'){
+            clearInterval(t);
+            var res = j.result||{};
+            showMsg('生成 '+res.toc+' 目录 + '+res.entities+' 实体候选'+(res.summary?' + 摘要草稿':'')+' ('+res.model+')');
+            setTimeout(function(){location.reload();}, 800);
+          } else if(j.status==='error'){
+            clearInterval(t); showMsg('生成失败: '+(j.error||'')); btn.disabled=false; btn.textContent='AI 生成候选（目录+实体+摘要草稿）';
+          }
+        }catch(e){}
+      }, 2000);
+    }
     else{showMsg('生成失败: '+(d.error||'')); btn.disabled=false; btn.textContent='AI 生成候选（目录+实体+摘要草稿）';}
   }catch(e){showMsg('请求失败'); btn.disabled=false; btn.textContent='AI 生成候选（目录+实体+摘要草稿）';}
 }

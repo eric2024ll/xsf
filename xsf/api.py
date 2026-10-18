@@ -48,6 +48,36 @@ from .reocr import (
     _run_reocr_doc, register_job, pop_job,
 )
 from .folder_scan import get_scan_status, start_scan_threads, shutdown_scan
+
+# ── 通用后台任务 (AI 生成类: autofill/卡片候选/wiki; 2026-10-18 用户裁定
+#    「ai生成或填充内容在后台，不要影响前台页面操作」) ──────────────
+_bg_jobs: dict = {}
+_bg_jobs_lock = threading.Lock()
+
+
+def _bg_job_start(kind: str, target) -> str:
+    """起后台线程跑 target() (无参), 返回 job id; 结果/异常记入 _bg_jobs."""
+    jid = f"{kind}-{int(time.time() * 1000) % 10_000_000}"
+    with _bg_jobs_lock:
+        _bg_jobs[jid] = {"kind": kind, "status": "running",
+                         "started": time.strftime("%m-%d %H:%M:%S")}
+
+    def _run():
+        try:
+            result = target()
+            with _bg_jobs_lock:
+                _bg_jobs[jid].update(status="done", result=result)
+        except Exception as e:  # noqa: BLE001 — 后台任务兜底
+            with _bg_jobs_lock:
+                _bg_jobs[jid].update(status="error", error=str(e))
+        finally:
+            with _bg_jobs_lock:
+                while len(_bg_jobs) > 60:
+                    _bg_jobs.pop(next(iter(_bg_jobs)))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jid
+
 from .suspect import detect_suspect
 
 _VERSION = "0.2.2"
@@ -107,6 +137,17 @@ _FAVICON_SVG = (
     'fill="#fff" font-family="serif">架</text></svg>'
 ).encode('utf-8')
 
+
+
+@app.get("/jobs/{job_id}")
+async def bg_job_status(job_id: str):
+    """后台任务状态 (前端 2s 轮询): running/done/error."""
+    with _bg_jobs_lock:
+        j = _bg_jobs.get(job_id)
+    if j is None:
+        return JSONResponse(status_code=404,
+                            content={"error": "任务不存在（服务重启或已过期）"})
+    return {"job": job_id, **j}
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
@@ -2025,63 +2066,68 @@ async def api_autofill(collection: str, doc_id: int, page_num: int,
         finally:
             conn.close()
 
-        results, model = autofill_rows(
-            blocks, src_lang=(doc["lang"] or "zh"),
-            targets=targets, provider_id=provider_id)
+        src_lang = doc["lang"] or "zh"
+        doc_rows_snapshot = list(rows)  # Row 快照, 后台线程独立使用
 
-        filled = 0
-        conn = get_conn(collection)
-        try:
-            for r, draft in zip(rows, results):
-                if not draft:
-                    continue
-                flags = {}
-                try:
-                    flags = json.loads(r["draft_flags"]) \
-                        if r["draft_flags"] else {}
-                except (json.JSONDecodeError, ValueError):
+        def _bg():
+            results, model = autofill_rows(
+                blocks, src_lang=src_lang,
+                targets=targets, provider_id=provider_id)
+            filled = 0
+            conn = get_conn(collection)
+            try:
+                for r, draft in zip(doc_rows_snapshot, results):
+                    if not draft:
+                        continue
                     flags = {}
-                updates, params = [], []
-                for key, prefix in (("translit", "[转] "),
-                                    ("gloss", "[对] "),
-                                    ("trans", "[译] ")):
-                    if key not in draft:
-                        continue
-                    old_v = r[key] or ""
-                    new_v = draft[key]
-                    if new_v == old_v:
-                        continue
-                    updates.append(f"{key} = ?")
-                    params.append(new_v)
-                    flags[key] = "ai"
-                    conn.execute(
-                        """INSERT INTO revision_log
-                           (doc_id, page_num, block_num, old_value, new_value,
-                            basis, in_pkg)
-                           VALUES (?, ?, ?, ?, ?, ?, 0)""",
-                        (doc_id, page_num,
-                         conn.execute(
-                             "SELECT block_num FROM lines WHERE id = ?",
-                             (r["id"],)).fetchone()["block_num"],
-                         prefix + old_v, prefix + new_v,
-                         f"AI草稿·{model}"),
-                    )
-                    filled += 1
-                if updates:
-                    if flags:
-                        updates.append("draft_flags = ?")
-                        params.append(json.dumps(flags, ensure_ascii=False))
-                    params.append(r["id"])
-                    conn.execute(
-                        f"UPDATE lines SET {', '.join(updates)} WHERE id = ?",
-                        params)
-            conn.commit()
-        finally:
-            conn.close()
+                    try:
+                        flags = json.loads(r["draft_flags"]) \
+                            if r["draft_flags"] else {}
+                    except (json.JSONDecodeError, ValueError):
+                        flags = {}
+                    updates, params = [], []
+                    for key, prefix in (("translit", "[转] "),
+                                        ("gloss", "[对] "),
+                                        ("trans", "[译] ")):
+                        if key not in draft:
+                            continue
+                        old_v = r[key] or ""
+                        new_v = draft[key]
+                        if new_v == old_v:
+                            continue
+                        updates.append(f"{key} = ?")
+                        params.append(new_v)
+                        flags[key] = "ai"
+                        conn.execute(
+                            """INSERT INTO revision_log
+                               (doc_id, page_num, block_num, old_value, new_value,
+                                basis, in_pkg)
+                               VALUES (?, ?, ?, ?, ?, ?, 0)""",
+                            (doc_id, page_num,
+                             conn.execute(
+                                 "SELECT block_num FROM lines WHERE id = ?",
+                                 (r["id"],)).fetchone()["block_num"],
+                             prefix + old_v, prefix + new_v,
+                             f"AI草稿·{model}"),
+                        )
+                        filled += 1
+                    if updates:
+                        if flags:
+                            updates.append("draft_flags = ?")
+                            params.append(json.dumps(flags, ensure_ascii=False))
+                        params.append(r["id"])
+                        conn.execute(
+                            f"UPDATE lines SET {', '.join(updates)} WHERE id = ?",
+                            params)
+                conn.commit()
+            finally:
+                conn.close()
+            return {"filled": filled, "model": model,
+                    "empty": sum(1 for d in results if not d)}
 
-        return {"ok": True, "filled": filled, "model": model,
-                "targets": targets,
-                "empty": sum(1 for d in results if not d)}
+        jid = _bg_job_start("autofill", _bg)
+        return {"ok": True, "job": jid, "blocks": len(blocks),
+                "targets": targets}
     except LLMNotConfigured as e:
         return JSONResponse(status_code=503, content={"error": str(e)})
     except Exception as e:
@@ -2359,6 +2405,11 @@ async def api_candidates_generate(collection: str, doc_id: int,
             if t.strip() in ("toc", "entities", "summary")}
     if not want:
         want = {"toc", "entities", "summary"}
+    try:  # 配置缺失同步快速失败 (503), 不入后台
+        from .config import get_llm_provider_cfg as _glc
+        _glc(None)
+    except RuntimeError as e:
+        return JSONResponse(status_code=503, content={"error": str(e)})
     doc = _get_card_doc(collection, doc_id)
     if doc is None:
         return JSONResponse(status_code=404, content={"error": "文献不存在"})
@@ -2393,68 +2444,69 @@ async def api_candidates_generate(collection: str, doc_id: int,
         "输出严格 JSON：{" + ", ".join(fields) + "}。"
         "只输出要求的字段, 只输出 JSON, 不要解释。"
     )
-    try:
+
+    def _bg():
         content, model = chat(
             [{"role": "system", "content": system},
              {"role": "user", "content": sample}])
-    except LLMNotConfigured:
-        return JSONResponse(status_code=503,
-                            content={"error": "未配置翻译/LLM provider（设置页添加 llm_chat 型）"})
+        try:
+            parsed = json.loads(
+                content[content.index('{'):content.rindex('}') + 1])
+        except (ValueError, AttributeError):
+            raise ValueError(f"LLM 输出无法解析: {content[:120]}")
 
-    try:
-        parsed = json.loads(content[content.index('{'):content.rindex('}') + 1])
-    except (ValueError, AttributeError):
-        return JSONResponse(status_code=502,
-                            content={"error": f"LLM 输出无法解析: {content[:120]}"})
+        toc_items = parsed.get("toc") or [] if "toc" in want else []
+        entity_items = parsed.get("entities") or [] if "entities" in want else []
+        summary_text = (parsed.get("summary") or "").strip() \
+            if "summary" in want else ""
 
-    toc_items = parsed.get("toc") or [] if "toc" in want else []
-    entity_items = parsed.get("entities") or [] if "entities" in want else []
-    summary_text = (parsed.get("summary") or "").strip() if "summary" in want else ""
+        conn = get_conn(collection)
+        try:
+            n_toc = 0
+            for it in toc_items:
+                label = str(it.get("label") or "").strip()
+                if not label:
+                    continue
+                conn.execute(
+                    """INSERT INTO card_candidates
+                       (doc_id, ctype, label, category, confidence, page_num, status)
+                       VALUES (?, 'toc', ?, ?, ?, ?, 'pending')""",
+                    (doc_id, label,
+                     str(it.get("category") or '').strip() or None,
+                     float(it.get("confidence") or 0.5),
+                     int(it.get("page_num") or 0) or None))
+                n_toc += 1
+            n_ent = 0
+            for it in entity_items:
+                label = str(it.get("label") or "").strip()
+                if not label:
+                    continue
+                conn.execute(
+                    """INSERT INTO card_candidates
+                       (doc_id, ctype, label, category, confidence, page_num, status)
+                       VALUES (?, 'entity', ?, ?, ?, ?, 'pending')""",
+                    (doc_id, label,
+                     str(it.get("category") or '').strip() or None,
+                     float(it.get("confidence") or 0.5),
+                     int(it.get("page_num") or 0) or None))
+                n_ent += 1
+            if summary_text:
+                conn.execute(
+                    """INSERT INTO doc_cards (doc_id, kind, content, status, updated_at)
+                       VALUES (?, 'summary', ?, 'draft', datetime('now'))
+                       ON CONFLICT(doc_id, kind) DO UPDATE SET
+                         content = excluded.content,
+                         updated_at = datetime('now')""",
+                    (doc_id, json.dumps({"text": summary_text},
+                                        ensure_ascii=False)))
+            conn.commit()
+            return {"ok": True, "toc": n_toc, "entities": n_ent,
+                    "summary": bool(summary_text), "model": model}
+        finally:
+            conn.close()
 
-    conn = get_conn(collection)
-    try:
-        n_toc = 0
-        for it in toc_items:
-            label = str(it.get("label") or "").strip()
-            if not label:
-                continue
-            conn.execute(
-                """INSERT INTO card_candidates
-                   (doc_id, ctype, label, category, confidence, page_num, status)
-                   VALUES (?, 'toc', ?, ?, ?, ?, 'pending')""",
-                (doc_id, label,
-                 str(it.get("category") or '').strip() or None,
-                 float(it.get("confidence") or 0.5),
-                 int(it.get("page_num") or 0) or None))
-            n_toc += 1
-        n_ent = 0
-        for it in entity_items:
-            label = str(it.get("label") or "").strip()
-            if not label:
-                continue
-            conn.execute(
-                """INSERT INTO card_candidates
-                   (doc_id, ctype, label, category, confidence, page_num, status)
-                   VALUES (?, 'entity', ?, ?, ?, ?, 'pending')""",
-                (doc_id, label,
-                 str(it.get("category") or '').strip() or None,
-                 float(it.get("confidence") or 0.5),
-                 int(it.get("page_num") or 0) or None))
-            n_ent += 1
-        if summary_text:
-            conn.execute(
-                """INSERT INTO doc_cards (doc_id, kind, content, status, updated_at)
-                   VALUES (?, 'summary', ?, 'draft', datetime('now'))
-                   ON CONFLICT(doc_id, kind) DO UPDATE SET
-                     content = excluded.content,
-                     updated_at = datetime('now')""",
-                (doc_id, json.dumps({"text": summary_text},
-                                    ensure_ascii=False)))
-        conn.commit()
-        return {"ok": True, "toc": n_toc, "entities": n_ent,
-                "summary": bool(summary_text), "model": model}
-    finally:
-        conn.close()
+    jid = _bg_job_start("cards-gen", _bg)
+    return {"ok": True, "job": jid, "targets": sorted(want)}
 
 
 # ════════════════════════════════════════════════════════════
@@ -2523,6 +2575,10 @@ async def wiki_generate(collection: str):
     from .config import get_default_llm_provider_id
     if collection not in list_collections():
         return JSONResponse(status_code=404, content={"error": "书架不存在"})
+    try:  # 配置缺失同步快速失败 (503), 不入后台
+        get_default_llm_provider_id()
+    except RuntimeError as e:
+        return JSONResponse(status_code=503, content={"error": str(e)})
     conn = get_conn(collection)
     try:
         cur = conn.execute(
@@ -2537,46 +2593,62 @@ async def wiki_generate(collection: str):
             "ON CONFLICT(collection) DO UPDATE SET status = 'generating'",
             (collection,))
         conn.commit()
-        try:
-            provider_id = get_default_llm_provider_id()
-            payload = json.dumps(_wiki_llm_payload(conn), ensure_ascii=False)
-            content, model = chat(
-                [{"role": "system", "content": WIKI_SYSTEM_PROMPT},
-                 {"role": "user", "content": payload}], provider_id)
-            i0, i1 = content.find('{'), content.rfind('}') + 1
-            if i0 < 0 or i1 <= i0:
-                raise ValueError("LLM 输出未包含 JSON 对象")
-            pages = json.loads(content[i0:i1]).get("pages", [])
-            if not pages:
-                raise ValueError("LLM 输出 pages 为空")
-            rev_now = conn.execute("SELECT COUNT(*) c FROM revision_log").fetchone()["c"]
-            conn.execute("DELETE FROM wiki_pages WHERE collection = ?", (collection,))
-            for pos, pg in enumerate(pages):
-                slug = (pg.get("slug") or pg.get("title") or f"page-{pos}")[:60]
+        conn.close()  # 主连接即关, 后台自开 (线程独立)
+
+        def _bg():
+            conn = get_conn(collection)
+            try:
+                provider_id = get_default_llm_provider_id()
+                payload = json.dumps(_wiki_llm_payload(conn),
+                                     ensure_ascii=False)
+                content, model = chat(
+                    [{"role": "system", "content": WIKI_SYSTEM_PROMPT},
+                     {"role": "user", "content": payload}], provider_id)
+                i0, i1 = content.find('{'), content.rfind('}') + 1
+                if i0 < 0 or i1 <= i0:
+                    raise ValueError("LLM 输出未包含 JSON 对象")
+                pages = json.loads(content[i0:i1]).get("pages", [])
+                if not pages:
+                    raise ValueError("LLM 输出 pages 为空")
+                rev_now = conn.execute(
+                    "SELECT COUNT(*) c FROM revision_log").fetchone()["c"]
                 conn.execute(
-                    "INSERT INTO wiki_pages(collection, slug, title, content, refs, position) "
-                    "VALUES(?,?,?,?,?,?) ON CONFLICT(collection, slug) DO NOTHING",
-                    (collection, slug, pg.get("title") or slug,
-                     pg.get("content") or "", json.dumps(pg.get("refs") or []), pos))
-            conn.execute(
-                "UPDATE wiki_status SET status = 'ready', base_edits = ?, "
-                "generated_at = datetime('now', 'localtime') WHERE collection = ?",
-                (rev_now, collection))
-            conn.commit()
-            return {"ok": True, "pages": len(pages), "model": model}
-        except (LLMNotConfigured, RuntimeError) as e:
-            conn.execute("UPDATE wiki_status SET status = 'none' WHERE collection = ?",
-                         (collection,))
-            conn.commit()
-            return JSONResponse(status_code=503, content={"error": str(e)})
-        except Exception as e:
-            conn.execute("UPDATE wiki_status SET status = 'none' WHERE collection = ?",
-                         (collection,))
-            conn.commit()
-            return JSONResponse(status_code=500,
-                                content={"error": f"生成失败: {e}"})
+                    "DELETE FROM wiki_pages WHERE collection = ?",
+                    (collection,))
+                for pos, pg in enumerate(pages):
+                    slug = (pg.get("slug") or pg.get("title")
+                            or f"page-{pos}")[:60]
+                    conn.execute(
+                        "INSERT INTO wiki_pages "
+                        "(collection, slug, title, content, refs, position) "
+                        "VALUES(?,?,?,?,?,?) "
+                        "ON CONFLICT(collection, slug) DO NOTHING",
+                        (collection, slug, pg.get("title") or slug,
+                         pg.get("content") or "",
+                         json.dumps(pg.get("refs") or []), pos))
+                conn.execute(
+                    "UPDATE wiki_status SET status = 'ready', base_edits = ?, "
+                    "generated_at = datetime('now', 'localtime') "
+                    "WHERE collection = ?",
+                    (rev_now, collection))
+                conn.commit()
+                return {"pages": len(pages), "model": model}
+            except Exception:
+                conn.execute(
+                    "UPDATE wiki_status SET status = 'none' "
+                    "WHERE collection = ?", (collection,))
+                conn.commit()
+                raise
+            finally:
+                conn.close()
+
+        jid = _bg_job_start("wiki-gen", _bg)
+        return {"ok": True, "job": jid}
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @app.get("/collections/{collection}/wiki/status")

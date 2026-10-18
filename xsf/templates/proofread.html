@@ -1330,11 +1330,11 @@ async function autofillDraft() {
   if (docRows === 4) targets.push('translit');
   targets.push('gloss', 'trans');
   if (!confirm('AI 填充本页草稿层（' + targets.join(' + ') + '）？\n\n' +
-      '翻译模型将批量生成词对照/译文并直接落库（黄色底 + AI 标），\n' +
-      '已有内容的列会被覆盖。修订史记「AI草稿·模型名」，人工修订后标记自动清除。'))
+      '翻译模型将在后台分批生成（页面可继续操作），完成后 toast 提示，\n' +
+      '已有内容的列不变，只补缺失。修订史记「AI草稿·模型名」。'))
     return;
   const btn = document.getElementById('autofillBtn');
-  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+  if (btn) { btn.disabled = true; btn.textContent = '后台生成中…'; }
   try {
     const res = await fetch(
       `/collections/${encodeURIComponent(collection)}/doc/${docId}/page/${page}/autofill`,
@@ -1345,15 +1345,34 @@ async function autofillDraft() {
       });
     const data = await res.json();
     if (!res.ok) { alert(data.error || 'AI 填充失败'); return; }
-    let msg = `AI 填充完成：${data.filled} 处草稿已落库（模型 ${data.model}）`;
-    if (data.empty > 0) msg += `\n\n另有 ${data.empty} 块未生成（分批稳定性限制）——再按一次「AI 填充」只补缺失块，已有内容不变。`;
-    alert(msg);
-    location.reload();
+    showToast('AI 填充已提交后台（' + data.blocks + ' 块），可继续操作');
+    pollJob(data.job, j => {
+      if (j.status === 'done') {
+        const r = j.result || {};
+        let msg = `AI 填充完成：${r.filled} 处草稿已落库（${r.model}）`;
+        if (r.empty > 0) msg += `，${r.empty} 块未生成可再按一次补缺`;
+        msg += '——刷新页面查看黄底草稿';
+        showToast(msg, 6000);
+      } else {
+        showToast('AI 填充失败: ' + (j.error || '未知'), 6000);
+      }
+      if (btn) { btn.disabled = false; btn.textContent = 'AI 填充'; }
+    });
   } catch (e) {
     alert('AI 填充失败: ' + (e.message || e));
-  } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'AI 填充'; }
   }
+}
+
+function pollJob(jobId, onEnd) {
+  const t = setInterval(async () => {
+    try {
+      const r = await fetch('/jobs/' + jobId);
+      if (!r.ok) { clearInterval(t); onEnd({status: 'error', error: '任务丢失（服务重启？）'}); return; }
+      const j = await r.json();
+      if (j.status === 'done' || j.status === 'error') { clearInterval(t); onEnd(j); }
+    } catch (e) { /* 瞬时网络错, 下轮再查 */ }
+  }, 2000);
 }
 
 async function autoSavePage() {  const el = document.getElementById('pageText');
@@ -2115,13 +2134,13 @@ function toggleTypeFilter(t) {
 
 // ── toast ──
 let _toastTimer = null;
-function showToast(msg) {
+function showToast(msg, ms) {
   const el = document.getElementById('toast');
   if (!el) return;
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), ms || 1800);
 }
 
 // ── F2 复制全文(MD) / F3 导出本页(MD) / F5 导出全篇 ──
@@ -2462,22 +2481,30 @@ async function patchCand(id) {
 }
 async function genCards(target) {
   const labels = { toc: '目录候选', entities: '实体候选', summary: '摘要草稿' };
-  const btns = [...document.querySelectorAll(`.tp-pane[data-pane="${target === 'entities' ? 'entity' : target}"] .card-actions button`)];
-  const btn = btns.find(b => b.textContent.includes('AI '));
+  if (!confirm('AI 生成' + labels[target] + '？将在后台生成（页面可继续操作），完成后提示。')) return;
+  const pane = document.querySelector(`.tp-pane[data-pane="${target === 'entities' ? 'entity' : target}"]`);
+  const btn = pane ? [...pane.querySelectorAll('.card-actions button')].find(b => b.textContent.includes('AI ')) : null;
   const orig = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+  if (btn) { btn.disabled = true; btn.textContent = '后台生成中…'; }
   try {
     const body = new URLSearchParams({ targets: target });
     const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/candidates/generate`, { method: 'POST', body });
     const d = await r.json();
-    if (d.ok) {
-      let msg = `(${d.model}) `;
-      if (target === 'toc') msg += `生成 ${d.toc} 个目录候选`;
-      else if (target === 'entities') msg += `生成 ${d.entities} 个实体候选`;
-      else msg += d.summary ? '摘要草稿已生成' : '摘要未变化';
-      showToast(msg); setTimeout(() => location.reload(), 600);
-    }
-    else { showToast('生成失败: ' + (d.error || '')); if (btn) { btn.disabled = false; btn.textContent = orig; } }
+    if (!d.ok) { showToast('生成失败: ' + (d.error || '')); if (btn) { btn.disabled = false; btn.textContent = orig; } return; }
+    showToast('已提交后台生成' + labels[target] + '，可继续操作');
+    pollJob(d.job, j => {
+      if (btn) { btn.disabled = false; btn.textContent = orig; }
+      if (j.status === 'done') {
+        const res = j.result || {};
+        let msg = `生成完成（${res.model}）：`;
+        if (target === 'toc') msg += `${res.toc} 个目录候选`;
+        else if (target === 'entities') msg += `${res.entities} 个实体候选`;
+        else msg += res.summary ? '摘要草稿已生成' : '摘要未变化';
+        showToast(msg + '，进入候选队列/摘要 tab 查看', 5000);
+      } else {
+        showToast('生成失败: ' + (j.error || '未知'), 5000);
+      }
+    });
   } catch (e) { showToast('请求失败'); if (btn) { btn.disabled = false; btn.textContent = orig; } }
 }
 

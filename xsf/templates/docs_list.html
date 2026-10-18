@@ -826,16 +826,23 @@ async function wikiRefreshStatus(){
 }
 async function wikiGenerate(){
   var btn = document.getElementById('wikiGenBtn');
-  if(!confirm('LLM 将编译当前书架的已审卡片与正文采样，生成知识地图概念页（覆盖旧版）。继续？')) return;
-  btn.disabled = true; btn.textContent = '生成中…';
+  if(!confirm('LLM 将在后台编译当前书架（页面可继续操作），生成知识地图概念页（覆盖旧版）。完成自动跳转。继续？')) return;
+  btn.disabled = true; btn.textContent = '后台生成中…';
   try{
     var enc = encodeURIComponent(collection);
     var r = await fetch('/collections/'+enc+'/wiki/generate', {method:'POST'});
     var data = await r.json();
-    if(data.error){ alert('生成失败: '+data.error); }
-    else { showToast('知识地图已生成：'+data.pages+' 页（'+data.model+'）'); location.href = '/collections/'+enc+'/wiki/view'; }
-  }catch(e){ alert('生成失败: '+e.message); }
-  wikiRefreshStatus();
+    if(data.error){ alert('生成失败: '+data.error); btn.textContent='生成/重新生成'; return; }
+    var t = setInterval(async function(){
+      try{
+        var sr = await fetch('/jobs/'+data.job);
+        if(!sr.ok){ clearInterval(t); alert('任务丢失（服务重启？）'); btn.disabled=false; btn.textContent='生成/重新生成'; return; }
+        var j = await sr.json();
+        if(j.status==='done'){ clearInterval(t); location.href='/collections/'+enc+'/wiki/view'; }
+        else if(j.status==='error'){ clearInterval(t); alert('生成失败: '+(j.error||'')); btn.disabled=false; btn.textContent='生成/重新生成'; }
+      }catch(e){}
+    }, 2000);
+  }catch(e){ alert('生成失败: '+e.message); btn.disabled=false; btn.textContent='生成/重新生成'; }
 }
 wikiRefreshStatus();
 </script>
