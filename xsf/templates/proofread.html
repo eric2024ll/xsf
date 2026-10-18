@@ -981,7 +981,7 @@ mark {
       {% if toc.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ toc.status }}">{{ toc.status }}</span>（reviewed 进检索路）</div>{% endif %}
         <div id="tocTreeBox" class="toc-tree"></div>
         <div class="empty-hint" id="tocEmptyHint" style="display:none;">暂无目录节点——AI 生成 / 粘贴目录解析 / 手工添加</div>
-        {% set toc_cands = candidates | selectattr('ctype', 'equalto', 'toc') | list %}
+        {% set toc_cands = candidates | selectattr('ctype', 'equalto', 'toc') | selectattr('status', 'equalto', 'pending') | list %}
         {% if toc_cands %}
         <div class="cg-head" style="margin-top:12px;"><span class="cg-title">目录候选</span><span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span></div>
         <table class="cand-table">
@@ -1040,7 +1040,7 @@ mark {
           {% endfor %}
         </table>
         {% else %}<div class="empty-hint">暂无实体——AI 生成候选后采纳，或手工添加</div>{% endif %}
-        {% set ent_cands = candidates | selectattr('ctype', 'equalto', 'entity') | list %}
+        {% set ent_cands = candidates | selectattr('ctype', 'equalto', 'entity') | selectattr('status', 'equalto', 'pending') | list %}
         {% if ent_cands %}
         <div class="cg-head" style="margin-top:12px;"><span class="cg-title">实体候选</span><span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span></div>
         <table class="cand-table">
@@ -2525,7 +2525,10 @@ function tocAcceptTree(tree, n) {
   if (mode === 'merge') window.__tocTree = window.__tocTree.concat(tree);
   else window.__tocTree = tree;
   renderTocTree();
-  showToast('目录树已暂存, 点「保存目录」生效', 5000);
+  // 立即落库 (2026-10-18 修复: 之前仅暂存内存, 点页码跳转刷新即丢)
+  postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
+    { kind: 'toc', content: JSON.stringify({ tree: window.__tocTree }), status: 'draft' })
+    .then(d => showToast(d.ok ? '目录树已保存（可继续调整）' : '保存失败: ' + (d.error || ''), 4000));
 }
 function loadTocFile(input) {
   const f = input.files && input.files[0];
