@@ -2480,7 +2480,7 @@ function tocEdit(path) {
   renderTocTree();
 }
 function tocDel(path) {
-  const { parent } = __tocFind(path); if (!parent) return;
+  const { parent } = __tocFind(path.slice(0, -1)); if (!parent) return;
   const idx = path[path.length - 1], node = parent[idx];
   const kids = (node.children || []).length;
   const msg = kids ? `「${node.label}」有 ${kids} 个子节点, 删除后子节点将上移到本级。确认删除?` : `删除「${node.label}」?`;
@@ -2490,7 +2490,7 @@ function tocDel(path) {
 }
 function tocMove(arg) {
   const dir = arg.pop(), path = arg;
-  const { parent } = __tocFind(path); if (!parent) return;
+  const { parent } = __tocFind(path.slice(0, -1)); if (!parent) return;
   const idx = path[path.length - 1], to = idx + dir;
   if (to < 0 || to >= parent.length) return;
   [parent[idx], parent[to]] = [parent[to], parent[idx]];
@@ -2501,16 +2501,17 @@ function tocLevel(arg) {
   const dir = arg.pop(), path = arg;
   if (dir === -1) {   // 升级: 移到父级之后
     if (path.length < 2) return;
-    const found = __tocFind(path); if (!found) return;
-    const { node } = found;
+    const found = __tocFind(path.slice(0, -1)); if (!found) return;
+    const { node } = __tocFind(path); if (!node) return;
     const idx = path[path.length - 1];
     const gpath = path.slice(0, -2), gidx = path[path.length - 2];
     const g = __tocFind(gpath.concat(gidx)); if (!g || !g.node) return;
+    const glist = __tocFind(gpath).parent; if (!glist) return;
     found.parent.splice(idx, 1);
-    g.node.children.splice(gidx + 1, 0, node);
+    glist.splice(gidx + 1, 0, node);
     window.__tocSel = gpath.concat(gidx + 1);
   } else {            // 降级: 并入前一同级
-    const { parent } = __tocFind(path); if (!parent) return;
+    const { parent } = __tocFind(path.slice(0, -1)); if (!parent) return;
     const idx = path[path.length - 1]; if (idx === 0) return;
     const prev = parent[idx - 1]; prev.children = prev.children || [];
     const [node] = parent.splice(idx, 1);
