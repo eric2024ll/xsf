@@ -2320,8 +2320,12 @@ async def api_card_status(collection: str, card_id: int,
 async def api_candidate_review(collection: str, cand_id: int,
                                action: str = Form(...),
                                label: str = Form(None),
-                               category: str = Form(None)):
-    """候选处置: adopt(采纳并入卡)/reject(驳回)/patch(修订字段)."""
+                               category: str = Form(None),
+                               mount: str = Form(None)):
+    """候选处置: adopt(采纳并入卡)/reject(驳回)/patch(修订字段).
+
+    mount: toc 候选采纳时的挂载路径 (JSON 数组, 沿根 children 索引),
+    如 "[0,2]" = 根[0].children[2] 下; 缺省/无效挂根级。"""
     if action not in ('adopt', 'reject', 'patch'):
         return JSONResponse(status_code=400,
                             content={"error": "action 只支持 adopt/reject/patch"})
@@ -2355,7 +2359,7 @@ async def api_candidate_review(collection: str, cand_id: int,
                 "WHERE doc_id = ? AND kind = ?",
                 (cand["doc_id"], card_kind)).fetchone()
             if card is None:
-                content = {"nodes": []} if card_kind == 'toc' \
+                content = {"tree": []} if card_kind == 'toc' \
                     else {"items": []}
                 cur = conn.execute(
                     """INSERT INTO doc_cards
@@ -2370,12 +2374,33 @@ async def api_candidate_review(collection: str, cand_id: int,
                 except ValueError:
                     card_content = {}
             if card_kind == 'toc':
-                nodes = card_content.setdefault("nodes", [])
-                nodes.append({"label": label or cand["label"],
-                              "category": category or cand["category"],
-                              "page_num": cand["page_num"],
-                              "block_num": cand["block_num"],
-                              "from": f"candidate#{cand_id}"})
+                # 旧平铺 nodes 惰性迁移为根级 tree 节点
+                if not card_content.get("tree"):
+                    card_content["tree"] = [
+                        {"label": n.get("label"),
+                         "category": n.get("category"),
+                         "page_num": n.get("page_num"),
+                         "block_num": n.get("block_num"),
+                         "from": n.get("from")}
+                        for n in card_content.get("nodes") or []
+                        if n.get("label")]
+                    card_content.pop("nodes", None)
+                tree = card_content["tree"]
+                target = tree
+                if mount:
+                    try:
+                        for idx in json.loads(mount):
+                            node = target[int(idx)]
+                            node.setdefault("children", [])
+                            target = node["children"]
+                    except (ValueError, TypeError, KeyError, IndexError,
+                            json.JSONDecodeError):
+                        target = tree   # 路径失效挂根级
+                target.append({"label": label or cand["label"],
+                               "category": category or cand["category"],
+                               "page_num": cand["page_num"],
+                               "block_num": cand["block_num"],
+                               "from": f"candidate#{cand_id}"})
             else:
                 items = card_content.setdefault("items", [])
                 items.append({"label": label or cand["label"],
@@ -2396,13 +2421,16 @@ async def api_candidate_review(collection: str, cand_id: int,
 async def api_candidates_generate(collection: str, doc_id: int,
                                   targets: str = Form(None),
                                   prompt: str = Form(None),
-                                  bib_source: str = Form(None)):
+                                  bib_source: str = Form(None),
+                                  toc_source: str = Form(None)):
     """LLM 生成候选: 抽样文献前部块文本, 按目标生成目录候选/实体候选/摘要草稿/元数据回填.
 
     targets 逗号分隔子集 (toc/entities/summary/meta), 默认全部。
     prompt: 自主补充提示 (仅 meta 目标生效, 附加到提取指令后)。
     bib_source: 粘贴/导入的书目数据 (BibTeX/RIS/引文格式), meta 目标下
     由 LLM 解析填入 (优先于文献块样本)。
+    toc_source: 粘贴/导入的目录文本 (多级缩进/编号), toc 目标下解析成树;
+    树不入库, 经 job result 的 tree 字段由前端确认合并。
     复用 P2c 的 llm_chat provider 配置 (default_llm).
     """
     from .llm import chat, LLMNotConfigured
@@ -2437,7 +2465,9 @@ async def api_candidates_generate(collection: str, doc_id: int,
     if "toc" in want:
         fields.append('"toc": [{"label": "目录/主题节点", '
                       '"category": "自由类目标签（如 职官/兵事/贡赋/舆地 或自拟）", '
-                      '"page_num": 页码, "confidence": 0到1}]（3-8 个）')
+                      '"page_num": 页码, '
+                      '"children": [同构子节点数组, 最多嵌套3层, 叶子可省略]}]'
+                      '（根节点 3-8 个, 层级按目录实际结构）')
     if "entities" in want:
         fields.append('"entities": [{"label": "实体名（人名/地名/机构/物产等）", '
                       '"category": "实体类别（如 人名/地名/机构/物产/职官）", '
@@ -2458,6 +2488,13 @@ async def api_candidates_generate(collection: str, doc_id: int,
     if "meta" in want and extra_prompt:
         system += f"\n补充要求（用户指示, 优先遵循）: {extra_prompt}"
     user_content = sample
+    toc_src = (toc_source or "").strip()
+    if "toc" in want and toc_src:
+        system += ("\n用户提供了目录文本（多级缩进/编号等形式）— "
+                   "优先按该目录文本解析出 toc 树（保留其层级与页码/卷次信息）, "
+                   "文献块样本仅作参考。")
+        user_content = ("目录文本:\n" + toc_src[:6000]
+                        + "\n\n文献块样本(参考):\n" + sample)
     bib_src = (bib_source or "").strip()
     if "meta" in want and bib_src:
         system += ("\n用户提供了书目数据 (BibTeX/RIS/引文格式等) — "
@@ -2474,7 +2511,34 @@ async def api_candidates_generate(collection: str, doc_id: int,
         except (ValueError, AttributeError):
             raise ValueError(f"LLM 输出无法解析: {content[:120]}")
 
-        toc_items = parsed.get("toc") or [] if "toc" in want else []
+        toc_tree_raw = parsed.get("toc") or [] if "toc" in want else []
+
+        def _clean_tree(nodes, depth=0):
+            out = []
+            for x in nodes if isinstance(nodes, list) else []:
+                if not isinstance(x, dict):
+                    continue
+                label = str(x.get("label") or "").strip()
+                if not label:
+                    continue
+                node = {"label": label,
+                        "category": str(x.get("category") or '').strip() or None,
+                        "page_num": int(x.get("page_num") or 0) or None,
+                        "from": "ai"}
+                if depth < 2:
+                    kids = _clean_tree(x.get("children") or [], depth + 1)
+                    if kids:
+                        node["children"] = kids
+                out.append(node)
+            return out
+
+        def _count_tree(nodes):
+            n = 0
+            for x in nodes:
+                n += 1 + _count_tree(x.get("children") or [])
+            return n
+
+        toc_tree = _clean_tree(toc_tree_raw)
         entity_items = parsed.get("entities") or [] if "entities" in want else []
         summary_text = (parsed.get("summary") or "").strip() \
             if "summary" in want else ""
@@ -2507,20 +2571,7 @@ async def api_candidates_generate(collection: str, doc_id: int,
 
         conn = get_conn(collection)
         try:
-            n_toc = 0
-            for it in toc_items:
-                label = str(it.get("label") or "").strip()
-                if not label:
-                    continue
-                conn.execute(
-                    """INSERT INTO card_candidates
-                       (doc_id, ctype, label, category, confidence, page_num, status)
-                       VALUES (?, 'toc', ?, ?, ?, ?, 'pending')""",
-                    (doc_id, label,
-                     str(it.get("category") or '').strip() or None,
-                     float(it.get("confidence") or 0.5),
-                     int(it.get("page_num") or 0) or None))
-                n_toc += 1
+            n_toc = 0   # toc 改树形: 不插平铺候选, 树经 result.tree 前端确认
             n_ent = 0
             for it in entity_items:
                 label = str(it.get("label") or "").strip()
@@ -2545,7 +2596,8 @@ async def api_candidates_generate(collection: str, doc_id: int,
                     (doc_id, json.dumps({"text": summary_text},
                                         ensure_ascii=False)))
             conn.commit()
-            return {"ok": True, "toc": n_toc, "entities": n_ent, "meta": n_meta,
+            return {"ok": True, "toc": _count_tree(toc_tree),
+                    "tree": toc_tree, "entities": n_ent, "meta": n_meta,
                     "summary": bool(summary_text), "model": model}
         finally:
             conn.close()
@@ -2590,9 +2642,17 @@ def _wiki_llm_payload(conn):
             c = json.loads(r["content"]) if r["content"] else {}
         except Exception:
             c = {}
-        if r["kind"] == "toc" and c.get("nodes"):
-            nodes = "; ".join(f"{n.get('label')}({n.get('category') or '?'})"
-                              for n in c["nodes"][:12])
+        if r["kind"] == "toc" and (c.get("tree") or c.get("nodes")):
+            labels = []
+
+            def _walk(nodes):
+                for n in nodes:
+                    labels.append(
+                        f"{n.get('label')}({n.get('category') or '?'})")
+                    _walk(n.get("children") or [])
+
+            _walk(c.get("tree") or c.get("nodes") or [])
+            nodes = "; ".join(labels[:15])
             cards_txt.append(f"[目录卡·{r['title']}] {nodes}")
         elif r["kind"] == "entity" and c.get("items"):
             items = "; ".join(f"{i.get('label')}({i.get('category') or '?'})"

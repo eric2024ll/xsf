@@ -310,10 +310,15 @@ body.focus-mode .cards-group { display: none; }
   padding-top: 4px;
 }
 .cg-hint { font-weight: 400; font-size: 0.72rem; color: var(--text-muted); }
-.toc-table, .cand-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.8rem;
+.toc-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-bottom: 1px solid var(--border); font-size: 0.8rem; }
+.toc-row.sel { background: var(--accent); }
+.toc-label { cursor: pointer; font-weight: 500; }
+.toc-row.sel .toc-label { color: var(--primary); }
+.toc-cat { color: var(--text-muted); font-size: 0.72rem; border: 1px solid var(--border); border-radius: 8px; padding: 0 6px; }
+.toc-ops { margin-left: auto; white-space: nowrap; }
+.toc-ops button { margin-left: 2px; }
+.toc-table, .cand-table {  width: 100%;
+  border-collapse: collapse;  font-size: 0.8rem;
   margin: 6px 0;
 }
 .toc-table th, .toc-table td, .cand-table th, .cand-table td {
@@ -982,16 +987,8 @@ mark {
     </div>
     <div class="tp-pane" data-pane="toc">
       {% if toc.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ toc.status }}">{{ toc.status }}</span>（reviewed 进检索路）</div>{% endif %}
-        {% if toc.content.get('nodes') %}
-        <table class="toc-table">
-          <tr><th>节点</th><th>类目</th><th>页</th><th>来源</th><th></th></tr>
-          {% for n in toc.content.get('nodes', []) %}
-          <tr><td>{{ n.label }}</td><td>{{ n.category or '—' }}</td><td>{{ n.page_num or '—' }}</td>
-              <td class="conf">{{ n.from or '手工' }}</td>
-              <td>{% if n.page_num %}<button onclick="goPage({{ n.page_num }})">对照</button>{% endif %}</td></tr>
-          {% endfor %}
-        </table>
-        {% else %}<div class="empty-hint">暂无目录节点——AI 生成候选后采纳，或手工添加</div>{% endif %}
+        <div id="tocTreeBox" class="toc-tree"></div>
+        <div class="empty-hint" id="tocEmptyHint" style="display:none;">暂无目录节点——AI 生成 / 粘贴目录解析 / 手工添加</div>
         {% set toc_cands = candidates | selectattr('ctype', 'equalto', 'toc') | list %}
         {% if toc_cands %}
         <div class="cg-head" style="margin-top:12px;"><span class="cg-title">目录候选</span><span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span></div>
@@ -1016,8 +1013,19 @@ mark {
           {% endfor %}
         </table>
         {% endif %}
+        <details class="card-sec" style="margin-top:10px;">
+          <summary>粘贴/导入目录文本</summary>
+          <div style="padding:8px 2px;">
+            <textarea id="tocSourceTa" rows="5" placeholder="粘贴目录文本（多级缩进/编号/卷次形式均可）, 或选择 .txt/.md 文件" style="width:100%;box-sizing:border-box;"></textarea>
+            <div class="add-row" style="margin-top:6px;">
+              <input type="file" id="tocFileInput" accept=".txt,.md,.csv" onchange="loadTocFile(this)" style="flex:1;min-width:140px;">
+              <button class="btn-primary" onclick="genTocImport()">AI 解析成树</button>
+            </div>
+            <div class="cg-hint">解析完成后确认：合并到根级 / 替换整树 / 放弃</div>
+          </div>
+        </details>
         <div class="add-row">
-          <input id="tnLabel" placeholder="节点名" style="flex:2;min-width:120px;">
+          <input id="tnLabel" placeholder="节点名（挂到选中节点下, 无选中=根）" style="flex:2;min-width:120px;">
           <input id="tnCat" placeholder="类目（自由标签）" style="flex:1;min-width:90px;">
           <input id="tnPage" placeholder="页码" style="width:60px;" type="number" min="1">
           <button class="btn-primary" onclick="addTocNode()">+ 添加节点</button>
@@ -2394,7 +2402,7 @@ async function postCard(url, data) {
 }
 async function saveCard(kind) {
   let content = {};
-  if (kind === 'toc') content = window.__tocContent || { nodes: [] };
+  if (kind === 'toc') content = { tree: window.__tocTree || [] };
   else if (kind === 'entity') content = window.__entityContent || { items: [] };
   else if (kind === 'summary') content = { text: document.getElementById('sumText').value };
   const d = await postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
@@ -2412,22 +2420,157 @@ async function toggleStatus(kind, cur) {
   if (res.ok) { showToast(next === 'reviewed' ? '已 reviewed（进检索路）' : '已退回 draft'); setTimeout(() => location.reload(), 400); }
   else showToast('失败: ' + (res.error || ''));
 }
+// ── 目录树: 数据/渲染/操作 ──
+window.__tocTree = [];
+{% if toc.content.get('tree') %}
+window.__tocTree = {{ toc.content.get('tree') | tojson }};
+{% elif toc.content.get('nodes') %}
+window.__tocTree = {{ toc.content.get('nodes') | tojson }}.map(n => ({ label: n.label, category: n.category, page_num: n.page_num, block_num: n.block_num, from: n.from }));
+{% endif %}
+window.__tocSel = null;   // 选中路径, 如 [0,2]
+
+function __tocFind(path) {
+  let list = window.__tocTree, node = null;
+  for (const i of path) { node = list[i]; if (!node) return null; node.children = node.children || []; list = node.children; }
+  return { parent: list, node };
+}
+function __escT(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+
+function renderTocTree() {
+  const box = document.getElementById('tocTreeBox');
+  const hint = document.getElementById('tocEmptyHint');
+  const count = (ns) => ns.reduce((a, n) => a + 1 + count(n.children || []), 0);
+  if (!window.__tocTree.length) { box.innerHTML = ''; if (hint) hint.style.display = ''; return; }
+  if (hint) hint.style.display = 'none';
+  const btn = (fn, arg, txt, title, dis) =>
+    `<button ${dis ? 'disabled ' : ''}onclick="${fn}(${JSON.stringify(arg).replace(/"/g, '&quot;')})" title="${title || txt}" style="padding:1px 6px;font-size:0.75rem;">${txt}</button>`;
+  const row = (n, path, depth) => {
+    const sel = JSON.stringify(window.__tocSel) === JSON.stringify(path);
+    const kids = (n.children || []).map((c, i) => row(c, path.concat(i), depth + 1)).join('');
+    const sib = __tocFind(path.slice(0, -1)).parent;
+    const idx = path[path.length - 1];
+    return `<div class="toc-row${sel ? ' sel' : ''}" style="margin-left:${depth * 22}px;">
+      <span class="toc-label" onclick="tocSel(${JSON.stringify(path).replace(/"/g, '&quot;')})">${__escT(n.label)}</span>
+      ${n.category ? `<span class="toc-cat">${__escT(n.category)}</span>` : ''}
+      ${n.page_num ? `<button onclick="goPage(${n.page_num})" title="跳到 p${n.page_num}" style="padding:1px 6px;font-size:0.75rem;">p${n.page_num}</button>` : ''}
+      <span class="toc-ops">
+        ${btn('tocEdit', path, '改', '修改名称/类目/页码')}
+        ${btn('tocAddChild', path, '+子', '添加子节点')}
+        ${btn('tocDel', path, '删', '删除（子节点上移）')}
+        ${btn('tocMove', path.concat(-1), '↑', '上移', idx === 0)}
+        ${btn('tocMove', path.concat(1), '↓', '下移', idx === sib.length - 1)}
+        ${btn('tocLevel', path.concat(-1), '←', '升级', depth === 0)}
+        ${btn('tocLevel', path.concat(1), '→', '降级并入前一同级', depth >= 2 || idx === 0)}
+      </span></div>` + kids;
+  };
+  box.innerHTML = window.__tocTree.map((n, i) => row(n, [i], 0)).join('')
+    + `<div class="cg-hint" style="margin-top:4px;">共 ${count(window.__tocTree)} 节点 · 选中后: 添加/采纳挂其下 · 保存后生效</div>`;
+}
+function tocSel(path) {
+  window.__tocSel = JSON.stringify(window.__tocSel) === JSON.stringify(path) ? null : path;
+  renderTocTree();
+}
+function tocAddChild(path) {
+  const label = prompt('子节点名:'); if (!label) return;
+  const { node } = __tocFind(path); if (!node) return;
+  node.children = node.children || [];
+  node.children.push({ label, category: null, page_num: node.page_num, from: '手工' });
+  renderTocTree();
+}
+function tocEdit(path) {
+  const { node } = __tocFind(path); if (!node) return;
+  const label = prompt('节点名:', node.label); if (label === null) return;
+  const cat = prompt('类目（可空）:', node.category || ''); if (cat === null) return;
+  const pg = prompt('页码（可空）:', node.page_num || ''); if (pg === null) return;
+  if (label.trim()) node.label = label.trim();
+  node.category = cat.trim() || null;
+  node.page_num = parseInt(pg, 10) || null;
+  renderTocTree();
+}
+function tocDel(path) {
+  const { parent } = __tocFind(path); if (!parent) return;
+  const idx = path[path.length - 1], node = parent[idx];
+  const kids = (node.children || []).length;
+  const msg = kids ? `「${node.label}」有 ${kids} 个子节点, 删除后子节点将上移到本级。确认删除?` : `删除「${node.label}」?`;
+  if (!confirm(msg)) return;
+  parent.splice(idx, 1, ...(node.children || []));
+  renderTocTree();
+}
+function tocMove(arg) {
+  const dir = arg.pop(), path = arg;
+  const { parent } = __tocFind(path); if (!parent) return;
+  const idx = path[path.length - 1], to = idx + dir;
+  if (to < 0 || to >= parent.length) return;
+  [parent[idx], parent[to]] = [parent[to], parent[idx]];
+  window.__tocSel = path.slice(0, -1).concat(to);
+  renderTocTree();
+}
+function tocLevel(arg) {
+  const dir = arg.pop(), path = arg;
+  if (dir === -1) {   // 升级: 移到父级之后
+    if (path.length < 2) return;
+    const found = __tocFind(path); if (!found) return;
+    const { node } = found;
+    const idx = path[path.length - 1];
+    const gpath = path.slice(0, -2), gidx = path[path.length - 2];
+    const g = __tocFind(gpath.concat(gidx)); if (!g || !g.node) return;
+    found.parent.splice(idx, 1);
+    g.node.children.splice(gidx + 1, 0, node);
+    window.__tocSel = gpath.concat(gidx + 1);
+  } else {            // 降级: 并入前一同级
+    const { parent } = __tocFind(path); if (!parent) return;
+    const idx = path[path.length - 1]; if (idx === 0) return;
+    const prev = parent[idx - 1]; prev.children = prev.children || [];
+    const [node] = parent.splice(idx, 1);
+    prev.children.push(node);
+    window.__tocSel = path.slice(0, -1).concat([idx - 1, prev.children.length - 1]);
+  }
+  renderTocTree();
+}
+function tocAcceptTree(tree, n) {
+  if (!tree || !tree.length) { showToast('解析结果为空'); return; }
+  const mode = confirm(`解析出 ${n} 个节点。\n确定=合并到根级 / 取消=替换整树`) ? 'merge' : 'replace';
+  if (mode === 'merge') window.__tocTree = window.__tocTree.concat(tree);
+  else window.__tocTree = tree;
+  renderTocTree();
+  showToast('目录树已暂存, 点「保存目录」生效', 5000);
+}
+function loadTocFile(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => { document.getElementById('tocSourceTa').value = reader.result || ''; };
+  reader.readAsText(f, 'utf-8');
+}
+async function genTocImport() {
+  const src = (document.getElementById('tocSourceTa').value || '').trim();
+  if (!src) { showToast('先粘贴目录文本或选择文件'); return; }
+  if (!confirm('AI 解析目录文本为树（后台运行）？')) return;
+  try {
+    const body = new URLSearchParams({ targets: 'toc', toc_source: src });
+    const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/candidates/generate`, { method: 'POST', body });
+    const d = await r.json();
+    if (!d.ok) { showToast('解析失败: ' + (d.error || '')); return; }
+    showToast('已提交后台解析目录');
+    pollJob(d.job, j => {
+      if (j.status === 'done') tocAcceptTree((j.result || {}).tree || [], (j.result || {}).toc || 0);
+      else showToast('解析失败: ' + (j.error || '未知'), 5000);
+    });
+  } catch (e) { showToast('请求失败'); }
+}
 function addTocNode() {
   const label = document.getElementById('tnLabel').value.trim();
   if (!label) { showToast('节点名必填'); return; }
   const cat = document.getElementById('tnCat').value.trim();
   const pg = parseInt(document.getElementById('tnPage').value, 10) || page;
-  if (!window.__tocContent) {
-    window.__tocContent = { nodes: [] };
-    {% if toc.content.get('nodes') %}
-    window.__tocContent.nodes = {{ toc.content.get('nodes') | tojson }};
-    {% endif %}
-  }
-  window.__tocContent.nodes.push({ label, category: cat || null, page_num: pg, from: '手工' });
+  const node = { label, category: cat || null, page_num: pg, from: '手工' };
+  let target = window.__tocTree;
+  if (window.__tocSel) { const r = __tocFind(window.__tocSel); if (r && r.node) { r.node.children = r.node.children || []; target = r.node.children; } }
+  target.push(node);
   document.getElementById('tnLabel').value = '';
   document.getElementById('tnCat').value = '';
   document.getElementById('tnPage').value = '';
-  showToast('已暂存（保存目录后生效）— 当前 ' + window.__tocContent.nodes.length + ' 节点');
+  renderTocTree();
 }
 function addEntityItem() {
   const label = document.getElementById('enLabel').value.trim();
@@ -2447,8 +2590,10 @@ function addEntityItem() {
   showToast('已暂存（保存实体索引后生效）— 当前 ' + window.__entityContent.items.length + ' 条');
 }
 async function reviewCand(id, action) {
-  const d = await postCard(`/collections/${encodeURIComponent(collection)}/candidates/${id}/review`, { action });
-  if (d.ok) { showToast(action === 'adopt' ? '已采纳（并入卡）' : '已驳回'); setTimeout(() => location.reload(), 400); }
+  const extra = {};
+  if (action === 'adopt' && window.__tocSel) extra.mount = JSON.stringify(window.__tocSel);
+  const d = await postCard(`/collections/${encodeURIComponent(collection)}/candidates/${id}/review`, Object.assign({ action }, extra));
+  if (d.ok) { showToast(action === 'adopt' ? '已采纳（挂到选中节点下）' : '已驳回'); setTimeout(() => location.reload(), 400); }
   else showToast('失败: ' + (d.error || ''));
 }
 async function patchCand(id) {
@@ -2532,8 +2677,9 @@ async function genCards(target) {
       if (btn) { btn.disabled = false; btn.textContent = orig; }
       if (j.status === 'done') {
         const res = j.result || {};
+        if (target === 'toc' && res.tree && res.tree.length) { tocAcceptTree(res.tree, res.toc); if (btn) { btn.disabled = false; btn.textContent = orig; } return; }
         let msg = `生成完成（${res.model}）：`;
-        if (target === 'toc') msg += `${res.toc} 个目录候选`;
+        if (target === 'toc') msg += `${res.toc} 个目录节点`;
         else if (target === 'entities') msg += `${res.entities} 个实体候选`;
         else msg += res.summary ? '摘要草稿已生成' : '摘要未变化';
         showToast(msg + '，进入候选队列/摘要 tab 查看', 5000);
@@ -2747,6 +2893,7 @@ function locateInPageText(text) {
   if (el) el.scrollIntoView({behavior: 'smooth', block: 'center'});
   return true;
 }
+document.addEventListener('DOMContentLoaded', () => { if (typeof renderTocTree === 'function') renderTocTree(); });
 </script>
 {% endif %}
 
