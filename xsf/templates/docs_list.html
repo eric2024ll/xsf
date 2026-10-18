@@ -800,12 +800,13 @@ init();
 // ── 知识地图 (P6, 2026-10-18): 编译产物一键生成/查看/stale 提示 ──
 async function wikiRefreshStatus(){
   try{
-    var r = await fetch('/collections/'+collEnc+'/wiki/status');
+    var enc = encodeURIComponent(collection);
+    var r = await fetch('/collections/'+enc+'/wiki/status');
     var st = await r.json();
     var gen = document.getElementById('wikiGenBtn');
     var view = document.getElementById('wikiViewLink');
     var badge = document.getElementById('wikiBadge');
-    view.href = '/collections/'+collEnc+'/wiki/view';
+    view.href = '/collections/'+enc+'/wiki/view';
     if(st.status === 'generating'){
       gen.disabled = true; gen.textContent = '生成中…';
       view.style.display = 'none'; badge.style.display = 'none';
@@ -828,10 +829,11 @@ async function wikiGenerate(){
   if(!confirm('LLM 将编译当前书架的已审卡片与正文采样，生成知识地图概念页（覆盖旧版）。继续？')) return;
   btn.disabled = true; btn.textContent = '生成中…';
   try{
-    var r = await fetch('/collections/'+collEnc+'/wiki/generate', {method:'POST'});
+    var enc = encodeURIComponent(collection);
+    var r = await fetch('/collections/'+enc+'/wiki/generate', {method:'POST'});
     var data = await r.json();
     if(data.error){ alert('生成失败: '+data.error); }
-    else { showToast('知识地图已生成：'+data.pages+' 页（'+data.model+'）'); location.href = '/collections/'+collEnc+'/wiki/view'; }
+    else { showToast('知识地图已生成：'+data.pages+' 页（'+data.model+'）'); location.href = '/collections/'+enc+'/wiki/view'; }
   }catch(e){ alert('生成失败: '+e.message); }
   wikiRefreshStatus();
 }
