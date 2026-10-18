@@ -908,7 +908,6 @@ mark {
       <button class="tp-tab" data-pane="meta" onclick="switchTP('meta')">元数据</button>
       <button class="tp-tab" data-pane="toc" onclick="switchTP('toc')">目录{% if toc.status %}<span class="tp-dot {{ toc.status }}" title="{{ toc.status }}"></span>{% endif %}</button>
       <button class="tp-tab" data-pane="entity" onclick="switchTP('entity')">实体{% if entity.status %}<span class="tp-dot {{ entity.status }}" title="{{ entity.status }}"></span>{% endif %}</button>
-      <button class="tp-tab" data-pane="summary" onclick="switchTP('summary')">摘要{% if summ.status %}<span class="tp-dot {{ summ.status }}" title="{{ summ.status }}"></span>{% endif %}</button>
       <button class="tp-tab" data-pane="search" onclick="switchTP('search')">搜索</button>
     </div>
     <div class="text-actions" id="textActions">
@@ -956,6 +955,21 @@ mark {
       <div class="cg-hint" style="padding:8px 2px;">与全库文献信息同一数据源（bib_type + bib_data），此处编辑即全库生效。</div>
       <div class="doc-tags" id="docTags"></div>
       <div id="proofBibPanel"></div>
+      <div class="add-row" style="margin-top:12px;">
+        <input id="metaPrompt" placeholder="AI 生成补充指令（可选, 如: 从序跋提取作者与成文年代）" style="flex:2;min-width:180px;">
+        <button class="btn-primary" onclick="genMeta()">AI 生成（元数据回填）</button>
+      </div>
+      <div class="cg-hint">AI 从文献块识别题名/著者/年代等回填空白字段（不覆盖已有值）；摘要草稿一并生成。</div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
+      <div class="cg-head"><span class="cg-title">摘要</span>
+        {% if summ.status %}<span class="badge {{ summ.status }}">{{ summ.status }}</span>{% endif %}
+        <button class="btn-primary" style="margin-left:auto;" onclick="genCards('summary')">AI 生成草稿</button>
+      </div>
+      <textarea class="summary-ta" id="sumText" placeholder="100-200 字文献摘要（可由 AI 生成草稿后修订）">{{ summ.content.get('text', '') }}</textarea>
+      <div class="card-actions">
+        <button class="btn-primary" onclick="saveCard('summary')">保存摘要</button>
+        {% if summ.status %}<button onclick="toggleStatus('summary', '{{ summ.status }}')">{{ '退回 draft' if summ.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
+      </div>
     </div>
     <div class="tp-pane" data-pane="toc">
       {% if toc.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ toc.status }}">{{ toc.status }}</span>（reviewed 进检索路）</div>{% endif %}
@@ -1051,15 +1065,6 @@ mark {
           <button class="btn-primary" onclick="genCards('entities')">AI 生成候选</button>
           <button class="btn-primary" onclick="saveCard('entity')">保存实体索引</button>
           {% if entity.status %}<button onclick="toggleStatus('entity', '{{ entity.status }}')">{{ '退回 draft' if entity.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
-        </div>
-    </div>
-    <div class="tp-pane" data-pane="summary">
-      {% if summ.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ summ.status }}">{{ summ.status }}</span></div>{% endif %}
-        <textarea class="summary-ta" id="sumText" placeholder="100-200 字文献摘要（可由 AI 生成草稿后修订）">{{ summ.content.get('text', '') }}</textarea>
-        <div class="card-actions">
-          <button class="btn-primary" onclick="genCards('summary')">AI 生成草稿</button>
-          <button class="btn-primary" onclick="saveCard('summary')">保存摘要</button>
-          {% if summ.status %}<button onclick="toggleStatus('summary', '{{ summ.status }}')">{{ '退回 draft' if summ.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
         </div>
     </div>
     <div class="tp-pane" data-pane="search">
@@ -2446,6 +2451,31 @@ async function patchCand(id) {
     { action: 'patch', label: l.trim(), category: c.trim() });
   if (d.ok) { showToast('已修订'); setTimeout(() => location.reload(), 400); }
 }
+async function genMeta() {
+  const prompt = (document.getElementById('metaPrompt').value || '').trim();
+  if (!confirm('AI 生成元数据？将从文献块识别题名/著者/年代等回填空白字段（不覆盖已有值），摘要草稿一并生成。后台运行，完成后提示。')) return;
+  const btn = [...document.querySelectorAll('.tp-pane[data-pane="meta"] .add-row button')][0];
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '后台生成中…'; }
+  try {
+    const body = new URLSearchParams({ targets: 'meta,summary' });
+    if (prompt) body.append('prompt', prompt);
+    const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/candidates/generate`, { method: 'POST', body });
+    const d = await r.json();
+    if (!d.ok) { showToast('生成失败: ' + (d.error || '')); if (btn) { btn.disabled = false; btn.textContent = orig; } return; }
+    showToast('已提交后台生成元数据，可继续操作');
+    pollJob(d.job, j => {
+      if (btn) { btn.disabled = false; btn.textContent = orig; }
+      if (j.status === 'done') {
+        const res = j.result || {};
+        let msg = `元数据生成完成（${res.model}）：回填 ${res.meta} 个字段`;
+        if (res.summary) msg += '，摘要草稿已生成';
+        showToast(msg + '，刷新页面查看', 5000);
+      } else showToast('生成失败: ' + (j.error || '未知'), 5000);
+    });
+  } catch (e) { showToast('请求失败'); if (btn) { btn.disabled = false; btn.textContent = orig; } }
+}
+
 async function genCards(target) {
   const labels = { toc: '目录候选', entities: '实体候选', summary: '摘要草稿' };
   if (!confirm('AI 生成' + labels[target] + '？将在后台生成（页面可继续操作），完成后提示。')) return;

@@ -2394,15 +2394,17 @@ async def api_candidate_review(collection: str, cand_id: int,
 
 @app.post("/collections/{collection}/doc/{doc_id}/candidates/generate")
 async def api_candidates_generate(collection: str, doc_id: int,
-                                  targets: str = Form(None)):
-    """LLM 生成候选: 抽样文献前部块文本, 按目标生成目录候选/实体候选/摘要草稿.
+                                  targets: str = Form(None),
+                                  prompt: str = Form(None)):
+    """LLM 生成候选: 抽样文献前部块文本, 按目标生成目录候选/实体候选/摘要草稿/元数据回填.
 
-    targets 逗号分隔子集 (toc/entities/summary), 默认全部。
+    targets 逗号分隔子集 (toc/entities/summary/meta), 默认全部。
+    prompt: 自主补充提示 (仅 meta 目标生效, 附加到提取指令后)。
     复用 P2c 的 llm_chat provider 配置 (default_llm).
     """
     from .llm import chat, LLMNotConfigured
-    want = {t.strip() for t in (targets or "toc,entities,summary").split(",")
-            if t.strip() in ("toc", "entities", "summary")}
+    want = {t.strip() for t in (targets or "toc,entities,summary,meta").split(",")
+            if t.strip() in ("toc", "entities", "summary", "meta")}
     if not want:
         want = {"toc", "entities", "summary"}
     try:  # 配置缺失同步快速失败 (503), 不入后台
@@ -2439,11 +2441,19 @@ async def api_candidates_generate(collection: str, doc_id: int,
                       '"page_num": 页码, "confidence": 0到1}]（3-15 个）')
     if "summary" in want:
         fields.append('"summary": "100-200字摘要"')
+    if "meta" in want:
+        fields.append('"meta": {"title": "文献题名", "author": "著者", '
+                      '"year": "出版/成文年代", "publisher": "出版者", '
+                      '"note": "版本/册次等备注"}（从题名页/序跋/卷端识别, '
+                      '不确定的字段给空串）')
     system = (
         "你是文献编目助手。基于给定的文献块样本（每行前缀 [p页b块]），"
         "输出严格 JSON：{" + ", ".join(fields) + "}。"
         "只输出要求的字段, 只输出 JSON, 不要解释。"
     )
+    extra_prompt = (prompt or "").strip()
+    if "meta" in want and extra_prompt:
+        system += f"\n补充要求（用户指示, 优先遵循）: {extra_prompt}"
 
     def _bg():
         content, model = chat(
@@ -2459,6 +2469,32 @@ async def api_candidates_generate(collection: str, doc_id: int,
         entity_items = parsed.get("entities") or [] if "entities" in want else []
         summary_text = (parsed.get("summary") or "").strip() \
             if "summary" in want else ""
+        meta_items = parsed.get("meta") or {} if "meta" in want else {}
+
+        n_meta = 0
+        if isinstance(meta_items, dict) and meta_items:
+            conn_m = get_conn(collection)
+            try:
+                drow = conn_m.execute(
+                    "SELECT bib_data FROM documents WHERE id = ?",
+                    (doc_id,)).fetchone()
+                try:
+                    bib = json.loads(
+                        drow["bib_data"] or "{}") if drow else {}
+                except ValueError:
+                    bib = {}
+                for fk in ("title", "author", "year", "publisher", "note"):
+                    v = str(meta_items.get(fk) or "").strip()
+                    if v and not bib.get(fk):
+                        bib[fk] = v
+                        n_meta += 1
+                if n_meta:
+                    conn_m.execute(
+                        "UPDATE documents SET bib_data = ? WHERE id = ?",
+                        (json.dumps(bib, ensure_ascii=False), doc_id))
+                    conn_m.commit()
+            finally:
+                conn_m.close()
 
         conn = get_conn(collection)
         try:
@@ -2500,7 +2536,7 @@ async def api_candidates_generate(collection: str, doc_id: int,
                     (doc_id, json.dumps({"text": summary_text},
                                         ensure_ascii=False)))
             conn.commit()
-            return {"ok": True, "toc": n_toc, "entities": n_ent,
+            return {"ok": True, "toc": n_toc, "entities": n_ent, "meta": n_meta,
                     "summary": bool(summary_text), "model": model}
         finally:
             conn.close()
