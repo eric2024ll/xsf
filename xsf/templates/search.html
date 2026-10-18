@@ -153,30 +153,9 @@ function renderGroups(data){
   var countEl=document.getElementById('resultCount');
   var container=document.getElementById('results');
   container.innerHTML='';
-  // P4: 卡片命中 (reviewed 卡)
-  if(data.cards&&data.cards.length){
-    var cs=document.createElement('div');
-    cs.className='card-hits';
-    cs.innerHTML='<div class="card-hits-title">卡片命中 <span class="engine-badge fts5">卡片</span></div>';
-    data.cards.forEach(function(c){
-      var a=document.createElement('a');
-      a.className='card-hit-item';
-      a.href='/collections/'+encodeURIComponent(currentCollection)+'/doc/'+c.doc_id+'/proofread';
-      var kindName=c.kind==='toc'?'目录卡':(c.kind==='summary'?'摘要卡':'元数据卡');
-      a.innerHTML='<span class="ch-kind">'+kindName+'</span>'+
-        '<span class="ch-title">'+escapeHtml(c.title||'')+'</span>'+
-        '<span class="ch-snippet">'+escapeHtml((c.snippet||'').slice(0,140))+'</span>';
-      cs.appendChild(a);
-    });
-    container.appendChild(cs);
-  }
   if(!data.groups||!data.groups.length){
     countEl.innerHTML='<span class="engine-badge fts5">FTS5</span>';
-    if(!data.cards||!data.cards.length){
-      container.innerHTML='<div class="no-results">未找到匹配结果</div>';
-      return;
-    }
-    countEl.textContent='卡片命中 '+data.cards.length+' 条';
+    container.innerHTML='<div class="no-results">未找到匹配结果</div>';
     return;
   }
   var truncNote=data.groups_truncated?'（命中文献超过 '+data.groups.length+' 篇，仅列前 '+data.groups.length+' 篇）':'';
