@@ -91,6 +91,15 @@
 }
 .page-nav button:hover:not(:disabled) { background: var(--accent); }
 .page-nav button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── 合并工具栏 (翻页+缩放+画栏, 2026-10-19 用户裁定) ── */
+.img-toolbar.unified-bar {
+  margin-bottom: 0;
+}
+.img-toolbar.unified-bar button {
+  padding: 3px 8px;
+  font-size: 0.8rem;
+}
 .doc-search-panel.dsp-static {
   display: block;
   margin-top: 10px;
@@ -785,16 +794,24 @@ mark {
 
 {#- 翻页+搜索导航 (2026-10-17 布局裁定: 搬左侧图像页) 三分支共用 macro -#}
 {% macro page_nav_left() %}
-    <div class="page-nav pn-left">
-      <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 列表</a>
-      <button onclick="goPage({{ page_num - 1 }})" {% if page_num <= 1 %}disabled{% endif %} title="上一页">‹</button>
-      <select id="pageSelect" onchange="goPage(this.value)" title="跳转页码">
-        {% for p in range(1, page_count + 1) %}
-        <option value="{{ p }}" {% if p == page_num %}selected{% endif %}>第 {{ p }} / {{ page_count }} 页</option>
-        {% endfor %}
-      </select>
-      <button onclick="goPage({{ page_num + 1 }})" {% if page_num >= page_count %}disabled{% endif %} title="下一页">›</button>
-    </div>
+      <div class="img-toolbar unified-bar">
+        <button onclick="goPage({{ page_num - 1 }})" {% if page_num <= 1 %}disabled{% endif %} title="上一页">‹</button>
+        <select id="pageSelect" onchange="goPage(this.value)" title="跳转页码" style="min-width:110px;">
+          {% for p in range(1, page_count + 1) %}
+          <option value="{{ p }}" {% if p == page_num %}selected{% endif %}>第 {{ p }} / {{ page_count }} 页</option>
+          {% endfor %}
+        </select>
+        <button onclick="goPage({{ page_num + 1 }})" {% if page_num >= page_count %}disabled{% endif %} title="下一页">›</button>
+        <span class="zoom-label" id="zoomLabel">適寬</span>
+        <button onclick="zoomDelta(1/1.25)" title="缩小">−</button>
+        <button onclick="zoomDelta(1.25)" title="放大">＋</button>
+        <button onclick="zoomSetFit()" title="适应宽度">適寬</button>
+        <button onclick="zoomSetPct(1)" title="实际尺寸 (150dpi)">1:1</button>
+        <button class="reocr-btn" id="reocrToggle" onclick="toggleReocrMode()">框选重OCR</button>
+        <button id="showAllBoxes" onclick="toggleShowAllBoxes()">显示全部框</button>
+        <span class="hint">滚轮缩放 · 拖拽平移</span>
+        <div class="type-legend" id="typeLegend"></div>
+      </div>
 {% endmacro %}
 
 <div class="main" id="main" data-tab="img">
@@ -806,17 +823,6 @@ mark {
 
   <div class="left" id="leftPanel">
       {{ page_nav_left() }}
-      <div class="img-toolbar">
-        <button onclick="zoomDelta(1/1.25)" title="缩小">−</button>
-        <span class="zoom-label" id="zoomLabel">適寬</span>
-        <button onclick="zoomDelta(1.25)" title="放大">＋</button>
-        <button onclick="zoomSetFit()" title="适应宽度">適寬</button>
-        <button onclick="zoomSetPct(1)" title="实际尺寸 (150dpi)">1:1</button>
-        <button class="reocr-btn" id="reocrToggle" onclick="toggleReocrMode()">框选重OCR</button>
-        <button id="showAllBoxes" onclick="toggleShowAllBoxes()">显示全部框</button>
-        <span class="hint">滚轮缩放 · 拖拽平移</span>
-        <div class="type-legend" id="typeLegend"></div>
-      </div>
       <div class="reocr-actions" id="reocrActions">
         <span id="reocrHint" class="reocr-hint">在图上拖拽画框（可多个）→ 执行重OCR；或框选后「存为栏」定义阅读顺序（点区标签切方向）</span>
         <span id="reocrCount">已选 0 个区域</span>
@@ -1049,15 +1055,16 @@ mark {
       {% if entity.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ entity.status }}">{{ entity.status }}</span></div>{% endif %}
         {% if entity.content.get('items') %}
         <table class="toc-table" id="entityTable"><tbody id="entityBody">
-          <tr><th>实体</th><th>类别</th><th>来源</th></tr>
+          <tr><th>实体</th><th>类别</th><th>来源</th><th></th></tr>
           {% for e in entity.content.get('items', []) %}
-          <tr><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td>
-              <td class="conf">{{ e.from or '手工' }}</td></tr>
+          <tr data-eidx="{{ loop.index0 }}"><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td>
+              <td class="conf">{{ e.from or '手工' }}</td>
+              <td><button onclick="delEntityItem({{ loop.index0 }}, this)" title="删除该实体">删</button></td></tr>
           {% endfor %}
         </tbody></table>
         {% else %}
         <table class="toc-table" id="entityTable" style="display:none;"><tbody id="entityBody">
-          <tr><th>实体</th><th>类别</th><th>来源</th></tr>
+          <tr><th>实体</th><th>类别</th><th>来源</th><th></th></tr>
         </tbody></table>
         <div class="empty-hint" id="entityEmpty">暂无实体——AI 生成候选后采纳，或手工添加</div>
         {% endif %}
@@ -2679,6 +2686,36 @@ function addTocNode() {
   document.getElementById('tnPage').value = '';
   renderTocTree();
 }
+function __entityPersist() {
+  postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
+    { kind: 'entity', content: JSON.stringify(window.__entityContent), status: window.__entityStatus })
+    .then(d => { if (!d.ok) showToast('实体卡自动落库失败: ' + (d.error || '')); });
+}
+function delEntityItem(idx, btn) {
+  if (!window.__entityContent) return;
+  const it = window.__entityContent.items[idx];
+  if (!it) return;
+  if (!confirm('删除实体「' + it.label + '？')) return;
+  window.__entityContent.items.splice(idx, 1);
+  __entityPersist();
+  const tr = btn.closest('tr');
+  if (tr) {
+    const body = tr.parentElement;
+    tr.remove();
+    [...body.querySelectorAll('tr')].forEach((r, i) => {   // 重排行号
+      if (i === 0) return;
+      r.dataset.eidx = i - 1;
+      const b = r.querySelector('td:last-child button');
+      if (b) b.setAttribute('onclick', 'delEntityItem(' + (i - 1) + ', this)');
+    });
+    if (body.children.length <= 1) {
+      document.getElementById('entityTable').style.display = 'none';
+      const em = document.getElementById('entityEmpty'); if (em) em.style.display = '';
+    }
+  }
+  showToast('已删除（已落库）');
+}
+
 function loadVocabFile(input) {
   const f = input.files && input.files[0];
   if (!f) return;
@@ -2707,6 +2744,12 @@ function addEntityItem() {
   const label = document.getElementById('enLabel').value.trim();
   if (!label) { showToast('实体名必填'); return; }
   const cat = document.getElementById('enCat').value.trim();
+  if (window.__entityContent && window.__entityContent.items.some(
+      it => (it.label || '').trim() === label)) {
+    showToast('实体已存在: ' + label + '（自动合并重复——未添加）');
+    document.getElementById('enLabel').value = '';
+    return;
+  }
   if (!window.__entityContent) {
     window.__entityContent = { items: [] };
     {% if entity.content.get('items') %}
@@ -2792,14 +2835,22 @@ async function reviewCand(id, action) {
       renderTocTree();
       showToast('已采纳并入目录树（已落库）');
     } else if (ctype === 'entity') {
-      if (window.__entityContent) window.__entityContent.items.push({ label: lab, category: cat, from: 'candidate#' + id });
+      if (window.__entityContent) {
+        if (window.__entityContent.items.some(it => (it.label || '').trim() === (lab || '').trim())) {
+          showToast('已在卡中: ' + lab + '（合并重复, 候选移除）');
+        } else {
+          window.__entityContent.items.push({ label: lab, category: cat, from: 'candidate#' + id });
+        }
+      }
       const body = document.getElementById('entityBody');
       if (body) {
         const tb = document.getElementById('entityTable'); if (tb) tb.style.display = '';
         const em = document.getElementById('entityEmpty'); if (em) em.style.display = 'none';
         const tr = document.createElement('tr');
         tr.innerHTML = `<td>${__escT(lab)}</td><td>${cat ? __escT(cat) : '—'}</td>` +
-          `<td class="conf">candidate#${id}</td>`;
+          `<td class="conf">candidate#${id}</td>` +
+          `<td><button onclick="delEntityItem(${body.children.length - 1}, this)">删</button></td>`;
+        tr.dataset.eidx = body.children.length - 1;
         body.appendChild(tr);
       }
       showToast('已采纳并入实体索引（已落库）');
