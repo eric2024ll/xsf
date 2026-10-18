@@ -124,6 +124,7 @@ def _migrate(conn):
         conn.execute("ALTER TABLE documents ADD COLUMN lang TEXT DEFAULT 'zh'")
     if "tri_rows" not in doc_cols2:
         conn.execute("ALTER TABLE documents ADD COLUMN tri_rows INTEGER DEFAULT NULL")
+    if "page_map" not in doc_cols2:
         conn.execute("ALTER TABLE documents ADD COLUMN page_map TEXT DEFAULT NULL")
     # 语料包台账 (P3, 2026-10-17): .sqpkg 导出记录 (导出中心数据源)
     conn.execute("""
