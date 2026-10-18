@@ -985,34 +985,7 @@ mark {
 {%- endif %}
     </div>
 
-    <div class="cards-group" id="cardsGroup">
-      <div class="cg-head"><span class="cg-title">候选队列</span><span class="cg-hint">AI 生成（各 tab 内触发）→ 人工审（采纳并入卡/驳回/修订）</span>
-      </div>
-        {% if candidates %}
-        <table class="cand-table">
-          <tr><th>类型</th><th>标签</th><th>类目</th><th>置信</th><th>页</th><th>状态</th><th>操作</th></tr>
-          {% for c in candidates %}
-          <tr>
-            <td>{{ '目录' if c.ctype == 'toc' else '实体' }}</td>
-            <td id="cl-{{ c.id }}">{{ c.label }}</td>
-            <td id="cc-{{ c.id }}">{{ c.category or '—' }}</td>
-            <td class="conf">{{ '%.2f' % c.confidence if c.confidence is not none else '—' }}</td>
-            <td>{{ c.page_num or '—' }}</td>
-            <td><span class="badge {{ c.status }}">{{ c.status }}</span></td>
-            <td class="ops">
-              {% if c.status == 'pending' %}
-              <button onclick="reviewCand({{ c.id }}, 'adopt')">采纳</button>
-              <button onclick="reviewCand({{ c.id }}, 'reject')">驳回</button>
-              {% endif %}
-              <button onclick="patchCand({{ c.id }})">修订</button>
-              {% if c.page_num %}<button onclick="goPage({{ c.page_num }})">对照</button>{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </table>
-        {% else %}<div class="empty-hint">队列为空——点「AI 生成候选」（需设置页配置 llm_chat provider）</div>{% endif %}
-    </div>{# /cardsGroup #}
-    </div>{# /paneText: 全文 tab = pageText + 候选队列 #}
+    </div>{# /paneText: 全文 tab = pageText #}
 
     <div class="tp-pane" data-pane="meta">
       <div class="cg-hint" style="padding:8px 2px;">与全库文献信息同一数据源（bib_type + bib_data），此处编辑即全库生效。</div>
@@ -1031,6 +1004,30 @@ mark {
           {% endfor %}
         </table>
         {% else %}<div class="empty-hint">暂无目录节点——AI 生成候选后采纳，或手工添加</div>{% endif %}
+        {% set toc_cands = candidates | selectattr('ctype', 'equalto', 'toc') | list %}
+        {% if toc_cands %}
+        <div class="cg-head" style="margin-top:12px;"><span class="cg-title">目录候选</span><span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span></div>
+        <table class="cand-table">
+          <tr><th>标签</th><th>类目</th><th>置信</th><th>页</th><th>状态</th><th>操作</th></tr>
+          {% for c in toc_cands %}
+          <tr>
+            <td id="cl-{{ c.id }}">{{ c.label }}</td>
+            <td id="cc-{{ c.id }}">{{ c.category or '—' }}</td>
+            <td class="conf">{{ '%.2f' % c.confidence if c.confidence is not none else '—' }}</td>
+            <td>{{ c.page_num or '—' }}</td>
+            <td><span class="badge {{ c.status }}">{{ c.status }}</span></td>
+            <td class="ops">
+              {% if c.status == 'pending' %}
+              <button onclick="reviewCand({{ c.id }}, 'adopt')">采纳</button>
+              <button onclick="reviewCand({{ c.id }}, 'reject')">驳回</button>
+              {% endif %}
+              <button onclick="patchCand({{ c.id }})">修订</button>
+              {% if c.page_num %}<button onclick="goPage({{ c.page_num }})">对照</button>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% endif %}
         <div class="add-row">
           <input id="tnLabel" placeholder="节点名" style="flex:2;min-width:120px;">
           <input id="tnCat" placeholder="类目（自由标签）" style="flex:1;min-width:90px;">
@@ -1055,6 +1052,30 @@ mark {
           {% endfor %}
         </table>
         {% else %}<div class="empty-hint">暂无实体——AI 生成候选后采纳，或手工添加</div>{% endif %}
+        {% set ent_cands = candidates | selectattr('ctype', 'equalto', 'entity') | list %}
+        {% if ent_cands %}
+        <div class="cg-head" style="margin-top:12px;"><span class="cg-title">实体候选</span><span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span></div>
+        <table class="cand-table">
+          <tr><th>标签</th><th>类别</th><th>置信</th><th>页</th><th>状态</th><th>操作</th></tr>
+          {% for c in ent_cands %}
+          <tr>
+            <td id="cl-{{ c.id }}">{{ c.label }}</td>
+            <td id="cc-{{ c.id }}">{{ c.category or '—' }}</td>
+            <td class="conf">{{ '%.2f' % c.confidence if c.confidence is not none else '—' }}</td>
+            <td>{{ c.page_num or '—' }}</td>
+            <td><span class="badge {{ c.status }}">{{ c.status }}</span></td>
+            <td class="ops">
+              {% if c.status == 'pending' %}
+              <button onclick="reviewCand({{ c.id }}, 'adopt')">采纳</button>
+              <button onclick="reviewCand({{ c.id }}, 'reject')">驳回</button>
+              {% endif %}
+              <button onclick="patchCand({{ c.id }})">修订</button>
+              {% if c.page_num %}<button onclick="goPage({{ c.page_num }})">对照</button>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% endif %}
         <div class="add-row">
           <input id="enLabel" placeholder="实体名" style="flex:2;min-width:120px;">
           <input id="enCat" placeholder="类别（人名/地名/…）" style="flex:1;min-width:90px;">
@@ -2367,7 +2388,9 @@ resumeReocrRange();
   </details>
 </div>
 
+{% if not error %}
 <script>
+// 智能校对 + 卡片/候选/语种切换 (引用主分支上下文 cards_map 等, error 页跳过)
 const SMART_BASE = `/collections/{{ collection }}/doc/{{ doc.id if doc is defined else 0 }}/proofread/{{ page_num if page_num is defined else 1 }}/smart-check`;
 
 // 面板拖拽: 按标题栏移动 (fixed 定位, 切换为 left/top)
@@ -2712,6 +2735,7 @@ function locateInPageText(text) {
   return true;
 }
 </script>
+{% endif %}
 
 </body>
 </html>
