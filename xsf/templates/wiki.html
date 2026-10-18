@@ -120,4 +120,6 @@ function wikiJump(span) {
 }
 
 document.querySelectorAll('.wiki-body').forEach(renderWikiMd);
+var _firstBtn = document.querySelector('.wiki-toc-item');
+if (_firstBtn) showWikiPage(_firstBtn.dataset.slug);
 </script>
