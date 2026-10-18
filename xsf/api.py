@@ -2508,7 +2508,7 @@ def _wiki_llm_payload(conn):
 async def wiki_generate(collection: str):
     """一键生成知识地图: LLM 编译 → 清旧插新 → ready + 基线戳."""
     from .llm import chat, LLMNotConfigured
-    from .config import get_default_llm_provider_id, get_llm_provider_cfg
+    from .config import get_default_llm_provider_id
     if collection not in list_collections():
         return JSONResponse(status_code=404, content={"error": "书架不存在"})
     conn = get_conn(collection)
@@ -2527,11 +2527,10 @@ async def wiki_generate(collection: str):
         conn.commit()
         try:
             provider_id = get_default_llm_provider_id()
-            cfg = get_llm_provider_cfg(provider_id)
             payload = json.dumps(_wiki_llm_payload(conn), ensure_ascii=False)
             content, model = chat(
                 [{"role": "system", "content": WIKI_SYSTEM_PROMPT},
-                 {"role": "user", "content": payload}], cfg)
+                 {"role": "user", "content": payload}], provider_id)
             i0, i1 = content.find('{'), content.rfind('}') + 1
             if i0 < 0 or i1 <= i0:
                 raise ValueError("LLM 输出未包含 JSON 对象")
