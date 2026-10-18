@@ -1,3 +1,16 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.ico">
+<title>知识地图 — {{ collection }} · 小書房</title>
+<link rel="stylesheet" href="/static/app.css?v={{ static_v }}">
+<style>
+.wrap { max-width: 1200px; margin: 0 auto; padding: 20px; }
+</style>
+</head>
+<body>
 {% include "_nav.html" %}
 <div class="wrap">
   <div class="page-head">
@@ -123,3 +136,5 @@ document.querySelectorAll('.wiki-body').forEach(renderWikiMd);
 var _firstBtn = document.querySelector('.wiki-toc-item');
 if (_firstBtn) showWikiPage(_firstBtn.dataset.slug);
 </script>
+</body>
+</html>
