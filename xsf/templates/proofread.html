@@ -964,15 +964,6 @@ mark {
         <input id="metaPrompt" placeholder="AI 生成补充指令（可选, 如: 从序跋提取作者与成文年代）" style="flex:2;min-width:180px;">
         <button class="btn-primary" onclick="genMeta()">AI 生成（元数据回填）</button>
       </div>
-      <details style="margin:6px 0;">
-        <summary style="cursor:pointer;font-size:0.8rem;color:var(--text-muted);">粘贴/导入书目数据（BibTeX / RIS / 引文格式 → AI 解析填入）</summary>
-        <textarea id="bibSourceTa" placeholder="贴入 BibTeX 条目 / RIS / GB-T 7714 引文等书目数据, 或选择 .bib 文件…" style="width:100%;box-sizing:border-box;min-height:110px;margin:8px 0 4px;padding:6px 8px;border:1px solid var(--border);border-radius:5px;font-family:monospace;font-size:0.78rem;"></textarea>
-        <div class="add-row" style="margin:0;">
-          <input type="file" id="bibFileInput" accept=".bib,.ris,.txt" style="font-size:0.75rem;" onchange="loadBibFile(this)">
-          <button class="btn-primary" onclick="genBibImport()">AI 解析填入</button>
-          <span class="cg-hint">已有字段值不覆盖</span>
-        </div>
-      </details>
       <div class="cg-hint">AI 从文献块识别题名/著者/年代等回填空白字段（不覆盖已有值）；摘要草稿一并生成。</div>
       <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
       <div class="cg-head"><span class="cg-title">摘要</span>
@@ -2604,35 +2595,6 @@ async function patchCand(id) {
   const d = await postCard(`/collections/${encodeURIComponent(collection)}/candidates/${id}/review`,
     { action: 'patch', label: l.trim(), category: c.trim() });
   if (d.ok) { showToast('已修订'); setTimeout(() => location.reload(), 400); }
-}
-function loadBibFile(input) {
-  const f = input.files && input.files[0];
-  if (!f) return;
-  const reader = new FileReader();
-  reader.onload = () => { document.getElementById('bibSourceTa').value = reader.result || ''; };
-  reader.readAsText(f, 'utf-8');
-}
-
-async function genBibImport() {
-  const src = (document.getElementById('bibSourceTa').value || '').trim();
-  if (!src) { showToast('先粘贴书目数据或选择 .bib 文件'); return; }
-  if (!confirm('AI 解析书目数据填入元数据（已有字段值不覆盖）？后台运行，完成后提示。')) return;
-  const btns = [...document.querySelectorAll('.tp-pane[data-pane="meta"] details button')];
-  const btn = btns.find(b => b.textContent.includes('解析'));
-  const orig = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = '后台解析中…'; }
-  try {
-    const body = new URLSearchParams({ targets: 'meta', bib_source: src });
-    const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/candidates/generate`, { method: 'POST', body });
-    const d = await r.json();
-    if (!d.ok) { showToast('解析失败: ' + (d.error || '')); if (btn) { btn.disabled = false; btn.textContent = orig; } return; }
-    showToast('已提交后台解析书目, 可继续操作');
-    pollJob(d.job, j => {
-      if (btn) { btn.disabled = false; btn.textContent = orig; }
-      if (j.status === 'done') showToast(`书目解析完成（${(j.result || {}).model}）：回填 ${(j.result || {}).meta} 个字段, 刷新页面查看`, 5000);
-      else showToast('解析失败: ' + (j.error || '未知'), 5000);
-    });
-  } catch (e) { showToast('请求失败'); if (btn) { btn.disabled = false; btn.textContent = orig; } }
 }
 
 async function genMeta() {

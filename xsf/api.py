@@ -2421,14 +2421,11 @@ async def api_candidate_review(collection: str, cand_id: int,
 async def api_candidates_generate(collection: str, doc_id: int,
                                   targets: str = Form(None),
                                   prompt: str = Form(None),
-                                  bib_source: str = Form(None),
                                   toc_source: str = Form(None)):
     """LLM 生成候选: 抽样文献前部块文本, 按目标生成目录候选/实体候选/摘要草稿/元数据回填.
 
     targets 逗号分隔子集 (toc/entities/summary/meta), 默认全部。
     prompt: 自主补充提示 (仅 meta 目标生效, 附加到提取指令后)。
-    bib_source: 粘贴/导入的书目数据 (BibTeX/RIS/引文格式), meta 目标下
-    由 LLM 解析填入 (优先于文献块样本)。
     toc_source: 粘贴/导入的目录文本 (多级缩进/编号), toc 目标下解析成树;
     树不入库, 经 job result 的 tree 字段由前端确认合并。
     复用 P2c 的 llm_chat provider 配置 (default_llm).
@@ -2498,12 +2495,6 @@ async def api_candidates_generate(collection: str, doc_id: int,
                    "文献块样本仅作参考。")
         user_content = ("目录文本:\n" + toc_src[:6000]
                         + "\n\n文献块样本(参考):\n" + sample)
-    bib_src = (bib_source or "").strip()
-    if "meta" in want and bib_src:
-        system += ("\n用户提供了书目数据 (BibTeX/RIS/引文格式等) — "
-                   "优先解析书目数据填 meta 字段, 文献块样本仅作参考。")
-        user_content = f"书目数据:\n{bib_src[:4000]}\n\n文献块样本(参考):\n{sample}"
-
     def _bg():
         content, model = chat(
             [{"role": "system", "content": system},
