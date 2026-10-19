@@ -2127,16 +2127,16 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
                         )
 
                     for r in src.execute(
-                        """SELECT page_num, block_num, text
+                        """SELECT page_num, block_num, text, trans
                            FROM blocks_fts WHERE doc_id = ?""",
                         (old_id,),
                     ).fetchall():
                         dst.execute(
                             """INSERT INTO blocks_fts
-                               (doc_id, page_num, block_num, text)
-                               VALUES (?, ?, ?, ?)""",
+                               (doc_id, page_num, block_num, text, trans)
+                               VALUES (?, ?, ?, ?, ?)""",
                             (new_id, r["page_num"], r["block_num"],
-                             r["text"]),
+                             r["text"], r["trans"]),
                         )
 
                     # 修订史联动 (doc_id 重映射; in_pkg 置 0 = 未再导出)
@@ -3800,14 +3800,17 @@ async def edit_line(
                 (text, line_id),
             )
 
-            # 重新聚合该 block 全文
+            # 重新聚合该 block 全文 (含行级 trans 拼接进索引)
             block_rows = conn.execute(
-                """SELECT text FROM lines
+                """SELECT text, trans FROM lines
                    WHERE doc_id = ? AND page_num = ? AND block_num = ?
                    ORDER BY line_num""",
                 (line["doc_id"], line["page_num"], line["block_num"]),
             ).fetchall()
             block_text = "\n".join(r["text"] for r in block_rows)
+            block_trans = " ".join(
+                r["trans"] for r in block_rows
+                if (r["trans"] or "").strip())
 
             # 更新 FTS
             conn.execute(
@@ -3816,13 +3819,15 @@ async def edit_line(
                 (line["doc_id"], line["page_num"], line["block_num"]),
             )
             conn.execute(
-                """INSERT INTO blocks_fts(doc_id, page_num, block_num, text)
-                   VALUES (?, ?, ?, ?)""",
+                """INSERT INTO blocks_fts(doc_id, page_num, block_num,
+                                          text, trans)
+                   VALUES (?, ?, ?, ?, ?)""",
                 (
                     line["doc_id"],
                     line["page_num"],
                     line["block_num"],
                     _tokenize(block_text),
+                    block_trans or None,
                 ),
             )
             conn.commit()
@@ -4331,10 +4336,12 @@ async def edit_page(
                          if kept_flags[bn - 1] else None),
                     )
                     conn.execute(
-                        """INSERT INTO blocks_fts(doc_id, page_num, block_num, text)
-                           VALUES (?, ?, ?, ?)""",
+                        """INSERT INTO blocks_fts(doc_id, page_num, block_num,
+                                                  text, trans)
+                           VALUES (?, ?, ?, ?, ?)""",
                         (doc_id, page_num, bn,
-                         _tokenize(str(b.get("text", "")).strip("\n"))),
+                         _tokenize(str(b.get("text", "")).strip("\n")),
+                         (_cell(b, "trans") or None)),
                     )
             else:
                 # 块粒度: \n\n 分块, 每块一条 line 记录 — 2026-09-06 批次2
@@ -4757,7 +4764,8 @@ async def api_reorder_by_regions(collection: str, doc_id: int,
 
         rows = conn.execute(
             "SELECT id, block_num, text, bbox, block_label, page_w, page_h, "
-            "suspect FROM lines WHERE doc_id = ? AND page_num = ? "
+            "suspect, translit, gloss, trans FROM lines "
+            "WHERE doc_id = ? AND page_num = ? "
             "ORDER BY block_num, line_num",
             (doc_id, page_num),
         ).fetchall()
@@ -4827,22 +4835,27 @@ async def api_reorder_by_regions(collection: str, doc_id: int,
                      (doc_id, page_num))
         for new_bn, old_bn in enumerate(ordered, 1):
             block_rows = blocks_in[old_bn]
-            texts = []
+            texts, transes = [], []
             for ln, row in enumerate(block_rows, 1):
                 conn.execute(
                     """INSERT INTO lines
                        (doc_id, page_num, block_num, line_num, text, bbox,
-                        block_label, page_w, page_h, suspect)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        block_label, page_w, page_h, suspect,
+                        translit, gloss, trans)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (doc_id, page_num, new_bn, ln, row["text"], row["bbox"],
                      row["block_label"], row["page_w"], row["page_h"],
-                     row["suspect"]),
+                     row["suspect"], row["translit"], row["gloss"],
+                     row["trans"]),
                 )
                 texts.append(row["text"])
+                if (row["trans"] or "").strip():
+                    transes.append(row["trans"])
             conn.execute(
-                "INSERT INTO blocks_fts (doc_id, page_num, block_num, text) "
-                "VALUES (?, ?, ?, ?)",
-                (doc_id, page_num, new_bn, _tokenize("\n".join(texts))),
+                "INSERT INTO blocks_fts (doc_id, page_num, block_num, "
+                "text, trans) VALUES (?, ?, ?, ?, ?)",
+                (doc_id, page_num, new_bn, _tokenize("\n".join(texts)),
+                 " ".join(transes) or None),
             )
         conn.commit()
         return {"ok": True, "blocks": len(ordered),

@@ -67,8 +67,9 @@ def _fts_where(match_expr: str, like_terms: list[str],
         esc = [t.replace('\\', '\\\\').replace('%', r'\%')
                .replace('_', r'\_') for t in like_terms]
         conds.append('(' + ' OR '.join(
-            f'{alias}.text LIKE ? ESCAPE ' + "'\\'" for _ in esc) + ')')
-        params.extend(f'%{e}%' for e in esc)
+            f"({alias}.text LIKE ? ESCAPE '\\' OR "
+            f"{alias}.trans LIKE ? ESCAPE '\\')" for _ in esc) + ')')
+        params.extend(v for e in esc for v in (f'%{e}%', f'%{e}%'))
     return ' AND '.join(conds), params
 
 

@@ -17,6 +17,7 @@ from .config import get_default_llm_provider_id
 from .bib_utils import (BIB_TYPE_FIELDS, BIB_FIELD_LABELS,
                         normalize_bib_type, sync_doc_fields)
 from . import entity as ent
+from .ingest import _tokenize
 
 
 def _api():
@@ -343,7 +344,8 @@ def autofill_page(collection, doc_id, page_num, targets=None,
         if rows_mode == 3:
             targets = [t for t in targets if t != "translit"]
         rows = conn.execute(
-            """SELECT id, text, translit, gloss, trans, draft_flags
+            """SELECT id, page_num, block_num, text, translit, gloss, trans,
+                      draft_flags
                FROM lines WHERE doc_id = ? AND page_num = ?
                ORDER BY block_num, line_num""",
             (doc_id, page_num)).fetchall()
@@ -357,6 +359,7 @@ def autofill_page(collection, doc_id, page_num, targets=None,
     results, model = autofill_rows(
         blocks, src_lang=src_lang, targets=targets, provider_id=provider_id)
     filled = 0
+    touched = set()      # (page_num, block_num) 待重建 FTS 的块
     conn = get_conn(collection)
     try:
         for r, draft in zip(rows, results):
@@ -396,6 +399,23 @@ def autofill_page(collection, doc_id, page_num, targets=None,
                 params.append(r["id"])
                 conn.execute(f"UPDATE lines SET {', '.join(updates)} WHERE id = ?",
                              params)
+                touched.add((r["page_num"], r["block_num"]))
+        # 重建受影响块的 FTS (译文/转写进索引 — 中文可搜外文文献)
+        for pg, bn in touched:
+            lr = conn.execute(
+                "SELECT text, trans FROM lines WHERE doc_id = ? "
+                "AND page_num = ? AND block_num = ? ORDER BY line_num",
+                (doc_id, pg, bn)).fetchall()
+            conn.execute(
+                "DELETE FROM blocks_fts WHERE doc_id = ? "
+                "AND page_num = ? AND block_num = ?", (doc_id, pg, bn))
+            conn.execute(
+                "INSERT INTO blocks_fts(doc_id, page_num, block_num, "
+                "text, trans) VALUES (?, ?, ?, ?, ?)",
+                (doc_id, pg, bn,
+                 _tokenize("\n".join(x["text"] for x in lr)),
+                 " ".join(x["trans"] for x in lr
+                          if (x["trans"] or "").strip()) or None))
         conn.commit()
         return {"filled": filled, "model": model,
                 "empty": sum(1 for d in results if not d)}

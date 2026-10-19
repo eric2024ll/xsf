@@ -61,6 +61,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
     page_num UNINDEXED,
     block_num UNINDEXED,
     text,
+    trans,
     tokenize='trigram'
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS cards_fts USING fts5(
@@ -412,12 +413,15 @@ def _migrate(conn):
     """)
 
     # ── blocks_fts trigram 化 (2026-10-19): unicode61 整串 CJK 单 token,
-    # 子串命不中 → 重建为 trigram (≥3 字子串匹配)。一次性, 幂等。──
+    # 子串命不中 → 重建为 trigram (≥3 字子串匹配)。
+    # 2026-10-19 二改: 加 trans 列 (多语种译文进索引, 中文可搜外文文献);
+    # 检测条件: 无 trigram 或无 trans 列均触发重建。一次性, 幂等。──
     try:
         row = conn.execute(
             "SELECT sql FROM sqlite_master "
             "WHERE type='table' AND name='blocks_fts'").fetchone()
-        if row and 'trigram' not in (row["sql"] or ""):
+        if row and ('trigram' not in (row["sql"] or "")
+                    or 'trans' not in (row["sql"] or '')):
             conn.execute("DROP TABLE IF EXISTS blocks_fts_old")
             conn.execute("ALTER TABLE blocks_fts RENAME TO blocks_fts_old")
             conn.execute("""
@@ -426,12 +430,20 @@ def _migrate(conn):
                     page_num UNINDEXED,
                     block_num UNINDEXED,
                     text,
+                    trans,
                     tokenize='trigram'
                 )
             """)
+            # 回填: 行级 trans 拼接进块级索引 (多行块 group_concat)
             conn.execute(
-                "INSERT INTO blocks_fts(doc_id, page_num, block_num, text) "
-                "SELECT doc_id, page_num, block_num, text FROM blocks_fts_old")
+                "INSERT INTO blocks_fts(doc_id, page_num, block_num, text, trans) "
+                "SELECT b.doc_id, b.page_num, b.block_num, b.text, "
+                "  (SELECT group_concat(t, ' ') FROM ("
+                "     SELECT l.trans AS t FROM lines l "
+                "     WHERE l.doc_id = b.doc_id AND l.page_num = b.page_num "
+                "       AND l.block_num = b.block_num "
+                "       AND l.trans IS NOT NULL AND l.trans != '')) "
+                "FROM blocks_fts_old b")
             conn.execute("DROP TABLE blocks_fts_old")
     except Exception:
         pass   # 重建失败保持旧表 (检索仍可用, 只是子串受限)
