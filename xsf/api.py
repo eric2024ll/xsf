@@ -2281,6 +2281,36 @@ def _migrate_legacy_meta(conn, doc_id: int):
         conn.commit()
 
 
+def _migrate_legacy_summary(conn, doc_id: int):
+    """旧 summary 卡 → documents.bib_data.abstract (2026-10-19 摘要降级裁定).
+
+    幂等: 卡不存在或 bib 已有 abstract 时不覆盖.
+    """
+    row = conn.execute(
+        "SELECT id, content FROM doc_cards WHERE doc_id = ? AND kind = 'summary'",
+        (doc_id,)).fetchone()
+    if row is None:
+        return
+    try:
+        text = (json.loads(row["content"] or "{}") or {}).get("text", "")
+    except ValueError:
+        text = ""
+    text = (text or "").strip()
+    drow = conn.execute(
+        "SELECT bib_data FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    try:
+        bib = json.loads(drow["bib_data"] or "{}") if drow else {}
+    except ValueError:
+        bib = {}
+    if text and not bib.get("abstract"):
+        bib["abstract"] = text
+        conn.execute(
+            "UPDATE documents SET bib_data = ? WHERE id = ?",
+            (json.dumps(bib, ensure_ascii=False), doc_id))
+    conn.execute("DELETE FROM doc_cards WHERE id = ?", (row["id"],))
+    conn.commit()
+
+
 @app.get("/collections/{collection}/doc/{doc_id}/cards")
 async def api_cards(collection: str, doc_id: int):
     """三卡 + 候选队列数据."""
@@ -2290,6 +2320,7 @@ async def api_cards(collection: str, doc_id: int):
     conn = get_conn(collection)
     try:
         _migrate_legacy_meta(conn, doc_id)
+        _migrate_legacy_summary(conn, doc_id)
         cards = conn.execute(
             "SELECT id, kind, content, status, updated_at FROM doc_cards "
             "WHERE doc_id = ?", (doc_id,)).fetchall()
@@ -2723,12 +2754,17 @@ WIKI_SYSTEM_PROMPT = """你是研究知识库的编辑。基于给定的文献�
 def _wiki_llm_payload(conn):
     """组装生成输入: 文献列表 + reviewed 卡 + 每文献前 3 块采样."""
     docs = conn.execute(
-        "SELECT id, title, cite_key, filename, page_count FROM documents "
+        "SELECT id, title, cite_key, filename, page_count, bib_data FROM documents "
         "ORDER BY id").fetchall()
     doc_lines = []
+    abstracts = []
     for d in docs:
         doc_lines.append(f"- doc_id={d['id']} 《{d['title'] or d['filename']}》"
                          f" (cite: {d['cite_key'] or '-'}, {d['page_count']}页)")
+        bib = parse_bib_data(d["bib_data"]) or {}
+        if bib.get("abstract"):
+            abstracts.append(
+                f"[摘要·{d['title'] or d['filename']}] {bib['abstract'][:200]}")
     cards_txt = []
     for r in conn.execute(
             "SELECT dc.kind, dc.content, dc.status, d.title FROM doc_cards dc "
@@ -2754,8 +2790,7 @@ def _wiki_llm_payload(conn):
             items = "; ".join(f"{i.get('label')}({i.get('category') or '?'})"
                               for i in c["items"][:15])
             cards_txt.append(f"[实体卡·{r['title']}] {items}")
-        elif r["kind"] == "summary" and c.get("text"):
-            cards_txt.append(f"[摘要卡·{r['title']}] {c['text'][:200]}")
+    cards_txt.extend(abstracts)   # 摘要已降为元数据字段 (doc.bib_data.abstract)
     samples = []
     for d in docs[:10]:
         rows = conn.execute(
@@ -3390,6 +3425,7 @@ async def proofread_page(
             # 卡片组 (2026-10-17 整合裁定): 校对页文本侧内嵌四卡+候选队列
             try:
                 _migrate_legacy_meta(conn, doc_id)
+                _migrate_legacy_summary(conn, doc_id)
                 card_rows = conn.execute(
                     "SELECT kind, content, status FROM doc_cards "
                     "WHERE doc_id = ?", (doc_id,)).fetchall()

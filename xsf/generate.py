@@ -163,7 +163,8 @@ def gen_cards_core(collection, doc_id, targets="toc,entities,summary,meta",
     meta_items = (parsed.get("meta") or {}) if "meta" in want else {}
 
     n_meta = 0
-    if isinstance(meta_items, dict) and meta_items:
+    need_meta = isinstance(meta_items, dict) and bool(meta_items)
+    if need_meta or summary_text:
         conn_m = get_conn(collection)
         try:
             drow = conn_m.execute(
@@ -173,23 +174,26 @@ def gen_cards_core(collection, doc_id, targets="toc,entities,summary,meta",
                 bib = json.loads(drow["bib_data"] or "{}") if drow else {}
             except ValueError:
                 bib = {}
-            doc_bt = normalize_bib_type(
-                drow["bib_type"] if drow else doc.get("bib_type"))
-            fk_set = set(BIB_TYPE_FIELDS.get(
-                doc_bt, BIB_TYPE_FIELDS["@book"])) | {"note"}
-            for fk in fk_set:
-                v = str(meta_items.get(fk) or "").strip()
-                if v:
-                    bib[fk] = v
-                    n_meta += 1
-            if n_meta:
-                synced = sync_doc_fields(bib)
-                conn_m.execute(
-                    "UPDATE documents SET bib_data = ?, title = ?, "
-                    "author = ? WHERE id = ?",
-                    (json.dumps(bib, ensure_ascii=False),
-                     synced["title"], synced["author"], doc_id))
-                conn_m.commit()
+            if need_meta:
+                doc_bt = normalize_bib_type(
+                    drow["bib_type"] if drow else doc.get("bib_type"))
+                fk_set = set(BIB_TYPE_FIELDS.get(
+                    doc_bt, BIB_TYPE_FIELDS["@book"])) | {"note"}
+                for fk in fk_set:
+                    v = str(meta_items.get(fk) or "").strip()
+                    if v:
+                        bib[fk] = v
+                        n_meta += 1
+            if summary_text:
+                bib["abstract"] = summary_text   # 摘要降为元数据字段 (2026-10-19)
+            synced = sync_doc_fields(bib)
+            conn_m.execute(
+                "UPDATE documents SET bib_data = ?, "
+                "title = COALESCE(?, title), author = COALESCE(?, author) "
+                "WHERE id = ?",
+                (json.dumps(bib, ensure_ascii=False),
+                 synced["title"], synced["author"], doc_id))
+            conn_m.commit()
         finally:
             conn_m.close()
 
@@ -216,14 +220,6 @@ def gen_cards_core(collection, doc_id, targets="toc,entities,summary,meta",
                  float(it.get("confidence") or 0.5),
                  int(it.get("page_num") or 0) or None))
             n_ent += 1
-        if summary_text:
-            conn.execute(
-                """INSERT INTO doc_cards (doc_id, kind, content, status, updated_at)
-                   VALUES (?, 'summary', ?, 'draft', datetime('now'))
-                   ON CONFLICT(doc_id, kind) DO UPDATE SET
-                     content = excluded.content,
-                     updated_at = datetime('now')""",
-                (doc_id, json.dumps({"text": summary_text}, ensure_ascii=False)))
         conn.commit()
         return {"ok": True, "toc": _count_tree(toc_tree), "tree": toc_tree,
                 "entities": n_ent, "meta": n_meta,

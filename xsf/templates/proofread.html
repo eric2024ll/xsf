@@ -905,7 +905,6 @@ mark {
     {#- ── 文本面板 tab (2026-10-17 裁定: 元数据/目录/实体/摘要与全文并列切换) ── -#}
     {% set toc = cards_map.get('toc', {'content': {}, 'status': None}) %}
     {% set entity = cards_map.get('entity', {'content': {}, 'status': None}) %}
-    {% set summ = cards_map.get('summary', {'content': {}, 'status': None}) %}
     <div class="tp-tabs" id="tpTabs">
       <button class="tp-tab on" data-pane="text" onclick="switchTP('text')">全文</button>
       <button class="tp-tab" data-pane="meta" onclick="switchTP('meta')">元数据</button>
@@ -971,17 +970,12 @@ mark {
           <span class="cg-hint">已有字段值不覆盖</span>
         </div>
       </details>
-      <div class="cg-hint">AI 从文献块识别题名/著者/年代等回填空白字段（不覆盖已有值）；摘要草稿一并生成。</div>
+      <div class="cg-hint">AI 从文献块识别题名/著者/年代等回填空白字段（不覆盖已有值）。</div>
       <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
       <div class="cg-head"><span class="cg-title">摘要</span>
-        {% if summ.status %}<span class="badge {{ summ.status }}">{{ summ.status }}</span>{% endif %}
-        <button class="btn-primary" style="margin-left:auto;" onclick="genCards('summary')">AI 生成草稿</button>
+        <button class="btn-primary" style="margin-left:auto;" onclick="genCards('summary')">AI 生成摘要草稿</button>
       </div>
-      <textarea class="summary-ta" id="sumText" placeholder="100-200 字文献摘要（可由 AI 生成草稿后修订）">{{ summ.content.get('text', '') }}</textarea>
-      <div class="card-actions">
-        <button class="btn-primary" onclick="saveCard('summary')">保存摘要</button>
-        {% if summ.status %}<button onclick="toggleStatus('summary', '{{ summ.status }}')">{{ '退回 draft' if summ.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
-      </div>
+      <div class="cg-hint">摘要为元数据字段「摘要」，在上方元数据表单中编辑与保存（AI 草稿填入该字段，不覆盖已有值）。</div>
     </div>
     <div class="tp-pane" data-pane="toc">
       {% if toc.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ toc.status }}">{{ toc.status }}</span>（reviewed 进检索路）</div>{% endif %}
@@ -2479,7 +2473,6 @@ async function saveCard(kind) {
   let content = {};
   if (kind === 'toc') content = { tree: window.__tocTree || [] };
   else if (kind === 'entity') content = window.__entityContent || { items: [] };
-  else if (kind === 'summary') content = { text: document.getElementById('sumText').value };
   const d = await postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
     { kind, content: JSON.stringify(content), status: 'draft' });
   if (d.ok) showToast('已保存');
@@ -2983,8 +2976,13 @@ async function genCards(target) {
         let msg = `生成完成（${res.model}）：`;
         if (target === 'toc') msg += `${res.toc} 个目录节点`;
         else if (target === 'entities') msg += `${res.entities} 个实体候选`;
-        else msg += res.summary ? '摘要草稿已生成' : '摘要未变化';
-        showToast(msg + '，进入候选队列/摘要 tab 查看', 5000);
+        else {
+          msg += res.summary ? '摘要草稿已生成（填入元数据「摘要」）' : '摘要未变化';
+          showToast(msg, 5000);
+          if (res.summary) goPage({{ page_num }});   // 刷新使元数据表单显示新摘要
+          return;
+        }
+        showToast(msg + '，进入候选队列查看', 5000);
       } else {
         showToast('生成失败: ' + (j.error || '未知'), 5000);
       }

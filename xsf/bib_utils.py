@@ -97,6 +97,7 @@ BIB_FIELD_LABELS = {
     "url": "URL",
     "doi": "DOI",
     "note": "备注",
+    "abstract": "摘要",
     "month": "月份",
     "series": "丛书",
     "school": "学校",
