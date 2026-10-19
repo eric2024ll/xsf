@@ -381,6 +381,144 @@ def _xhtml_paragraphs(data: bytes) -> list[str]:
     return p.paras
 
 
+def _epub_toc_tree(zip_path: str | Path,
+                   spine: list[str]) -> list[dict]:
+    """从 nav.xhtml (EPUB3) / toc.ncx (EPUB2) 提取目录树。
+
+    节点 {label, page_num, from:'epub-toc'}; page_num = href 对应 spine 页号
+    (1 起, 锚部分忽略, 不在 spine 的文件页号为 None)。深度 ≤3。失败返 []。
+    """
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    NS = {
+        'cn': 'urn:oasis:names:tc:opendocument:xmlns:container',
+        'opf': 'http://www.idpf.org/2007/opf',
+        'epub': 'http://www.idpf.org/2007/ops',
+        'ncx': 'http://www.daisy.org/z3986/2005/ncx/',
+        'x': 'http://www.w3.org/1999/xhtml',
+    }
+    page_of = {name: i + 1 for i, name in enumerate(spine)}
+
+    def _norm(name: str, base: str) -> str:
+        return posixpath.normpath(posixpath.join(base, name)) if base else name
+
+    def _mk_page(base: str):
+        def _page(href: str):
+            href = (href or '').split('#')[0]
+            return page_of.get(href) or page_of.get(_norm(href, base))
+        return _page
+
+    def _cap(nodes: list[dict], depth: int = 1) -> list[dict]:
+        out = []
+        for n in nodes:
+            if not n.get('label'):
+                continue
+            node = {'label': n['label'], 'category': None,
+                    'page_num': n.get('page_num'), 'from': 'epub-toc'}
+            if depth < 3 and n.get('children'):
+                kids = _cap(n['children'], depth + 1)
+                if kids:
+                    node['children'] = kids
+            out.append(node)
+        return out
+
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            container = ET.fromstring(zf.read('META-INF/container.xml'))
+            opf_path = container.find('.//cn:rootfile', NS).get('full-path')
+            opf = ET.fromstring(zf.read(opf_path))
+            base = posixpath.dirname(opf_path)
+            manifest = opf.findall('.//opf:manifest/opf:item', NS)
+
+            # ① EPUB3 nav (manifest properties 含 nav)
+            nav_href = next(
+                (i.get('href') for i in manifest
+                 if 'nav' in (i.get('properties') or '')), None)
+            if not nav_href:
+                nav_href = next(
+                    (i.get('href') for i in manifest
+                     if (i.get('href') or '').lower() in
+                     ('nav.xhtml', 'toc.xhtml', 'nav.html')), None)
+            if nav_href:
+                nav_name = _norm(nav_href, base)
+                try:
+                    root = ET.fromstring(zf.read(nav_name))
+                except KeyError:
+                    root = None
+                if root is not None:
+                    _page = _mk_page(posixpath.dirname(nav_name))
+                    nav_el = None
+                    for nv in root.iter(f'{{{NS["x"]}}}nav'):
+                        t = nv.get(f'{{{NS["epub"]}}}type', '')
+                        if t == 'toc' or not t:
+                            nav_el = nv
+                            if t == 'toc':
+                                break
+                    if nav_el is not None:
+                        def _parse_ol(ol, depth=1):
+                            nodes = []
+                            for li in ol.findall(f'{{{NS["x"]}}}li'):
+                                a = li.find(f'{{{NS["x"]}}}a')
+                                node = {
+                                    'label': ''.join(
+                                        a.itertext()).strip() if a is not None
+                                    else ''.join(li.itertext()).strip(),
+                                    'page_num': _page(a.get('href'))
+                                    if a is not None else None,
+                                    'children': []}
+                                sub = li.find(f'{{{NS["x"]}}}ol')
+                                if sub is not None and depth < 4:
+                                    node['children'] = _parse_ol(sub, depth + 1)
+                                nodes.append(node)
+                            return nodes
+                        ol = nav_el.find(f'{{{NS["x"]}}}ol')
+                        if ol is not None:
+                            return _cap(_parse_ol(ol))
+
+            # ② EPUB2 toc.ncx (spine@toc → manifest id)
+            spine_el = opf.find('opf:spine', NS)
+            ncx_id = spine_el.get('toc') if spine_el is not None else None
+            ncx_href = next(
+                (i.get('href') for i in manifest
+                 if i.get('id') == ncx_id), None)
+            if not ncx_href:
+                ncx_href = next(
+                    (i.get('href') for i in manifest
+                     if (i.get('href') or '').lower().endswith('.ncx')), None)
+            if ncx_href:
+                ncx_name = _norm(ncx_href, base)
+                try:
+                    root = ET.fromstring(zf.read(ncx_name))
+                except KeyError:
+                    root = None
+                if root is not None:
+                    _page = _mk_page(posixpath.dirname(ncx_name))
+                    navmap = root.find('ncx:navMap', NS)
+                    if navmap is not None:
+                        def _parse_np(np, depth=1):
+                            label_el = np.find(
+                                'ncx:navLabel/ncx:text', NS)
+                            content = np.find('ncx:content', NS)
+                            node = {
+                                'label': (label_el.text or '').strip()
+                                if label_el is not None else '',
+                                'page_num': _page(content.get('src'))
+                                if content is not None else None,
+                                'children': []}
+                            for sub in np.findall('ncx:navPoint', NS):
+                                if depth < 4:
+                                    node['children'].append(
+                                        _parse_np(sub, depth + 1))
+                            return node
+                        nodes = [_parse_np(np)
+                                 for np in navmap.findall('ncx:navPoint', NS)]
+                        return _cap(nodes)
+    except Exception:
+        pass
+    return []
+
+
 def ingest_epub(epub_path: str | Path, collection: str,
                 cite_key: str = None, title: str = None,
                 author: str = None,
@@ -440,6 +578,14 @@ def ingest_epub(epub_path: str | Path, collection: str,
                 if block_num == 0:
                     empty_pages.append(pno)
 
+        # 目录卡: nav/ncx 提取 (anydoc 与 spine 管线都不含 EPUB 目录, 2026-10-19)
+        toc_tree = _epub_toc_tree(epub_path, spine)
+        if toc_tree:
+            conn.execute(
+                "INSERT INTO doc_cards (doc_id, kind, content, status) "
+                "VALUES (?, 'toc', ?, 'draft')",
+                (doc_id, json.dumps({'tree': toc_tree}, ensure_ascii=False)))
+
         conn.commit()
     finally:
         conn.close()
@@ -452,6 +598,7 @@ def ingest_epub(epub_path: str | Path, collection: str,
         'title': title,
         'mode': 'epub (spine 分页)',
         'empty_pages': empty_pages,
+        'toc_nodes': len(toc_tree),
     }
 
 
