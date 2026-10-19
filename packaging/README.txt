@@ -170,6 +170,15 @@ pip install -e ".[mcp]" 后可用 xsf-mcp, 把检索/上下文/元数据暴露�
 供 AI agent 直接查询文献池。零 API 改动, 与 Web/CLI 共享同一数据层。
 便携版的 xsf-mcp.exe 可作为 MCP server 接入(stdio)。
 
+【CLI 生成】
+卡片资产 / 实体图谱 / 知识地图 / 多语种自动填充等 LLM 操作可直接在命令行跑,
+无需打开 Web(需先配 llm_chat provider, 见上【OCR / LLM provider 配置】):
+  xsf gen cards    -c <书架> --doc <ID> [--targets toc,entities,summary,meta]
+  xsf gen entities -c <书架> [--doc <ID>]
+  xsf gen wiki     -c <书架>
+  xsf autofill     -c <书架> --doc <ID> [--targets gloss,trans]
+命令细节见 使用说明.txt【CLI 命令参考】。
+
 
 【升级注意事项】
 - 数据与程序分离: 覆盖解压 / 重装不动数据——数据在 XSF_DATA(db/*.db + 上传的

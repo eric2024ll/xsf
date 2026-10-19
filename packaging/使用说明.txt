@@ -115,6 +115,16 @@ CLI(整体备份 / 迁移 / 服务器↔本地同步): scripts/collection_io.py
   xsf doctor                           环境自检: 数据目录来源/书架与 DB 一致性/
                                        孤儿目录/本机各端口实例对比
 
+  ── LLM 生成 (需先配 llm_chat provider, 见 README.txt【OCR·LLM 设置】) ──
+  xsf gen cards    -c <书架> --doc <ID> [--targets toc,entities,summary,meta]
+                   [--prompt ..] [--toc-source ..] [--bib-source ..]
+                                      生成卡片资产(与 Web 校对页生成按钮等价)
+  xsf gen entities -c <书架> [--doc <ID>]   编译实体图谱(省略 --doc 则全书架)
+  xsf gen wiki     -c <书架>           编译知识地图(全部已定稿卡片)
+  xsf autofill     -c <书架> --doc <ID> [--targets gloss,trans]
+                                      多语种行自动填充(仅非中文文献)
+  所有命令可加 --provider <id> 显式指定; 未配置 LLM 会以退出码 3 报错。
+
 
 【常见问题】
 - 书架不见 / 上传的文献列表里看不到: 先跑 xsf doctor(CLI 与服务共用 XSF_DATA;
