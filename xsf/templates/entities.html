@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.ico">
+<title>实体图谱 — {{ collection }} · 小書房</title>
+<link rel="stylesheet" href="/static/app.css?v={{ static_v }}">
+<style>
+.wrap { max-width: 1220px; margin: 0 auto; padding: 20px; }
+.page-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
+.page-head h1 { font-size: 1.3rem; margin: 0; }
+.coll-name { color: var(--text-muted); font-weight: 400; font-size: 1rem; }
+.eg-meta { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: var(--text-muted); }
+.ai-badge { background: #ede9fe; color: #6d28d9; padding: 2px 10px; border-radius: 10px; font-size: 0.75rem; cursor: help; }
+.stale-note { color: #b45309; background: #fef3c7; padding: 2px 10px; border-radius: 10px; font-size: 0.75rem; }
+.back-link { color: var(--primary); text-decoration: none; }
+.empty-state { text-align: center; padding: 60px 0; color: var(--text-muted); }
+.empty-state .hint { font-size: 0.85rem; }
+.eg-layout { display: flex; gap: 18px; margin-top: 14px; align-items: flex-start; }
+.eg-side { flex: 0 0 260px; position: sticky; top: calc(var(--nav-h) + 12px); }
+.eg-side input, .eg-side select { width: 100%; box-sizing: border-box; margin-bottom: 6px; padding: 6px 9px;
+  border: 1px solid var(--border); border-radius: 6px; font-size: 0.85rem; }
+.eg-list { max-height: 70vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.eg-item { display: flex; justify-content: space-between; gap: 6px; padding: 7px 11px; cursor: pointer;
+  border-bottom: 1px solid var(--border); font-size: 0.86rem; }
+.eg-item:last-child { border-bottom: none; }
+.eg-item:hover { background: var(--accent); }
+.eg-item.on { background: var(--accent); border-left: 3px solid var(--primary); }
+.eg-item .cn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eg-item .mc { color: var(--text-muted); font-size: 0.75rem; flex: none; }
+.eg-main { flex: 1; min-width: 0; background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px 24px; }
+.eg-title { font-size: 1.25rem; margin: 0 0 4px; }
+.cat-badge { font-size: 0.72rem; background: var(--accent); color: var(--text-muted); padding: 1px 8px; border-radius: 9px; }
+.ext-link { font-size: 0.75rem; color: var(--primary); text-decoration: none; margin-left: 6px; }
+.eg-sec { margin-top: 16px; }
+.eg-sec h3 { font-size: 0.85rem; color: var(--text-muted); margin: 0 0 6px; font-weight: 600; }
+.chip { display: inline-block; background: var(--accent); padding: 2px 9px; border-radius: 10px;
+  font-size: 0.8rem; margin: 0 5px 5px 0; }
+.chip.clickable { cursor: pointer; }
+.chip.clickable:hover { background: var(--primary); color: #fff; }
+.prop-row { font-size: 0.85rem; margin: 2px 0; }
+.prop-row .k { color: var(--text-muted); }
+table.eg-tbl { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+table.eg-tbl th, table.eg-tbl td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+table.eg-tbl th { color: var(--text-muted); font-weight: 500; }
+.mlink { color: var(--primary); text-decoration: none; }
+.mini-btn { border: 1px solid var(--border); background: none; cursor: pointer; font-size: 0.72rem;
+  padding: 1px 7px; border-radius: 6px; color: var(--text-muted); }
+.mini-btn:hover { border-color: var(--primary); color: var(--primary); }
+.add-form { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.add-form select, .add-form input { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 0.8rem; }
+.add-form .val { flex: 1; min-width: 120px; }
+.hint { font-size: 0.78rem; color: var(--text-muted); }
+@media (max-width: 760px) {
+  .eg-layout { flex-direction: column; }
+  .eg-side { position: static; flex: none; width: 100%; }
+}
+</style>
+</head>
+<body>
+{% include "_nav.html" %}
+<div class="wrap">
+  <div class="page-head">
+    <h1>实体图谱 <span class="coll-name">{{ collection }}</span></h1>
+    <div class="eg-meta">
+      <span class="ai-badge" title="本页为 LLM 从文献编译生成的登记簿, 可再生; 事实源是文献, 引用前请核对原文">AI 编译</span>
+      <span id="egCounts"></span>
+      <span id="egStale"></span>
+      <button class="mini-btn" id="egGenBtn" onclick="egGenerate()">编译实体图</button>
+      <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 文献列表</a>
+    </div>
+  </div>
+
+  <div id="egEmpty" class="empty-state" style="display:none;">
+    <p>尚未编译实体图。</p>
+    <p class="hint">点右上「编译实体图」从文献抽取实体（需配置 llm_chat provider）。</p>
+  </div>
+
+  <div class="eg-layout" id="egLayout">
+    <aside class="eg-side">
+      <input type="text" id="egQ" placeholder="搜索实体…" oninput="egRenderList()">
+      <select id="egCat" onchange="egRenderList()"><option value="">全部类别</option></select>
+      <div class="eg-list" id="egList"></div>
+    </aside>
+    <main class="eg-main" id="egMain">
+      <p class="hint" id="egPlaceholder">从左侧选择一个实体查看详情。</p>
+    </main>
+  </div>
+</div>
+
+<script>
+window.C = {{ collection | tojson }};
+var EG_LIST = [], EG_CUR = null;
+
+function esc(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function api(p){ return '/collections/' + encodeURIComponent(window.C) + p; }
+
+async function egLoad(){
+  var r = await fetch(api('/entities?with_mentions=0&limit=2000'));
+  var d = await r.json();
+  EG_LIST = d.entities || [];
+  var empty = document.getElementById('egEmpty');
+  var layout = document.getElementById('egLayout');
+  if(!EG_LIST.length){ empty.style.display='block'; layout.style.display='none'; }
+  else { empty.style.display='none'; layout.style.display='flex'; }
+  var cats = Array.from(new Set(EG_LIST.map(function(e){return e.category;}).filter(Boolean))).sort();
+  var sel = document.getElementById('egCat');
+  sel.innerHTML = '<option value="">全部类别</option>' + cats.map(function(c){return '<option>'+esc(c)+'</option>';}).join('');
+  egRenderList();
+}
+
+function egRenderList(){
+  var q = (document.getElementById('egQ').value||'').trim().toLowerCase();
+  var cat = document.getElementById('egCat').value;
+  var list = EG_LIST.filter(function(e){
+    if(cat && e.category !== cat) return false;
+    if(q){ var hay = (e.canonical + ' ' + (e.aliases||[]).join(' ')).toLowerCase(); if(hay.indexOf(q)<0) return false; }
+    return true;
+  });
+  document.getElementById('egList').innerHTML = list.map(function(e){
+    return '<div class="eg-item'+(EG_CUR===e.id?' on':'')+'" data-id="'+e.id+'" onclick="egShow('+e.id+')">'
+      + '<span class="cn">'+esc(e.canonical)+'</span>'
+      + '<span class="mc">'+e.mention_count+'</span></div>';
+  }).join('');
+}
+
+async function egShow(id){
+  EG_CUR = id;
+  egRenderList();
+  var r = await fetch(api('/entities/'+id));
+  if(!r.ok){ document.getElementById('egMain').innerHTML = '<p class="hint">加载失败</p>'; return; }
+  var e = await r.json();
+  var h = [];
+  h.push('<h2 class="eg-title">'+esc(e.canonical)
+    + (e.category?' <span class="cat-badge">'+esc(e.category)+'</span>':'')
+    + (e.ext_ids && e.ext_ids.cbdb?' <span class="ext-link">CBDB PID '+e.ext_ids.cbdb+'</span>':'')
+    + '</h2>');
+
+  if((e.aliases||[]).length){
+    h.push('<div class="eg-sec"><h3>别名</h3>'+(e.aliases||[]).map(function(a){return '<span class="chip">'+esc(a)+'</span>';}).join('')+'</div>');
+  }
+  var pk = Object.keys(e.props||{});
+  if(pk.length){
+    h.push('<div class="eg-sec"><h3>属性</h3>'+pk.map(function(k){return '<div class="prop-row"><span class="k">'+esc(k)+'：</span>'+esc(e.props[k])+'</div>';}).join('')+'</div>');
+  } else {
+    h.push('<div class="eg-sec"><h3>属性</h3><span class="hint">暂无（CBDB 命中时自动继承；也可下方补录）</span></div>');
+  }
+
+  // 人工补录
+  h.push('<div class="eg-sec"><h3>人工补录 (证据锚必填)</h3>'
+    + '<div class="add-form">'
+    + '<select id="addKind"><option value="prop">属性</option><option value="alias">别名</option><option value="link">关系</option></select>'
+    + '<input class="val" id="addVal" placeholder="如 官职:两江总督 / 别名 / 关系描述">'
+    + '<input id="addEv" placeholder="证据: doc_id:page (如 4:51)">'
+    + '<button class="mini-btn" onclick="egAdd('+id+')">补录</button></div></div>');
+
+  if((e.additions||[]).length){
+    h.push('<div class="eg-sec"><h3>补录记录</h3>'+(e.additions||[]).map(function(a){
+      var v = a.value; try{ v = JSON.parse(a.value); v = (typeof v==='object')?JSON.stringify(v):v; }catch(_){}
+      return '<div class="prop-row"><span class="k">'+esc(a.kind)+'：</span>'+esc(v)
+        + (a.evidence?' <span class="hint">['+esc(a.evidence)+']</span>':'')+'</div>';
+    }).join('')+'</div>');
+  }
+
+  // 提及
+  if((e.mentions||[]).length){
+    h.push('<div class="eg-sec"><h3>提及 ('+e.mentions.length+')</h3><table class="eg-tbl"><tr><th>文献</th><th>页</th><th>原文写法</th><th>状态</th><th></th></tr>'
+      + e.mentions.map(function(m){
+        var t = esc(m.title||m.filename||('doc '+m.doc_id));
+        var pg = (m.page_num!=null)?('<a class="mlink" href="'+api('/doc/'+m.doc_id+'/proofread?page='+m.page_num)+'">p'+m.page_num+' ↗</a>'):'—';
+        return '<tr'+(m.valid?'':' style="opacity:.45"')+'><td>'+t+'</td><td>'+pg+'</td><td>'+esc(m.surface)+'</td>'
+          + '<td>'+(m.valid?'':'已标错')+'</td>'
+          + '<td>'+(m.valid?'<button class="mini-btn" onclick="egInvalidate('+m.id+',this)">错了</button>':'<button class="mini-btn" onclick="egInvalidate('+m.id+',this,1)">恢复</button>')+'</td></tr>';
+      }).join('')+'</table></div>');
+  }
+
+  // 共现邻居
+  if((e.neighbors||[]).length){
+    h.push('<div class="eg-sec"><h3>共现邻居 (同文献同页)</h3>'+(e.neighbors||[]).map(function(n){
+      return '<span class="chip clickable" onclick="egShow('+n.id+')">'+esc(n.canonical)+' ·'+n.co+'</span>';
+    }).join('')+'</div>');
+  }
+
+  // 合并
+  h.push('<div class="eg-sec"><h3>合并到其他实体</h3><div class="add-form">'
+    + '<input id="mergeInto" placeholder="目标实体 id (左侧列表可查)">'
+    + '<button class="mini-btn" onclick="egMerge('+id+')">合并</button>'
+    + '<span class="hint">本实体将并入目标，别名与提及随迁。</span></div></div>');
+
+  document.getElementById('egMain').innerHTML = h.join('');
+}
+
+async function egInvalidate(mid, btn, restore){
+  var fd = new FormData(); fd.append('valid', restore?'1':'0');
+  await fetch(api('/mentions/'+mid+'/invalidate'), {method:'POST', body:fd});
+  egShow(EG_CUR);
+}
+
+async function egAdd(id){
+  var kind = document.getElementById('addKind').value;
+  var value = document.getElementById('addVal').value.trim();
+  var ev = document.getElementById('addEv').value.trim();
+  if(!value){ alert('请填写内容'); return; }
+  if(kind!=='alias' && !ev){ alert('属性/关系补录必须填写证据锚'); return; }
+  var fd = new FormData(); fd.append('kind',kind); fd.append('value',value); fd.append('evidence',ev);
+  var r = await fetch(api('/entities/'+id+'/additions'), {method:'POST', body:fd});
+  var d = await r.json();
+  if(!r.ok){ alert(d.error||'失败'); return; }
+  egShow(id);
+}
+
+async function egMerge(id){
+  var into = document.getElementById('mergeInto').value.trim();
+  if(!into){ alert('请填写目标实体 id'); return; }
+  if(!confirm('将把本实体合并进 id='+into+'（别名与提及随迁）。继续？')) return;
+  var fd = new FormData(); fd.append('into_id', into);
+  var r = await fetch(api('/entities/'+id+'/merge'), {method:'POST', body:fd});
+  var d = await r.json();
+  if(!r.ok){ alert(d.error||'失败'); return; }
+  EG_CUR = d.into_id;
+  await egLoad(); egShow(d.into_id);
+}
+
+async function egStatus(){
+  var r = await fetch(api('/entitygraph/status'));
+  var d = await r.json();
+  document.getElementById('egCounts').textContent = (d.entities||0)+' 实体 · '+(d.mentions||0)+' 提及';
+  document.getElementById('egStale').innerHTML = d.stale ? '<span class="stale-note">文献已更新，建议重编</span>' : '';
+}
+
+async function egGenerate(){
+  var btn = document.getElementById('egGenBtn');
+  btn.disabled = true; btn.textContent = '编译中…';
+  try{
+    var r = await fetch(api('/entitygraph/generate'), {method:'POST'});
+    var d = await r.json();
+    if(!r.ok){ alert(d.error||'启动失败'); return; }
+    var jid = d.job;
+    for(var i=0;i<600;i++){
+      await new Promise(function(s){setTimeout(s,1500);});
+      var jr = await fetch('/jobs/'+jid); var jd = await jr.json();
+      if(jd.status==='done'){ alert('编译完成：'+(jd.result&&jd.result.mentions||0)+' 条提及'); break; }
+      if(jd.status==='error'){ alert('编译失败：'+(jd.error||'')); break; }
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = '编译实体图';
+    await egStatus(); await egLoad();
+  }
+}
+
+egStatus(); egLoad().then(function(){
+  var id = new URLSearchParams(location.search).get('id');
+  if(id) egShow(parseInt(id, 10));
+});
+</script>
+</body>
+</html>

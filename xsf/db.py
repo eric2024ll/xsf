@@ -332,6 +332,76 @@ def _migrate(conn):
         )
     """)
 
+    # ── 实体图层 (P8, 2026-10-18): 书架级编译产物 (ontology RAG 底座) ──
+    # 原则: 文献是事实源(资产层), 实体/提及/关系是编译层(可再生, 不入修订史, 不进语料包)。
+    # entities=登记簿(归一后的实体), entity_mentions=签到簿(文献中的出现+锚点),
+    # entity_links=关系簿(M1 空表定型/M2 填数据), entity_additions=人工 patch 层(重编不丢)。
+    # ext_ids 开放字典: {"cbdb":12345,...} —— 跨书架确定性合并的钥匙 (namespace 可插拔)。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            canonical TEXT NOT NULL,
+            category TEXT,
+            aliases TEXT DEFAULT '[]',
+            ext_ids TEXT DEFAULT '{}',
+            props TEXT DEFAULT '{}',
+            origin TEXT DEFAULT 'ai',
+            compiled_at TEXT,
+            UNIQUE(canonical)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entity_mentions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL,
+            doc_id INTEGER NOT NULL,
+            page_num INTEGER,
+            block_num INTEGER,
+            surface TEXT,
+            valid INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(entity_id, doc_id, page_num, block_num, surface)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entity_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            src_id INTEGER NOT NULL,
+            dst_id INTEGER NOT NULL,
+            rel TEXT,
+            evidence TEXT,
+            origin TEXT DEFAULT 'ai',
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(src_id, dst_id, rel)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entity_additions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            value TEXT NOT NULL,
+            evidence TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entity_status (
+            collection TEXT PRIMARY KEY,
+            status TEXT DEFAULT 'none',
+            base_edits INTEGER DEFAULT 0,
+            generated_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_mentions_entity
+            ON entity_mentions(entity_id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_mentions_doc
+            ON entity_mentions(doc_id)
+    """)
+
 
 def init_db(collection: str):
     """初始化单个 collection 的 DB（建表 + 迁移）"""

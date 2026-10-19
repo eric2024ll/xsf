@@ -161,11 +161,28 @@ function renderGroups(data){
   var truncNote=data.groups_truncated?'（命中文献超过 '+data.groups.length+' 篇，仅列前 '+data.groups.length+' 篇）':'';
   countEl.innerHTML='共命中 '+data.total_blocks+' 块 · '+data.total_docs+' 篇文献 '+
     truncNote+'<span class="engine-badge fts5">FTS5</span>';
+  if(data.entities&&data.entities.length){
+    var eb=document.createElement('div');
+    eb.className='doc-group';
+    eb.innerHTML='<div class="doc-group-head"><span class="dg-title">实体命中（'+data.entities.length+'）</span></div>'+
+      '<div class="doc-group-body" style="display:block;padding:6px 10px;">'+
+      data.entities.map(function(e){
+        return '<a class="eg-hit" style="display:inline-block;margin:2px 8px 2px 0;color:var(--primary);cursor:pointer;" '+
+          'onclick="openEntity('+e.id+')">'+escapeHtml(e.canonical)+
+          (e.category?' <span style="color:var(--text-muted);font-size:0.78rem;">'+escapeHtml(e.category)+'</span>':'')+
+          ' <span style="color:var(--text-muted);font-size:0.78rem;">·'+e.mentions+'</span></a>';
+      }).join('')+'</div>';
+    container.appendChild(eb);
+  }
   groupData=data.groups.map(function(g){
     return {doc_id:g.doc_id,title:g.title||g.filename,cite_key:g.cite_key,
             hit_count:g.hit_count,loaded:0};
   });
   groupData.forEach(function(g,i){ container.appendChild(buildGroupEl(i)); });
+}
+
+function openEntity(id){
+  window.location='/collections/'+encodeURIComponent(currentCollection)+'/entities/view?id='+id;
 }
 
 function buildGroupEl(i){

@@ -541,6 +541,7 @@ async def api_search_grouped(collection: str, q: str,
                 "groups": groups,
                 "cards": _card_hits(collection, q),
                 "wiki": _wiki_hits(collection, q),
+                "entities": _entity_hits(collection, q),
                 "total_blocks": stats["blocks"], "total_docs": stats["docs"],
                 "groups_truncated": len(groups) >= limit}
     except Exception as e:
@@ -3040,6 +3041,355 @@ async def wiki_view(request: Request, collection: str):
         conn.close()
 
 
+# ── 实体图层 (P8, 2026-10-18): 书架级编译产物 · ontology RAG 底座 ──
+
+def _entity_mentions(conn, entity_id, doc_id=None):
+    sql = ("SELECT m.id, m.doc_id, m.page_num, m.block_num, m.surface, m.valid, "
+           "d.title, d.filename FROM entity_mentions m "
+           "LEFT JOIN documents d ON d.id = m.doc_id WHERE m.entity_id = ?")
+    params = [entity_id]
+    if doc_id:
+        sql += " AND m.doc_id = ?"
+        params.append(doc_id)
+    sql += " ORDER BY m.doc_id, m.page_num, m.block_num"
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def _entity_neighbors(conn, entity_id, limit: int = 30):
+    """共现邻居 (同文献同页出现, 一跳) —— M1 的最小可行图. """
+    rows = conn.execute(
+        "SELECT m2.entity_id AS eid, e.canonical, e.category, COUNT(*) c "
+        "FROM entity_mentions m1 "
+        "JOIN entity_mentions m2 ON m2.doc_id = m1.doc_id "
+        "  AND m2.page_num = m1.page_num "
+        "JOIN entities e ON e.id = m2.entity_id "
+        "WHERE m1.entity_id = ? AND m2.entity_id != ? "
+        "  AND m1.valid = 1 AND m2.valid = 1 "
+        "GROUP BY m2.entity_id ORDER BY c DESC LIMIT ?",
+        (entity_id, entity_id, limit)).fetchall()
+    return [{"id": r["eid"], "canonical": r["canonical"],
+             "category": r["category"], "co": r["c"]} for r in rows]
+
+
+def _entity_hits(collection: str, q: str, limit: int = 10):
+    """实体命中组: 检索 canonical/aliases, 供 search-grouped."""
+    rows = []
+    try:
+        conn = get_conn(collection)
+        try:
+            esc = q.replace('\\', '\\\\').replace('%', r'\%').replace('_', r'\_')
+            for r in conn.execute(
+                    "SELECT id, canonical, category FROM entities "
+                    "WHERE canonical LIKE ? ESCAPE '\\' "
+                    "OR aliases LIKE ? ESCAPE '\\' LIMIT ?",
+                    (f"%{esc}%", f"%{esc}%", limit)).fetchall():
+                n = conn.execute(
+                    "SELECT COUNT(*) c FROM entity_mentions "
+                    "WHERE entity_id = ? AND valid = 1",
+                    (r["id"],)).fetchone()["c"]
+                rows.append({"id": r["id"], "canonical": r["canonical"],
+                             "category": r["category"], "mentions": n})
+        finally:
+            conn.close()
+    except Exception:
+        rows = []
+    return rows
+
+
+@app.post("/collections/{collection}/entitygraph/generate")
+async def entitygraph_generate(collection: str, doc_id: int = Form(None)):
+    """编译实体图 (全量; doc_id 给定时仅重建该文献的提及)."""
+    from . import entity as ent
+    from .config import get_default_llm_provider_id
+    if collection not in list_collections():
+        return JSONResponse(status_code=404, content={"error": "书架不存在"})
+    try:
+        get_default_llm_provider_id()
+    except RuntimeError as e:
+        return JSONResponse(status_code=503, content={"error": str(e)})
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            "SELECT status FROM entity_status WHERE collection = ?",
+            (collection,)).fetchone()
+        if cur and cur["status"] == 'generating':
+            return JSONResponse(status_code=409,
+                                content={"error": "正在编译中，请稍候"})
+        conn.execute(
+            "INSERT INTO entity_status(collection, status, base_edits, generated_at) "
+            "VALUES(?, 'generating', 0, NULL) "
+            "ON CONFLICT(collection) DO UPDATE SET status = 'generating'",
+            (collection,))
+        conn.commit()
+        conn.close()
+
+        def _bg():
+            conn2 = get_conn(collection)
+            try:
+                provider_id = get_default_llm_provider_id()
+                doc_ids = [int(doc_id)] if doc_id else None
+                total = ent.generate_graph(collection, doc_ids, provider_id)
+                return {"mentions": total}
+            except Exception:
+                try:
+                    conn2.execute(
+                        "UPDATE entity_status SET status = 'none' "
+                        "WHERE collection = ?", (collection,))
+                    conn2.commit()
+                except Exception:
+                    pass
+                raise
+            finally:
+                conn2.close()
+
+        jid = _bg_job_start("entitygraph-gen", _bg)
+        return {"ok": True, "job": jid}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/collections/{collection}/entitygraph/status")
+async def entitygraph_status(collection: str):
+    from . import entity as ent
+    try:
+        return ent.graph_status(collection)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/collections/{collection}/entitygraph/migrate-legacy")
+async def entitygraph_migrate_legacy(collection: str):
+    """一次性: 旧 per-doc 实体卡 items 上卷为提及 (归一到书架实体)."""
+    from . import entity as ent
+    try:
+        n = ent.migrate_legacy(collection)
+        return {"ok": True, "mentions": n}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/collections/{collection}/entities/export")
+async def entities_export(collection: str):
+    """导出实体登记簿 JSON (带 provenance 头) —— 跨书架流通/工具对接."""
+    conn = get_conn(collection)
+    try:
+        st = conn.execute("SELECT * FROM entity_status WHERE collection = ?",
+                          (collection,)).fetchone()
+        ents = []
+        for r in conn.execute(
+                "SELECT id, canonical, category, aliases, ext_ids, props, origin "
+                "FROM entities ORDER BY id"):
+            e = dict(r)
+            for k in ("aliases", "ext_ids", "props"):
+                try:
+                    e[k] = json.loads(e[k] or ('[]' if k == 'aliases' else '{}'))
+                except (ValueError, TypeError):
+                    e[k] = [] if k == 'aliases' else {}
+            ents.append(e)
+        return {
+            "provenance": {
+                "collection": collection,
+                "compiled_at": st["generated_at"] if st else None,
+                "base_edits": st["base_edits"] if st else 0,
+                "model": "xsf-entitygraph-m1",
+                "format": "xsf-entities-v1",
+            },
+            "entities": ents,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/collections/{collection}/entities")
+async def api_entities(collection: str, q: str = None, category: str = None,
+                       limit: int = 500, with_mentions: int = 0,
+                       doc_id: int = None):
+    """实体列表 JSON (实体页与 agent/lit-search 共用出口)."""
+    conn = get_conn(collection)
+    try:
+        where, params = [], []
+        if q:
+            esc = q.replace('\\', '\\\\').replace('%', r'\%').replace('_', r'\_')
+            where.append("(canonical LIKE ? ESCAPE '\\' "
+                         "OR aliases LIKE ? ESCAPE '\\')")
+            params += [f"%{esc}%", f"%{esc}%"]
+        if category:
+            where.append("category = ?")
+            params.append(category)
+        sql = ("SELECT id, canonical, category, aliases, ext_ids, props, origin "
+               "FROM entities")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY canonical LIMIT ?"
+        params.append(limit)
+        out = []
+        for r in conn.execute(sql, params).fetchall():
+            e = dict(r)
+            for k in ("aliases", "ext_ids", "props"):
+                try:
+                    e[k] = json.loads(e[k] or ('[]' if k == 'aliases' else '{}'))
+                except (ValueError, TypeError):
+                    e[k] = [] if k == 'aliases' else {}
+            e["mention_count"] = conn.execute(
+                "SELECT COUNT(*) c FROM entity_mentions "
+                "WHERE entity_id = ? AND valid = 1",
+                (r["id"],)).fetchone()["c"]
+            if with_mentions:
+                e["mentions"] = _entity_mentions(conn, r["id"], doc_id)
+            out.append(e)
+        return {"collection": collection, "entities": out}
+    finally:
+        conn.close()
+
+
+@app.get("/collections/{collection}/entities/view")
+async def entities_view(request: Request, collection: str):
+    """实体聚合页: 左登记簿列表 + 右详情 (提及/邻居/属性/补录)."""
+    from . import entity as ent
+    st = ent.graph_status(collection)
+    return templates.TemplateResponse(
+        request, "entities.html",
+        _nav_ctx("docs", collection, eg_status=st))
+
+
+@app.get("/collections/{collection}/entities/{entity_id}")
+async def api_entity_detail(collection: str, entity_id: int):
+    conn = get_conn(collection)
+    try:
+        r = conn.execute(
+            "SELECT id, canonical, category, aliases, ext_ids, props, origin "
+            "FROM entities WHERE id = ?", (entity_id,)).fetchone()
+        if not r:
+            return JSONResponse(status_code=404, content={"error": "实体不存在"})
+        e = dict(r)
+        for k in ("aliases", "ext_ids", "props"):
+            try:
+                e[k] = json.loads(e[k] or ('[]' if k == 'aliases' else '{}'))
+            except (ValueError, TypeError):
+                e[k] = [] if k == 'aliases' else {}
+        e["mentions"] = _entity_mentions(conn, entity_id)
+        e["additions"] = [dict(x) for x in conn.execute(
+            "SELECT * FROM entity_additions WHERE entity_id = ? ORDER BY id",
+            (entity_id,)).fetchall()]
+        e["neighbors"] = _entity_neighbors(conn, entity_id)
+        return e
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/entities/{entity_id}/merge")
+async def api_entity_merge(collection: str, entity_id: int,
+                           into_id: int = Form(...)):
+    """合并 entity_id → into_id (提及迁移 + 别名并入 + 记录可追溯)."""
+    if entity_id == into_id:
+        return JSONResponse(status_code=400, content={"error": "不能并入自身"})
+    conn = get_conn(collection)
+    try:
+        src = conn.execute("SELECT * FROM entities WHERE id = ?",
+                           (entity_id,)).fetchone()
+        dst = conn.execute("SELECT * FROM entities WHERE id = ?",
+                           (into_id,)).fetchone()
+        if not src or not dst:
+            return JSONResponse(status_code=404, content={"error": "实体不存在"})
+        conn.execute("UPDATE OR IGNORE entity_mentions SET entity_id = ? "
+                     "WHERE entity_id = ?", (into_id, entity_id))
+        conn.execute("DELETE FROM entity_mentions WHERE entity_id = ?",
+                     (entity_id,))
+        try:
+            dst_alias = json.loads(dst["aliases"] or '[]')
+        except (ValueError, TypeError):
+            dst_alias = []
+        try:
+            src_alias = json.loads(src["aliases"] or '[]')
+        except (ValueError, TypeError):
+            src_alias = []
+        for a in [src["canonical"]] + src_alias:
+            if a and a not in dst_alias:
+                dst_alias.append(a)
+        conn.execute("UPDATE entities SET aliases = ? WHERE id = ?",
+                     (json.dumps(dst_alias, ensure_ascii=False), into_id))
+        try:
+            de = json.loads(dst["ext_ids"] or '{}')
+        except (ValueError, TypeError):
+            de = {}
+        try:
+            se = json.loads(src["ext_ids"] or '{}')
+        except (ValueError, TypeError):
+            se = {}
+        for k, v in se.items():
+            de.setdefault(k, v)
+        conn.execute("UPDATE entities SET ext_ids = ? WHERE id = ?",
+                     (json.dumps(de, ensure_ascii=False), into_id))
+        conn.execute("UPDATE entity_additions SET entity_id = ? "
+                     "WHERE entity_id = ?", (into_id, entity_id))
+        conn.execute(
+            "INSERT INTO entity_additions(entity_id, kind, value, evidence) "
+            "VALUES(?,?,?,?)",
+            (into_id, 'merge', json.dumps(
+                {"merged_id": entity_id,
+                 "merged_canonical": src["canonical"]}, ensure_ascii=False),
+             None))
+        conn.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
+        conn.commit()
+        return {"ok": True, "into_id": into_id}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/mentions/{mention_id}/invalidate")
+async def api_mention_invalidate(collection: str, mention_id: int,
+                                 valid: int = Form(0)):
+    """「错了」: 标记提及无效 (valid=0) —— 编译层纠错回流阀."""
+    conn = get_conn(collection)
+    try:
+        conn.execute("UPDATE entity_mentions SET valid = ? WHERE id = ?",
+                     (valid, mention_id))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/entities/{entity_id}/additions")
+async def api_entity_addition(collection: str, entity_id: int,
+                              kind: str = Form(...), value: str = Form(...),
+                              evidence: str = Form(None)):
+    """人工 patch 补录 (prop/link 必须带证据锚; 重编不丢)."""
+    if kind not in ("prop", "alias", "link"):
+        return JSONResponse(status_code=400, content={"error": "kind 非法"})
+    if kind in ("prop", "link") and not (evidence or "").strip():
+        return JSONResponse(
+            status_code=400,
+            content={"error": "属性/关系补录必须提供证据锚"})
+    conn = get_conn(collection)
+    try:
+        if not conn.execute("SELECT 1 FROM entities WHERE id = ?",
+                            (entity_id,)).fetchone():
+            return JSONResponse(status_code=404, content={"error": "实体不存在"})
+        conn.execute(
+            "INSERT INTO entity_additions(entity_id, kind, value, evidence) "
+            "VALUES(?,?,?,?)", (entity_id, kind, value, evidence))
+        if kind == "alias":
+            row = conn.execute("SELECT aliases FROM entities WHERE id = ?",
+                               (entity_id,)).fetchone()
+            try:
+                al = json.loads(row["aliases"] or '[]')
+            except (ValueError, TypeError):
+                al = []
+            av = value.strip()
+            if av and av not in al:
+                al.append(av)
+                conn.execute("UPDATE entities SET aliases = ? WHERE id = ?",
+                             (json.dumps(al, ensure_ascii=False), entity_id))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
 def _wiki_hits(collection: str, q: str, limit: int = 10):
     """Wiki 命中组: LIKE 检索概念页 (标题+正文), 供两 search 端点."""
     rows = []
@@ -3245,6 +3595,17 @@ async def proofread_page(
                 ).fetchall()]
             except sqlite3.OperationalError:
                 entity_cats = []
+            # P8: 本文献提及 (实体 tab 数据源, 替代旧 per-doc 实体卡)
+            try:
+                doc_entities = [dict(r) for r in conn.execute(
+                    "SELECT m.id, m.surface, m.page_num, m.block_num, m.valid, "
+                    "e.id AS entity_id, e.canonical, e.category, e.ext_ids "
+                    "FROM entity_mentions m JOIN entities e ON e.id = m.entity_id "
+                    "WHERE m.doc_id = ? AND m.valid = 1 "
+                    "ORDER BY m.page_num, m.block_num, e.canonical",
+                    (doc_id,)).fetchall()]
+            except sqlite3.OperationalError:
+                doc_entities = []
             cards_map = {}
             for cr in card_rows:
                 try:
@@ -3388,6 +3749,7 @@ async def proofread_page(
                 bib_data=bib_data,
                 cards_map=cards_map,
                 entity_cats=entity_cats,
+                doc_entities=doc_entities,
                 candidates=[dict(cr) for cr in cand_rows],
                 bib_type_labels=BIB_TYPE_LABELS,
                 bib_field_labels=BIB_FIELD_LABELS,

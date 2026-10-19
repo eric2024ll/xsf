@@ -1052,57 +1052,26 @@ mark {
         </div>
     </div>
     <div class="tp-pane" data-pane="entity">
-      {% if entity.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ entity.status }}">{{ entity.status }}</span></div>{% endif %}
-        {% if entity.content.get('items') %}
+      <div class="cg-head" style="margin-top:6px;">
+        <span class="cg-title">本文献提及</span>
+        <span class="cg-hint">实体图由 LLM 从文献编译（可再生）· 详情/合并/补录在「实体图谱」页</span>
+      </div>
+        {% if doc_entities %}
         <table class="toc-table" id="entityTable"><tbody id="entityBody">
-          <tr><th>实体</th><th>类别</th><th>来源</th><th></th></tr>
-          {% for e in entity.content.get('items', []) %}
-          <tr data-eidx="{{ loop.index0 }}"><td>{{ e.label }}</td><td>{{ e.category or '—' }}</td>
-              <td class="conf">{{ e.from or '手工' }}</td>
-              <td><button onclick="delEntityItem({{ loop.index0 }}, this)" title="删除该实体">删</button></td></tr>
+          <tr><th>实体</th><th>类别</th><th>页</th><th></th></tr>
+          {% for e in doc_entities %}
+          <tr data-mention="{{ e.id }}"><td>{{ e.canonical }}</td><td>{{ e.category or '—' }}</td>
+              <td>{% if e.page_num is not none %}<a href="#" onclick="goPage({{ e.page_num }});return false;">p{{ e.page_num }}</a>{% else %}—{% endif %}</td>
+              <td><button onclick="invalidateMention({{ e.id }}, this)" title="标为错误（编译层纠错回流阀）">错了</button></td></tr>
           {% endfor %}
         </tbody></table>
         {% else %}
-        <table class="toc-table" id="entityTable" style="display:none;"><tbody id="entityBody">
-          <tr><th>实体</th><th>类别</th><th>来源</th><th></th></tr>
-        </tbody></table>
-        <div class="empty-hint" id="entityEmpty">暂无实体——AI 生成候选后采纳，或手工添加</div>
+        <div class="empty-hint" id="entityEmpty">本篇暂无实体提及——点「重编本篇实体」或到文献列表页点「实体图谱」编译。</div>
         {% endif %}
-        {% set ent_cands = candidates | selectattr('ctype', 'equalto', 'entity') | selectattr('status', 'equalto', 'pending') | list %}
-        {% if ent_cands %}
-        <div class="cg-head" style="margin-top:12px;"><span class="cg-title">实体候选</span><span class="cg-hint">AI 生成 → 人工审（采纳并入卡/驳回/修订）</span></div>
-        <table class="cand-table">
-          <tr><th>标签</th><th>类别</th><th>置信</th><th>状态</th><th>操作</th></tr>
-          {% for c in ent_cands %}
-          <tr data-cand="{{ c.id }}" data-ctype="{{ c.ctype }}">
-            <td id="cl-{{ c.id }}">{{ c.label }}</td>
-            <td id="cc-{{ c.id }}">{{ c.category or '—' }}</td>
-            <td class="conf">{{ '%.2f' % c.confidence if c.confidence is not none else '—' }}</td>
-            <td><span class="badge {{ c.status }}">{{ c.status }}</span></td>
-            <td class="ops">
-              {% if c.status == 'pending' %}
-              <button onclick="reviewCand({{ c.id }}, 'adopt')">采纳</button>
-              <button onclick="reviewCand({{ c.id }}, 'reject')">驳回</button>
-              {% endif %}
-              <button onclick="patchCand({{ c.id }})">修订</button>
-              {% if c.page_num %}<button onclick="goPrinted({{ c.page_num }})">对照</button>{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </table>
-        {% endif %}
-        <div class="add-row">
-          <input id="enLabel" placeholder="实体名" style="flex:2;min-width:120px;">
-          <input id="enCat" placeholder="类别（人名/地名/…）" list="entityCats" style="flex:1;min-width:90px;">
-          <datalist id="entityCats">
-            {% for t in entity_cats %}<option value="{{ t }}"></option>{% endfor %}
-          </datalist>
-          <button class="btn-primary" onclick="addEntityItem()">+ 添加实体</button>
-        </div>
         <details class="card-sec" style="margin-top:8px;">
           <summary>导入类别词表{{ '（当前 ' ~ (entity_cats | length) ~ ' 词）' if entity_cats else '' }}</summary>
           <div style="padding:8px 2px; display:flex; flex-direction:column; gap:6px;">
-            <div class="cg-hint">一行一词（书架级共享）。导入后: 类别输入可选可自输, AI 生成实体的类别将从词表选择。</div>
+            <div class="cg-hint">一行一词（书架级共享）。AI 编译实体时类别可参照词表。</div>
             <textarea id="vocabTa" rows="5" placeholder="人名&#10;地名&#10;机构&#10;物产&#10;职官" style="width:100%;max-width:420px;"></textarea>
             <div style="display:flex; gap:8px; align-items:center;">
               <input type="file" id="vocabFile" accept=".txt,.csv" onchange="loadVocabFile(this)">
@@ -1112,9 +1081,8 @@ mark {
           </div>
         </details>
         <div class="card-actions">
-          <button class="btn-primary" onclick="genCards('entities')">AI 生成候选</button>
-          <button class="btn-primary" onclick="saveCard('entity')">保存实体索引</button>
-          {% if entity.status %}<button onclick="toggleStatus('entity', '{{ entity.status }}')">{{ '退回 draft' if entity.status == 'reviewed' else '标记 reviewed（进检索）' }}</button>{% endif %}
+          <button class="btn-primary" onclick="recompileDocEntities()">重编本篇实体</button>
+          <a class="btn" href="/collections/{{ collection | urlencode }}/entities/view">实体图谱 →</a>
         </div>
     </div>
     <div class="tp-pane" data-pane="search">
@@ -2764,6 +2732,26 @@ function addEntityItem() {
     { kind: 'entity', content: JSON.stringify(window.__entityContent), status: window.__entityStatus })
     .then(d => showToast(d.ok ? '已添加并落库 — 当前 ' + window.__entityContent.items.length + ' 条'
                               : '落库失败: ' + (d.error || '')));
+}
+// ── 本文献提及: 纠错回流 + 局部重编 (P8) ──
+async function invalidateMention(mid, btn) {
+  if (!confirm('标记该提及为错误？（编译层纠错，下次重编不再采信）')) return;
+  const fd = new FormData(); fd.append('valid', '0');
+  const d = await (await fetch(`/collections/${encodeURIComponent(collection)}/mentions/${mid}/invalidate`, { method: 'POST', body: fd })).json();
+  if (d.ok) { const tr = btn.closest('tr'); if (tr) tr.remove(); showToast('已标错'); }
+  else showToast('失败: ' + (d.error || ''));
+}
+async function recompileDocEntities() {
+  const d = await (await fetch(`/collections/${encodeURIComponent(collection)}/entitygraph/generate`,
+    { method: 'POST', body: (() => { const f = new FormData(); f.append('doc_id', docId); return f; })() })).json();
+  if (!d.ok || !d.job) { showToast('启动失败: ' + (d.error || '')); return; }
+  showToast('本篇实体重编中…');
+  for (let i = 0; i < 400; i++) {
+    await new Promise(s => setTimeout(s, 1500));
+    const jd = await (await fetch('/jobs/' + d.job)).json();
+    if (jd.status === 'done') { showToast('已重编，刷新本页查看'); break; }
+    if (jd.status === 'error') { showToast('重编失败: ' + (jd.error || '')); break; }
+  }
 }
 // ── 页码校准 (page_map 锚点对) ──
 function pmRender() {
