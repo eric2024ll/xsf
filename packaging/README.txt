@@ -171,9 +171,10 @@ pip install -e ".[mcp]" 后可用 xsf-mcp, 把检索/上下文/元数据暴露�
 便携版的 xsf-mcp.exe 可作为 MCP server 接入(stdio)。
 
 【Agent skill (只读检索)】
-~/.agents/skills/xsf 提供只读检索 skill (AI agent 自动加载), 覆盖书架/全文检索/
-上下文核对/实体图谱/统计, 供 AI 引文核对与史料定位; 用法见
-使用说明.txt【Agent 协作 (skill · 只读检索)】。
+本便携版自带 skill (zip 内 skills/xsf/)。安装: 把 skills/xsf 复制到你的 agent
+技能目录 (如 ~/.agents/skills/xsf, Windows 为 %USERPROFILE%\.agents\skills\xsf),
+agent 会自动加载。skill 覆盖书架/全文检索/上下文核对/实体图谱/统计 (只读),
+供 AI 引文核对与史料定位; 用法见 使用说明.txt【Agent 协作 (skill · 只读检索)】。
 
 【CLI 生成】
 卡片资产 / 实体图谱 / 知识地图 / 多语种自动填充等 LLM 操作可直接在命令行跑,

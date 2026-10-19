@@ -24,6 +24,13 @@ Copy-Item (Join-Path $PSScriptRoot 'README.txt') $coll -Force
 Copy-Item (Join-Path $PSScriptRoot '使用说明.txt') $coll -Force
 Copy-Item (Join-Path $PSScriptRoot 'add-to-path.bat') $coll -Force
 
+# 打包 AI agent skill (只读检索; 安装见 README.txt 【Agent skill (只读检索)】)
+$skillSrc = Join-Path $PSScriptRoot 'skills/xsf'
+if (-not (Test-Path $skillSrc)) { throw "产物缺失: packaging/skills/xsf" }
+$skillDst = Join-Path $coll 'skills/xsf'
+New-Item -ItemType Directory -Force -Path $skillDst | Out-Null
+Copy-Item (Join-Path $skillSrc '*') $skillDst -Force
+
 if (Test-Path $zip) { Remove-Item $zip -Force }
 & 7z a -tzip $zip "$coll\*" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "7z 打包失败" }

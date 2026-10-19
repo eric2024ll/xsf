@@ -80,7 +80,7 @@ def _bg_job_start(kind: str, target) -> str:
 
 from .suspect import detect_suspect
 
-_VERSION = "0.2.2"
+_VERSION = "0.3.0"
 
 _BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
