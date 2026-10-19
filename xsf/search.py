@@ -29,11 +29,47 @@ def _expand_token(token: str) -> str:
 
 
 def _fts_query(query: str) -> str:
-    """将搜索词转为 FTS5 MATCH 表达式（繁简互转）"""
+    """将搜索词转为 FTS5 MATCH 表达式（繁简互转）— 仅 ≥3 字词段 (trigram)."""
+    match_expr, _ = _fts_plan(query)
+    return match_expr or ''
+
+
+def _fts_plan(query: str) -> tuple[str, list[str]]:
+    """trigram 检索计划: (MATCH 表达式 or '', 短词 LIKE 兜底变体表).
+
+    blocks_fts 为 trigram tokenizer: ≥3 字段走 FTS 短语 (bm25);
+    1-2 字段 FTS 命不中, 收集繁简变体交由 LIKE 过滤。
+    """
     tokens = [t for t in jieba.cut_for_search(query) if t.strip()]
     if not tokens:
-        return ''
-    return ' AND '.join(_expand_token(t) for t in tokens)
+        return '', []
+    parts, like_terms = [], []
+    for t in tokens:
+        variants = sorted(_all_variants(t))
+        if len(variants) > 32:
+            variants = [t]
+        if len(t) >= 3:
+            parts.append('(' + ' OR '.join(f'"{v}"' for v in variants) + ')')
+        else:
+            like_terms.extend(variants)
+    match_expr = ' AND '.join(parts)
+    return match_expr, like_terms
+
+
+def _fts_where(match_expr: str, like_terms: list[str],
+               alias: str = 'f') -> tuple[str, list]:
+    """构造 WHERE 片段 + 参数 (MATCH 与 LIKE 组合; 两者可只有其一)."""
+    conds, params = [], []
+    if match_expr:
+        conds.append(f'blocks_fts MATCH ?')
+        params.append(match_expr)
+    if like_terms:
+        esc = [t.replace('\\', '\\\\').replace('%', r'\%')
+               .replace('_', r'\_') for t in like_terms]
+        conds.append('(' + ' OR '.join(
+            f'{alias}.text LIKE ? ESCAPE ' + "'\\'" for _ in esc) + ')')
+        params.extend(f'%{e}%' for e in esc)
+    return ' AND '.join(conds), params
 
 
 def get_highlight_terms(query: str) -> list[str]:
@@ -68,11 +104,12 @@ def search(query: str, collection: str,
     source_type: 'primary'/'secondary'/'reference' 之一，用于按来源类型过滤。
     doc_id: 给定时只搜该文档 (用于分组视图展开单篇)。
     """
-    fts_q = _fts_query(query)
-    if not fts_q:
+    match_expr, like_terms = _fts_plan(query)
+    if not match_expr and not like_terms:
         return []
 
     extra_where, filter_params = _search_filters(source_type, doc_id)
+    fts_where, fts_params = _fts_where(match_expr, like_terms)
 
     conn = get_conn(collection)
     try:
@@ -81,10 +118,10 @@ def search(query: str, collection: str,
                       d.filename, d.title, d.cite_key
                 FROM blocks_fts f
                 JOIN documents d ON d.id = f.doc_id
-                WHERE blocks_fts MATCH ?{extra_where}
-                ORDER BY rank
+                WHERE {fts_where}{extra_where}
+                {'ORDER BY rank' if match_expr else 'ORDER BY f.rowid'}
                 LIMIT ? OFFSET ?''',
-            [fts_q] + filter_params + [limit, max(0, offset)]
+            fts_params + filter_params + [limit, max(0, offset)]
         ).fetchall()
     finally:
         conn.close()
@@ -95,11 +132,12 @@ def search(query: str, collection: str,
 def count_hits(query: str, collection: str,
                source_type: str = None, doc_id: int = None) -> dict:
     """统计命中规模: 匹配块总数 + 涉及文献数."""
-    fts_q = _fts_query(query)
-    if not fts_q:
+    match_expr, like_terms = _fts_plan(query)
+    if not match_expr and not like_terms:
         return {"blocks": 0, "docs": 0}
 
     extra_where, filter_params = _search_filters(source_type, doc_id)
+    fts_where, fts_params = _fts_where(match_expr, like_terms)
 
     conn = get_conn(collection)
     try:
@@ -107,8 +145,8 @@ def count_hits(query: str, collection: str,
             f'''SELECT COUNT(*) AS blocks, COUNT(DISTINCT f.doc_id) AS docs
                 FROM blocks_fts f
                 JOIN documents d ON d.id = f.doc_id
-                WHERE blocks_fts MATCH ?{extra_where}''',
-            [fts_q] + filter_params
+                WHERE {fts_where}{extra_where}''',
+            fts_params + filter_params
         ).fetchone()
     finally:
         conn.close()
@@ -121,24 +159,29 @@ def search_grouped(query: str, collection: str,
 
     排序: 命中块数降序, 同数按最佳 rank. 供搜索页分组视图.
     """
-    fts_q = _fts_query(query)
-    if not fts_q:
+    match_expr, like_terms = _fts_plan(query)
+    if not match_expr and not like_terms:
         return []
 
     extra_where, filter_params = _search_filters(source_type, None)
+    fts_where, fts_params = _fts_where(match_expr, like_terms)
+    # 无 MATCH (纯短词 LIKE) 时 rank 列不可用, 以 rowid 代 tie-break
+    rank_sel = ('MIN(f.rank) AS best_rank' if match_expr
+                else 'MIN(f.rowid) AS best_rank')
+    rank_ord = 'best_rank ASC' if match_expr else 'best_rank ASC'
 
     conn = get_conn(collection)
     try:
         rows = conn.execute(
             f'''SELECT f.doc_id, d.filename, d.title, d.cite_key,
-                       COUNT(*) AS hit_count, MIN(f.rank) AS best_rank
+                       COUNT(*) AS hit_count, {rank_sel}
                 FROM blocks_fts f
                 JOIN documents d ON d.id = f.doc_id
-                WHERE blocks_fts MATCH ?{extra_where}
+                WHERE {fts_where}{extra_where}
                 GROUP BY f.doc_id
-                ORDER BY hit_count DESC, best_rank ASC
+                ORDER BY hit_count DESC, {rank_ord}
                 LIMIT ?''',
-            [fts_q] + filter_params + [limit]
+            fts_params + filter_params + [limit]
         ).fetchall()
     finally:
         conn.close()

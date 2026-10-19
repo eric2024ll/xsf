@@ -5148,27 +5148,28 @@ async def reocr_cancel(collection: str, doc_id: int):
 async def doc_hits(collection: str, doc_id: int, keyword: str, limit: int = 300):
     """返回某文档中匹配关键词的所有 page/block/first_line_id + 高亮摘要。"""
     try:
-        from .search import _fts_query
+        from .search import _fts_plan, _fts_where
 
-        fts_q = _fts_query(keyword)
-        if not fts_q:
+        match_expr, like_terms = _fts_plan(keyword)
+        if not match_expr and not like_terms:
             return {"keyword": keyword, "hits": [], "total": 0, "truncated": False}
 
         if limit < 1:
             limit = 300
 
+        fts_where, fts_params = _fts_where(match_expr, like_terms)
         conn = get_conn(collection)
         try:
             rows = conn.execute(
-                """SELECT f.page_num, f.block_num, MIN(l.id) as line_id, l.text as text
+                f"""SELECT f.page_num, f.block_num, MIN(l.id) as line_id, l.text as text
                    FROM blocks_fts f
                    JOIN lines l ON l.doc_id = f.doc_id
                                AND l.page_num = f.page_num
                                AND l.block_num = f.block_num
-                   WHERE f.doc_id = ? AND blocks_fts MATCH ?
+                   WHERE f.doc_id = ? AND {fts_where}
                    GROUP BY f.page_num, f.block_num
                    ORDER BY f.page_num, f.block_num""",
-                (doc_id, fts_q),
+                [doc_id] + fts_params,
             ).fetchall()
         finally:
             conn.close()

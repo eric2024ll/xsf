@@ -60,7 +60,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
     doc_id UNINDEXED,
     page_num UNINDEXED,
     block_num UNINDEXED,
-    text
+    text,
+    tokenize='trigram'
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS cards_fts USING fts5(
     card_id UNINDEXED,
@@ -409,6 +410,31 @@ def _migrate(conn):
         CREATE INDEX IF NOT EXISTS idx_mentions_doc
             ON entity_mentions(doc_id)
     """)
+
+    # ── blocks_fts trigram 化 (2026-10-19): unicode61 整串 CJK 单 token,
+    # 子串命不中 → 重建为 trigram (≥3 字子串匹配)。一次性, 幂等。──
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='blocks_fts'").fetchone()
+        if row and 'trigram' not in (row["sql"] or ""):
+            conn.execute("DROP TABLE IF EXISTS blocks_fts_old")
+            conn.execute("ALTER TABLE blocks_fts RENAME TO blocks_fts_old")
+            conn.execute("""
+                CREATE VIRTUAL TABLE blocks_fts USING fts5(
+                    doc_id UNINDEXED,
+                    page_num UNINDEXED,
+                    block_num UNINDEXED,
+                    text,
+                    tokenize='trigram'
+                )
+            """)
+            conn.execute(
+                "INSERT INTO blocks_fts(doc_id, page_num, block_num, text) "
+                "SELECT doc_id, page_num, block_num, text FROM blocks_fts_old")
+            conn.execute("DROP TABLE blocks_fts_old")
+    except Exception:
+        pass   # 重建失败保持旧表 (检索仍可用, 只是子串受限)
 
     # ── 卡片 FTS 回填 (2026-10-19): reviewed 的 toc/entity 卡进 cards_fts ──
     # 幂等: 仅当 cards_fts 为空且 doc_cards 有 reviewed 卡时回填一次;
