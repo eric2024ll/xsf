@@ -3265,6 +3265,26 @@ async def entities_view(request: Request, collection: str):
         _nav_ctx("docs", collection, eg_status=st))
 
 
+@app.get("/settings/mounts")
+async def api_mounts_get():
+    """外部权威挂载状态 (显式挂载: 用户决定并告知位置)."""
+    from . import entity as ent
+    from .config import read_mounts
+    return {"mounts": read_mounts().get("mounts", {}),
+            "status": ent.mount_status()}
+
+
+@app.post("/settings/mounts/{name}")
+async def api_mounts_set(name: str, enabled: str = Form("1"),
+                         path: str = Form(""), cmd: str = Form("")):
+    """设置一个外部挂载。enabled=0/1。"""
+    from . import entity as ent
+    from .config import set_mount
+    set_mount(name, enabled not in ("0", "false", "False", ""),
+              path=path, cmd=cmd)
+    return {"ok": True, "status": ent.mount_status()}
+
+
 @app.get("/collections/{collection}/entities/{entity_id}")
 async def api_entity_detail(collection: str, entity_id: int):
     conn = get_conn(collection)

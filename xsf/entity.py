@@ -18,6 +18,7 @@ import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
+from .config import get_mount
 from .db import get_conn
 from .llm import chat, _extract_json_array
 
@@ -28,25 +29,47 @@ _CBDB_WORKERS = int(os.environ.get('XSF_CBDB_WORKERS', '6'))
 _CBDB_CACHE = {}
 
 
-# ── CBDB resolver (可插拔锚, 无库/不可用即降级 None) ──
-CBDB_DIRS = [
-    os.path.expanduser('~/.agents/skills/cbdb'),
-    os.path.expanduser('~/.pi/agent/skills/cbdb'),
-]
-
-
+# ── CBDB resolver: **显式挂载** (用户决定是否挂载并告知位置) ──
+# 未挂载 → 该能力降级, 实体归一退化为纯 LLM。不自动探测路径。
 def _cbdb_py():
-    for d in CBDB_DIRS:
-        p = os.path.join(d, 'cbdb.py')
-        if os.path.isfile(p):
-            return p
-    return None
+    """返回挂载的 cbdb 入口脚本绝对路径; 未挂载/无效 → None。"""
+    m = get_mount('cbdb')
+    if not m:
+        return None
+    p = (m.get('path') or '').strip()
+    if not p:
+        return None
+    if os.path.isdir(p):
+        p = os.path.join(p, 'cbdb.py')
+    return p if os.path.isfile(p) else None
+
+
+def _cbdb_cmd():
+    m = get_mount('cbdb') or {}
+    return (m.get('cmd') or 'python3').strip() or 'python3'
+
+
+def mount_status():
+    """给 UI 用: 各外部挂载的可用状态。"""
+    from .config import read_mounts
+    out = {}
+    for name, m in (read_mounts().get('mounts') or {}).items():
+        if not isinstance(m, dict):
+            continue
+        p = (m.get('path') or '').strip()
+        exists = bool(p) and os.path.exists(p)
+        out[name] = {'enabled': bool(m.get('enabled')),
+                     'path': p,
+                     'cmd': m.get('cmd') or 'python3',
+                     'path_exists': exists,
+                     'available': bool(m.get('enabled')) and exists}
+    return out
 
 
 def cbdb_find(name, timeout=8):
     """CBDB 查人物 → {pid,name,dynasty,birth,death} 或 None。
 
-    不可用 / 未找到 / 多义 (>1 条同名) 一律返回 None (宁分不误合)。
+    未挂载 / 未找到 / 多义 (>1 条同名) 一律返回 None (宁分不误合)。
     进程内缓存 (含未命中), 避免同名词重复起子进程。
     """
     if name in _CBDB_CACHE:
@@ -56,7 +79,7 @@ def cbdb_find(name, timeout=8):
         _CBDB_CACHE[name] = None
         return None
     try:
-        r = subprocess.run(['python3', py, 'find', name],
+        r = subprocess.run([_cbdb_cmd(), py, 'find', name],
                            capture_output=True, text=True, timeout=timeout)
     except Exception:
         _CBDB_CACHE[name] = None

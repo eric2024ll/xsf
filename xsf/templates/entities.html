@@ -34,6 +34,16 @@
 .eg-title { font-size: 1.25rem; margin: 0 0 4px; }
 .cat-badge { font-size: 0.72rem; background: var(--accent); color: var(--text-muted); padding: 1px 8px; border-radius: 9px; }
 .ext-link { font-size: 0.75rem; color: var(--primary); text-decoration: none; margin-left: 6px; }
+.mount-sec { margin: 10px 0; }
+.mount-sec > summary { cursor: pointer; font-size: 0.85rem; color: var(--text-muted); }
+.mount-body { padding: 8px 2px; max-width: 760px; }
+.mount-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.mount-row .mount-lbl { min-width: 110px; font-size: 0.85rem; }
+.mount-row input[type=text] { padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 0.82rem; }
+.mount-row #mCbdbPath { flex: 1; min-width: 260px; }
+.mount-row #mCbdbCmd { width: 90px; }
+.mount-ok { color: var(--success, #2a7); }
+.mount-off { color: var(--text-muted); }
 .eg-sec { margin-top: 16px; }
 .eg-sec h3 { font-size: 0.85rem; color: var(--text-muted); margin: 0 0 6px; font-weight: 600; }
 .chip { display: inline-block; background: var(--accent); padding: 2px 9px; border-radius: 10px;
@@ -72,6 +82,20 @@ table.eg-tbl th { color: var(--text-muted); font-weight: 500; }
       <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 文献列表</a>
     </div>
   </div>
+
+  <details class="mount-sec">
+    <summary>外部权威挂载 <span id="mountSummary" class="hint"></span></summary>
+    <div class="mount-body">
+      <p class="hint">外部权威库（如 CBDB 人物库）需<strong>显式挂载</strong>：勾选启用并指明其入口脚本路径。未挂载时实体归一退化为纯 LLM（基本功能不受影响）。</p>
+      <div class="mount-row">
+        <label class="mount-lbl"><input type="checkbox" id="mCbdbEnabled"> CBDB 人物库</label>
+        <input type="text" id="mCbdbPath" placeholder="/path/to/cbdb.py（或其所在目录）">
+        <input type="text" id="mCbdbCmd" placeholder="python3">
+        <button class="mini-btn" onclick="saveMount('cbdb')">保存</button>
+        <span id="mCbdbStatus" class="hint"></span>
+      </div>
+    </div>
+  </details>
 
   <div id="egEmpty" class="empty-state" style="display:none;">
     <p>尚未编译实体图。</p>
@@ -250,6 +274,40 @@ async function egGenerate(){
   }
 }
 
+async function egMounts(){
+  try{
+    var r = await fetch('/settings/mounts'); var d = await r.json();
+    var m = (d.mounts||{}).cbdb || {};
+    var s = (d.status||{}).cbdb || {};
+    document.getElementById('mCbdbEnabled').checked = !!m.enabled;
+    document.getElementById('mCbdbPath').value = m.path || '';
+    document.getElementById('mCbdbCmd').value = m.cmd || '';
+    setMountStatus('cbdb', s);
+  }catch(e){}
+}
+
+function setMountStatus(name, s){
+  var el = document.getElementById('mCbdbStatus');
+  var sum = document.getElementById('mountSummary');
+  if(!el) return;
+  if(s && s.available){ el.innerHTML = '<span class="mount-ok">已挂载 ✓</span>'; }
+  else if(s && s.enabled && !s.path_exists){ el.innerHTML = '<span class="mount-off">路径不存在</span>'; }
+  else { el.innerHTML = '<span class="mount-off">未挂载（纯 LLM 归一）</span>'; }
+  if(sum) sum.textContent = (s && s.available) ? '· CBDB 已挂载' : '· 未挂载外部库';
+}
+
+async function saveMount(name){
+  var fd = new URLSearchParams();
+  fd.append('enabled', document.getElementById('mCbdbEnabled').checked ? '1' : '0');
+  fd.append('path', document.getElementById('mCbdbPath').value.trim());
+  fd.append('cmd', document.getElementById('mCbdbCmd').value.trim());
+  var r = await fetch('/settings/mounts/'+name, {method:'POST', body:fd});
+  var d = await r.json();
+  setMountStatus(name, (d.status||{})[name] || {});
+  alert('已保存挂载设置');
+}
+
+egMounts();
 egStatus(); egLoad().then(function(){
   var id = new URLSearchParams(location.search).get('id');
   if(id) egShow(parseInt(id, 10));

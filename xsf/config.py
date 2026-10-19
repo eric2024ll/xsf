@@ -128,6 +128,75 @@ def get_ocr_config_path() -> Path:
     return get_data_dir() / 'ocr-config.json'
 
 
+# ── 外部权威挂载 (显式, 用户决定挂载并告知位置) ──
+# 原则: 不自动探测路径。用户显式声明挂载哪个外部库、位于何处; 未挂载即
+# 该能力降级 (实体归一退化为纯 LLM)。
+# 配置: <XSF_DATA>/mounts.json
+#   {"version":1, "mounts": {"cbdb": {"enabled":true, "path":"...", "cmd":"python3"}}}
+def get_mounts_config_path() -> Path:
+    return get_data_dir() / 'mounts.json'
+
+
+def read_mounts() -> dict:
+    """读取挂载配置; 缺失/损坏 → 空配置。"""
+    p = get_mounts_config_path()
+    try:
+        d = json.loads(p.read_text('utf-8'))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {'version': 1, 'mounts': {}}
+    if not isinstance(d, dict):
+        return {'version': 1, 'mounts': {}}
+    d.setdefault('version', 1)
+    if not isinstance(d.get('mounts'), dict):
+        d['mounts'] = {}
+    return d
+
+
+def write_mounts(data: dict) -> None:
+    """原子写挂载配置 (tempfile + rename)。"""
+    p = get_mounts_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data = dict(data or {})
+    data.setdefault('version', 1)
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, p)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def get_mount(name: str) -> dict | None:
+    """返回已启用且路径存在的挂载 {path, cmd, ...} 或 None。
+
+    未挂载 / 未启用 / 路径不存在 → None (能力降级)。
+    """
+    m = (read_mounts().get('mounts') or {}).get(name)
+    if not isinstance(m, dict) or not m.get('enabled'):
+        return None
+    path = m.get('path')
+    if not path or not os.path.exists(path):
+        return None
+    return m
+
+
+def set_mount(name: str, enabled: bool, path: str = '', cmd: str = '') -> dict:
+    """写入/更新一个挂载项。返回完整配置。"""
+    cfg = read_mounts()
+    mounts = cfg.setdefault('mounts', {})
+    item = {'enabled': bool(enabled), 'path': (path or '').strip()}
+    if cmd:
+        item['cmd'] = cmd.strip()
+    mounts[name] = item
+    write_mounts(cfg)
+    return cfg
+
+
 def _read_ocr_config() -> dict:
     """读取 OCR 配置文件。损坏/不存在返回 {}。
 
