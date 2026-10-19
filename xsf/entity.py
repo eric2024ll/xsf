@@ -89,6 +89,82 @@ ENTITY_SYSTEM = (
     "surface 必须是原文出现的写法 (可含异写/字号)。不要解释, 不要臆造。"
 )
 
+_PAPER_TYPES = {'@article', '@inproceedings', '@phdthesis', '@mastersthesis',
+                '@techreport', '@unpublished', '@manuscript'}
+_BOOK_TYPES = {'@book', '@incollection', '@inbook', '@proceedings',
+               '@manual', '@booklet'}
+
+
+def _split_terms(s):
+    return [t.strip() for t in re.split(r'[，,；;、/|\s]+', s or '') if t.strip()]
+
+
+def _doc_kind(bib_type):
+    """文献类型 → 'paper' | 'book' | 'other'。"""
+    try:
+        from .bib_utils import normalize_bib_type
+        t = normalize_bib_type(bib_type)
+    except Exception:
+        t = (bib_type or '').strip().lower()
+    if t in _PAPER_TYPES:
+        return 'paper'
+    if t in _BOOK_TYPES:
+        return 'book'
+    return 'other'
+
+
+def _authoritative_seeds(conn, doc_id, kind):
+    """文献自带的权威实体来源 → [{surface,category,page_num,block_num,source}]。
+    论文: bib 关键词 + 正文关键词段; 图书: 索引段条目。"""
+    seeds = []
+    row = conn.execute("SELECT bib_data FROM documents WHERE id = ?",
+                       (doc_id,)).fetchone()
+    try:
+        bd = json.loads((row['bib_data'] if row else None) or '{}')
+    except (ValueError, TypeError):
+        bd = {}
+    for k in ('keywords', 'keyword', '关键词', '关键字'):
+        if bd.get(k):
+            for t in _split_terms(str(bd[k])):
+                seeds.append({'surface': t, 'category': None, 'page_num': None,
+                              'block_num': None, 'source': 'bib:keywords'})
+    blocks = conn.execute(
+        "SELECT page_num, block_num, text FROM blocks_fts "
+        "WHERE doc_id = ? ORDER BY page_num, block_num", (doc_id,)).fetchall()
+    texts = [(b['page_num'], b['block_num'], b['text'] or '') for b in blocks]
+    if kind == 'paper':
+        for pg, bk, tx in texts:
+            m = re.search(r'(?:^|\n)\s*(?:关键词|关键字|關鍵詞|key\s*words?)'
+                          r'\s*[:：]?\s*(.+)', tx, re.I)
+            if m:
+                for t in _split_terms(m.group(1)):
+                    seeds.append({'surface': t, 'category': None, 'page_num': pg,
+                                  'block_num': bk, 'source': 'text:keywords'})
+                break
+    elif kind == 'book':
+        started = False
+        for pg, bk, tx in texts:
+            if not started:
+                if re.match(r'^\s*(?:索引|index)\s*$', tx.strip(), re.I):
+                    started = True
+                continue
+            for line in tx.split('\n'):
+                line = line.strip()
+                if not line or re.match(r'^[\d\s,，、.·…\-–—]+$', line):
+                    continue
+                term = re.split(r'[.·…]{2,}|\s{2,}', line)[0].strip(' .·…')
+                term = re.sub(r'\s*[\d,，、\-–—].*$', '', term).strip()
+                if 1 < len(term) <= 24:
+                    seeds.append({'surface': term, 'category': None, 'page_num': pg,
+                                  'block_num': bk, 'source': 'text:index'})
+    seen, out = set(), []
+    for s in seeds:
+        n = re.sub(r'\s+', '', s['surface'] or '')
+        if n and n not in seen:
+            seen.add(n)
+            out.append(s)
+    return out
+
 
 def _batches(blocks, max_blocks=4, max_chars=800):
     cur, n = [], 0
@@ -104,10 +180,25 @@ def _batches(blocks, max_blocks=4, max_chars=800):
 
 
 def extract_mentions(conn, doc_id, provider_id=None):
-    """按文献抽取提及 → [{'surface','category','page_num','block_num'}]。"""
+    """按文献抽取提及 → [{'surface','category','page_num','block_num'}]。
+    来源优先级: 论文关键词 / 图书索引 (权威种子, 强制入图) > 正文抽取。"""
+    drow = conn.execute("SELECT bib_type FROM documents WHERE id = ?",
+                        (doc_id,)).fetchone()
+    kind = _doc_kind(drow['bib_type'] if drow else None)
+    seeds = _authoritative_seeds(conn, doc_id, kind)
+
     blocks = conn.execute(
         "SELECT page_num, block_num, text FROM blocks_fts "
         "WHERE doc_id = ? ORDER BY page_num, block_num", (doc_id,)).fetchall()
+    system = ENTITY_SYSTEM
+    if kind == 'paper':
+        system += "\n本文献是期刊论文, 正文关键词段落中的词语优先作为实体。"
+    elif kind == 'book':
+        system += "\n本文献是图书, 若含索引段, 索引条目优先作为实体。"
+    if seeds:
+        label = '关键词' if kind == 'paper' else ('索引' if kind == 'book' else '权威来源')
+        system += ("\n文献自带%s (必须全部纳入抽取结果): %s"
+                   % (label, '、'.join(s['surface'] for s in seeds)))
     out = []
     for batch in _batches(blocks):
         idx = []
@@ -118,11 +209,11 @@ def extract_mentions(conn, doc_id, provider_id=None):
         user = "文本块:\n" + "\n".join(lines)
         try:
             content, _ = chat(
-                [{"role": "system", "content": ENTITY_SYSTEM},
+                [{"role": "system", "content": system},
                  {"role": "user", "content": user}], provider_id=provider_id)
         except Exception:
             continue
-        for item in _extract_json_array(content):
+        for item in _extract_json_array(content or ''):
             if not isinstance(item, dict):
                 continue
             surface = (item.get('surface') or '').strip()
@@ -140,6 +231,13 @@ def extract_mentions(conn, doc_id, provider_id=None):
             out.append({'surface': surface,
                         'category': (item.get('category') or '').strip() or None,
                         'page_num': pn, 'block_num': bn})
+    have = {re.sub(r'\s+', '', m['surface'] or '') for m in out}
+    for s in seeds:
+        n = re.sub(r'\s+', '', s['surface'] or '')
+        if n and n not in have:
+            out.append({'surface': s['surface'], 'category': s['category'],
+                        'page_num': s['page_num'], 'block_num': s['block_num']})
+            have.add(n)
     return out
 
 

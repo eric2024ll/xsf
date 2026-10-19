@@ -18,7 +18,7 @@ from pypinyin import lazy_pinyin, Style
 _t2s = OpenCC('t2s')
 
 BIB_TYPE_FIELDS = {
-    "@article": ["author", "title", "journal", "year", "volume", "number", "pages"],
+    "@article": ["author", "title", "journal", "year", "volume", "number", "pages", "keywords"],
     "@book": ["author", "title", "publisher", "year", "address", "edition"],
     "@incollection": ["author", "title", "booktitle", "editor", "publisher", "year", "address", "pages"],
     "@inbook": ["author", "title", "chapter", "pages", "publisher", "year", "address"],
@@ -102,6 +102,7 @@ BIB_FIELD_LABELS = {
     "school": "学校",
     "organization": "组织",
     "howpublished": "出版方式",
+    "keywords": "关键词",
 }
 
 
