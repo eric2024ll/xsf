@@ -1537,6 +1537,12 @@ function rebindWorkArea() {
   if (typeof renderTocTree === 'function') renderTocTree();
   if (typeof pmRender === 'function') pmRender();
   if (window.__tpCur) switchTP(window.__tpCur);
+  // 恢复文内搜索结果 (goPage 替换 #main 后面板清空)
+  if (window.__docSearchCache && typeof renderDocSearchPanel === 'function') {
+    var _ip = document.getElementById('inPageSearch');
+    if (_ip && !_ip.value) _ip.value = window.__docSearchCache.kw;
+    renderDocSearchPanel(window.__docSearchCache.data, window.__docSearchCache.kw);
+  }
   window.scrollTo(0, 0);
 }
 function pmInterp(printed) {
@@ -1577,25 +1583,30 @@ function scrollToFirstHit() {
 }
 
 // ── 搜索本文献 (全文档 FTS) ──
-const _dsp = document.getElementById('docSearchPanel');
+// 注意: goPage 会替换 #main, 故面板元素每次动态查找, 结果缓存以便翻页/跳转后恢复
+function _dspEl() { return document.getElementById('docSearchPanel'); }
 
 async function doDocSearch() {
   const kw = document.getElementById('inPageSearch').value.trim();
   if (!kw || !docId) return;
-  const panel = _dsp;
+  const panel = _dspEl();
+  if (!panel) return;
   panel.innerHTML = '<div class="dsp-empty">搜索中…</div>';
   try {
     const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/hits?keyword=` + encodeURIComponent(kw));
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
+    window.__docSearchCache = { kw: kw, data: data };
     renderDocSearchPanel(data, kw);
   } catch (e) {
+    window.__docSearchCache = null;
     panel.innerHTML = '<div class="dsp-empty">✗ ' + escapeHtml(e.message) + '</div>';
   }
 }
 
 function renderDocSearchPanel(data, kw) {
-  const panel = _dsp;
+  const panel = _dspEl();
+  if (!panel) return;
   const nPages = new Set(data.hits.map(h => h.page_num)).size;
   let html = '<div class="dsp-head"><span>「' + escapeHtml(kw) + '」 共 ' + nPages + ' 页 ' + data.total + ' 处'
     + (data.truncated ? '（仅显示前 ' + data.hits.length + ' 处）' : '')
@@ -1613,7 +1624,7 @@ function renderDocSearchPanel(data, kw) {
 }
 
 function docSearchJump(pageNum) {
-  goPage(pageNum, { keyword: document.getElementById('inPageSearch').value.trim() });
+  goPage(pageNum, { keyword: (window.__docSearchCache && window.__docSearchCache.kw) || document.getElementById('inPageSearch').value.trim() });
 }
 
 
