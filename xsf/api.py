@@ -3599,12 +3599,6 @@ async def proofread_page(
                     (doc_id,)).fetchall()
             except sqlite3.OperationalError:
                 card_rows, cand_rows = [], []
-            try:
-                entity_cats = [r["term"] for r in conn.execute(
-                    "SELECT term FROM vocabs WHERE kind = 'entity_category' ORDER BY id"
-                ).fetchall()]
-            except sqlite3.OperationalError:
-                entity_cats = []
             # P8: 本文献提及 (实体 tab 数据源, 替代旧 per-doc 实体卡)
             try:
                 doc_entities = [dict(r) for r in conn.execute(
@@ -3758,7 +3752,6 @@ async def proofread_page(
                 bib_type=bib_type,
                 bib_data=bib_data,
                 cards_map=cards_map,
-                entity_cats=entity_cats,
                 doc_entities=doc_entities,
                 candidates=[dict(cr) for cr in cand_rows],
                 bib_type_labels=BIB_TYPE_LABELS,

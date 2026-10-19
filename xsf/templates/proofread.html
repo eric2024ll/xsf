@@ -1068,18 +1068,6 @@ mark {
         {% else %}
         <div class="empty-hint" id="entityEmpty">本篇暂无实体提及——点「重编本篇实体」或到文献列表页点「实体图谱」编译。</div>
         {% endif %}
-        <details class="card-sec" style="margin-top:8px;">
-          <summary>导入类别词表{{ '（当前 ' ~ (entity_cats | length) ~ ' 词）' if entity_cats else '' }}</summary>
-          <div style="padding:8px 2px; display:flex; flex-direction:column; gap:6px;">
-            <div class="cg-hint">一行一词（书架级共享）。AI 编译实体时类别可参照词表。</div>
-            <textarea id="vocabTa" rows="5" placeholder="人名&#10;地名&#10;机构&#10;物产&#10;职官" style="width:100%;max-width:420px;"></textarea>
-            <div style="display:flex; gap:8px; align-items:center;">
-              <input type="file" id="vocabFile" accept=".txt,.csv" onchange="loadVocabFile(this)">
-              <label style="font-size:0.85rem;"><input type="checkbox" id="vocabReplace"> 替换现有词表</label>
-              <button class="btn-primary" onclick="importVocab()">导入</button>
-            </div>
-          </div>
-        </details>
         <div class="card-actions">
           <button class="btn-primary" onclick="recompileDocEntities()">重编本篇实体</button>
           <a class="btn" href="/collections/{{ collection | urlencode }}/entities/view">实体图谱 →</a>
@@ -2682,30 +2670,6 @@ function delEntityItem(idx, btn) {
     }
   }
   showToast('已删除（已落库）');
-}
-
-function loadVocabFile(input) {
-  const f = input.files && input.files[0];
-  if (!f) return;
-  const reader = new FileReader();
-  reader.onload = () => { document.getElementById('vocabTa').value = reader.result || ''; };
-  reader.readAsText(f, 'utf-8');
-}
-async function importVocab() {
-  const ta = document.getElementById('vocabTa');
-  const terms = (ta.value || '').trim();
-  if (!terms) { showToast('词表为空'); return; }
-  const fd = new URLSearchParams({ kind: 'entity_category', terms: terms });
-  if (document.getElementById('vocabReplace').checked) fd.append('replace', '1');
-  const r = await fetch(`/collections/${encodeURIComponent(collection)}/vocab`, { method: 'POST', body: fd });
-  const d = await r.json();
-  if (!d.ok) { showToast('导入失败: ' + (d.error || '')); return; }
-  const dl = document.getElementById('entityCats');
-  dl.innerHTML = (await (await fetch(`/collections/${encodeURIComponent(collection)}/vocab?kind=entity_category`)).json())
-    .terms.map(t => `<option value="${__escT(t)}"></option>`).join('');
-  const sum = document.querySelector('.tp-pane[data-pane="entity"] details summary');
-  if (sum) sum.textContent = '导入类别词表（当前 ' + dl.children.length + ' 词）';
-  showToast('已导入 ' + d.imported + ' 词（共 ' + d.total + '）');
 }
 
 function addEntityItem() {
