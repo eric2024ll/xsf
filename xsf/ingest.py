@@ -349,32 +349,52 @@ def _epub_meta(zip_path: str | Path) -> tuple:
 
 
 def _xhtml_paragraphs(data: bytes) -> list[str]:
-    """XHTML 提段: p/h1-h6/blockquote/li 块级元素文本为段落。"""
+    """XHTML 提段: p/h1-h6/blockquote/li + 脚注 div (calibre 模式
+    div.note / epub:type=note 等, 脚注常独立成文件且无 p/li)。"""
     from html.parser import HTMLParser
+
+    VOID = {'br', 'hr', 'img', 'meta', 'link', 'input', 'source'}
 
     class _ParaParser(HTMLParser):
         BLOCKS = {'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
                   'blockquote', 'li'}
+        NOTE_CLS = {'note', 'notes', 'footnote', 'footnotes'}
+        NOTE_TYPES = {'note', 'footnote', 'footnotes', 'endnote',
+                      'rearnote'}
 
         def __init__(self):
             super().__init__()
             self.paras = []
-            self._cur = None
+            self._stack = []          # [(is_block, chunks)]
+
+        def _note_div(self, attrs) -> bool:
+            d = dict(attrs)
+            cls = {c.lower() for c in (d.get('class') or '').split()}
+            et = {c.lower() for c in (d.get('epub:type') or '').split()}
+            return bool(cls & self.NOTE_CLS or et & self.NOTE_TYPES)
 
         def handle_starttag(self, tag, attrs):
-            if tag in self.BLOCKS:
-                self._cur = []
+            if tag in VOID:
+                return
+            block = (tag in self.BLOCKS
+                     or (tag == 'div' and self._note_div(attrs)))
+            self._stack.append([block, []])
 
         def handle_endtag(self, tag):
-            if tag in self.BLOCKS and self._cur is not None:
-                text = ' '.join(''.join(self._cur).split())
+            if not self._stack:
+                return
+            block, chunks = self._stack.pop()
+            text = ' '.join(''.join(chunks).split())
+            if block:
                 if text:
                     self.paras.append(text)
-                self._cur = None
+            elif self._stack and text:
+                # 普通容器: 文本上浮给父块 (不产段, 兄弟 note-div 各自成段)
+                self._stack[-1][1].append(text)
 
         def handle_data(self, d):
-            if self._cur is not None:
-                self._cur.append(d)
+            if self._stack:
+                self._stack[-1][1].append(d)
 
     p = _ParaParser()
     p.feed(data.decode('utf-8', errors='replace'))
@@ -513,6 +533,10 @@ def _epub_toc_tree(zip_path: str | Path,
                             return node
                         nodes = [_parse_np(np)
                                  for np in navmap.findall('ncx:navPoint', NS)]
+                        while (len(nodes) == 1 and nodes[0]['children']
+                               and len(nodes[0]['children']) > 1):
+                            # calibre 单根壳 (书名 navPoint 包全书): 下钻
+                            nodes = nodes[0]['children']
                         return _cap(nodes)
     except Exception:
         pass
