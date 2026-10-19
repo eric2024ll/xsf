@@ -287,6 +287,82 @@ def cmd_doctor(args):
               ' 投放孤儿修复后 folder_scan 下一周期即自动认领 uploads/ 文件')
 
 
+def _progress(msg):
+    print(f'  {msg}', flush=True)
+
+
+def _require_collection(name):
+    err = validate_collection_name(name)
+    if err:
+        print(f'错误: 书架名不合法: {err}', file=sys.stderr)
+        sys.exit(1)
+    if name not in list_collections():
+        print(f'错误: 书架不存在: {name}', file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_gen(args):
+    """LLM 生成: 卡片候选 (cards) / 知识地图 (wiki) / 实体图谱 (entities)."""
+    from . import generate as G
+    from .llm import LLMNotConfigured
+    act = getattr(args, 'gen_action', None)
+    if not act:
+        print('用法: xsf gen {cards|wiki|entities} -c 书架 …', file=sys.stderr)
+        sys.exit(2)
+    _require_collection(args.collection)
+    from .config import get_llm_provider_cfg
+    try:  # 提前校验 provider, 避免实体抽取吞异常后静默 0 提及
+        get_llm_provider_cfg(args.provider)
+    except RuntimeError as e:
+        print(f'错误: {e}', file=sys.stderr)
+        sys.exit(3)
+    try:
+        if act == 'cards':
+            r = G.gen_cards_core(
+                args.collection, args.doc_id, targets=args.targets,
+                prompt=args.prompt, toc_source=args.toc_source,
+                bib_source=args.bib_source, provider_id=args.provider,
+                progress=_progress)
+        elif act == 'wiki':
+            r = G.gen_wiki_core(args.collection, provider_id=args.provider,
+                                progress=_progress)
+        else:  # entities
+            ids = [args.doc_id] if args.doc_id else None
+            r = G.gen_entitygraph_core(args.collection, doc_ids=ids,
+                                       provider_id=args.provider,
+                                       progress=_progress)
+    except LLMNotConfigured as e:
+        print(f'错误: 未配置 LLM provider: {e}', file=sys.stderr)
+        sys.exit(3)
+    except ValueError as e:
+        print(f'错误: {e}', file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(r, ensure_ascii=False, indent=2))
+
+
+def cmd_autofill(args):
+    """AI 填充多行制 draft 层 (翻译/对照), 整篇逐页."""
+    from . import generate as G
+    from .llm import LLMNotConfigured
+    _require_collection(args.collection)
+    from .config import get_llm_provider_cfg
+    try:
+        get_llm_provider_cfg(args.provider)
+    except RuntimeError as e:
+        print(f'错误: {e}', file=sys.stderr)
+        sys.exit(3)
+    try:
+        r = G.autofill_doc(args.collection, args.doc_id, targets=args.targets,
+                           provider_id=args.provider, progress=_progress)
+    except LLMNotConfigured as e:
+        print(f'错误: 未配置 LLM provider: {e}', file=sys.stderr)
+        sys.exit(3)
+    except ValueError as e:
+        print(f'错误: {e}', file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(r, ensure_ascii=False, indent=2))
+
+
 def main():
     # 便携版/桌面版: 从 exe 旁 .env 补缺失环境变量 (已有环境变量优先)
     from .env import load_env
@@ -343,12 +419,44 @@ def main():
     sub.add_parser('stats', help='统计信息')
     sub.add_parser('doctor', help='环境自检: 数据目录/书架一致性/孤儿目录/多实例')
 
+    p_gen = sub.add_parser('gen', help='LLM 生成: 卡片候选/知识地图/实体图谱')
+    gensub = p_gen.add_subparsers(dest='gen_action')
+    g_cards = gensub.add_parser('cards',
+                                help='生成卡片候选 (目录/摘要/元数据/实体)')
+    g_cards.add_argument('-c', '--collection', required=True, help='书架名')
+    g_cards.add_argument('--doc', type=int, required=True, dest='doc_id',
+                         help='文献 id')
+    g_cards.add_argument('--targets', default='toc,entities,summary,meta',
+                         help='逗号分隔: toc/entities/summary/meta')
+    g_cards.add_argument('--prompt', help='自主补充提示 (meta 目标生效)')
+    g_cards.add_argument('--toc-source', dest='toc_source',
+                         help='目录文本 (目录解析优先)')
+    g_cards.add_argument('--bib-source', dest='bib_source',
+                         help='书目数据 BibTeX/RIS (meta 解析优先)')
+    g_cards.add_argument('--provider', help='LLM provider id (默认用 default_llm)')
+    g_wiki = gensub.add_parser('wiki', help='编译知识地图 (书架级)')
+    g_wiki.add_argument('-c', '--collection', required=True, help='书架名')
+    g_wiki.add_argument('--provider', help='LLM provider id')
+    g_ent = gensub.add_parser('entities', help='编译实体图谱 (书架级/单文献)')
+    g_ent.add_argument('-c', '--collection', required=True, help='书架名')
+    g_ent.add_argument('--doc', type=int, dest='doc_id',
+                       help='仅重建该文献 (省略则全书架)')
+    g_ent.add_argument('--provider', help='LLM provider id')
+
+    p_af = sub.add_parser('autofill', help='AI 填充多行制 draft (翻译/对照)')
+    p_af.add_argument('-c', '--collection', required=True, help='书架名')
+    p_af.add_argument('--doc', type=int, required=True, dest='doc_id',
+                      help='文献 id (整篇逐页)')
+    p_af.add_argument('--targets', default='gloss,trans',
+                      help='逗号分隔: translit/gloss/trans')
+    p_af.add_argument('--provider', help='LLM provider id')
+
     args = parser.parse_args()
 
     dispatch = {
         'init': cmd_init, 'add': cmd_add, 'search': cmd_search,
         'context': cmd_context, 'remove': cmd_remove, 'stats': cmd_stats,
-        'doctor': cmd_doctor,
+        'doctor': cmd_doctor, 'gen': cmd_gen, 'autofill': cmd_autofill,
     }
     fn = dispatch.get(args.command)
     if fn:

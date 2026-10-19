@@ -2134,7 +2134,8 @@ async def api_autofill(collection: str, doc_id: int, page_num: int,
     basis='AI草稿·{model}' — AI 披露入史。人工编辑该列后标记自动清除
     (edit_page diff 逻辑)。未配置 llm_chat provider → 503。
     """
-    from .llm import autofill_rows, LLMNotConfigured
+    from .llm import LLMNotConfigured
+    from .generate import autofill_page
 
     try:
         body = await request.json()
@@ -2147,104 +2148,37 @@ async def api_autofill(collection: str, doc_id: int, page_num: int,
     except RuntimeError as e:
         return JSONResponse(status_code=503, content={"error": str(e)})
 
+    targets = body.get("targets", ["gloss", "trans"])
+    provider_id = body.get("provider_id")
+    conn = get_conn(collection)
     try:
-        targets = body.get("targets", ["gloss", "trans"])
-        provider_id = body.get("provider_id")
-        conn = get_conn(collection)
-        try:
-            doc = conn.execute(
-                "SELECT id, lang, tri_rows FROM documents WHERE id = ?",
-                (doc_id,)).fetchone()
-            if doc is None:
-                return JSONResponse(status_code=404,
-                                    content={"error": "文献不存在"})
-            rows_mode = _tri_rows_for(doc)
-            if rows_mode < 3:
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": "AI 填充仅适用于非中文多行制文献 "
-                                      "(三行/四行); 请先切换行制"})
-            if rows_mode == 3:
-                targets = [t for t in targets if t != "translit"]
-            rows = conn.execute(
-                """SELECT id, text, translit, gloss, trans, draft_flags
-                   FROM lines
-                   WHERE doc_id = ? AND page_num = ?
-                   ORDER BY block_num, line_num""",
-                (doc_id, page_num)).fetchall()
-            if not rows:
-                return JSONResponse(status_code=400,
-                                    content={"error": "该页无文本块"})
-            blocks = [{"text": r["text"]} for r in rows]
-        finally:
-            conn.close()
+        doc = conn.execute(
+            "SELECT id, lang, tri_rows FROM documents WHERE id = ?",
+            (doc_id,)).fetchone()
+        if doc is None:
+            return JSONResponse(status_code=404, content={"error": "文献不存在"})
+        rows_mode = _tri_rows_for(doc)
+        if rows_mode < 3:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "AI 填充仅适用于非中文多行制文献 "
+                                  "(三行/四行); 请先切换行制"})
+        if rows_mode == 3:
+            targets = [t for t in targets if t != "translit"]
+        n_blocks = conn.execute(
+            "SELECT COUNT(*) c FROM lines WHERE doc_id = ? AND page_num = ?",
+            (doc_id, page_num)).fetchone()["c"]
+    finally:
+        conn.close()
+    if not n_blocks:
+        return JSONResponse(status_code=400, content={"error": "该页无文本块"})
 
-        src_lang = doc["lang"] or "zh"
-        doc_rows_snapshot = list(rows)  # Row 快照, 后台线程独立使用
+    def _bg():
+        return autofill_page(collection, doc_id, page_num, targets=targets,
+                             provider_id=provider_id)
 
-        def _bg():
-            results, model = autofill_rows(
-                blocks, src_lang=src_lang,
-                targets=targets, provider_id=provider_id)
-            filled = 0
-            conn = get_conn(collection)
-            try:
-                for r, draft in zip(doc_rows_snapshot, results):
-                    if not draft:
-                        continue
-                    flags = {}
-                    try:
-                        flags = json.loads(r["draft_flags"]) \
-                            if r["draft_flags"] else {}
-                    except (json.JSONDecodeError, ValueError):
-                        flags = {}
-                    updates, params = [], []
-                    for key, prefix in (("translit", "[转] "),
-                                        ("gloss", "[对] "),
-                                        ("trans", "[译] ")):
-                        if key not in draft:
-                            continue
-                        old_v = r[key] or ""
-                        new_v = draft[key]
-                        if new_v == old_v:
-                            continue
-                        updates.append(f"{key} = ?")
-                        params.append(new_v)
-                        flags[key] = "ai"
-                        conn.execute(
-                            """INSERT INTO revision_log
-                               (doc_id, page_num, block_num, old_value, new_value,
-                                basis, in_pkg)
-                               VALUES (?, ?, ?, ?, ?, ?, 0)""",
-                            (doc_id, page_num,
-                             conn.execute(
-                                 "SELECT block_num FROM lines WHERE id = ?",
-                                 (r["id"],)).fetchone()["block_num"],
-                             prefix + old_v, prefix + new_v,
-                             f"AI草稿·{model}"),
-                        )
-                        filled += 1
-                    if updates:
-                        if flags:
-                            updates.append("draft_flags = ?")
-                            params.append(json.dumps(flags, ensure_ascii=False))
-                        params.append(r["id"])
-                        conn.execute(
-                            f"UPDATE lines SET {', '.join(updates)} WHERE id = ?",
-                            params)
-                conn.commit()
-            finally:
-                conn.close()
-            return {"filled": filled, "model": model,
-                    "empty": sum(1 for d in results if not d)}
-
-        jid = _bg_job_start("autofill", _bg)
-        return {"ok": True, "job": jid, "blocks": len(blocks),
-                "targets": targets}
-    except LLMNotConfigured as e:
-        return JSONResponse(status_code=503, content={"error": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+    jid = _bg_job_start("autofill", _bg)
+    return {"ok": True, "job": jid, "blocks": n_blocks, "targets": targets}
 
 
 # ── 文献内容浏览 ────────────────────────────────────────
@@ -2734,11 +2668,13 @@ async def api_candidates_generate(collection: str, doc_id: int,
     树不入库, 经 job result 的 tree 字段由前端确认合并。
     复用 P2c 的 llm_chat provider 配置 (default_llm).
     """
-    from .llm import chat, LLMNotConfigured
+    from .generate import gen_cards_core
     want = {t.strip() for t in (targets or "toc,entities,summary,meta").split(",")
             if t.strip() in ("toc", "entities", "summary", "meta")}
     if not want:
         want = {"toc", "entities", "summary"}
+    if collection not in list_collections():
+        return JSONResponse(status_code=404, content={"error": "书架不存在"})
     try:  # 配置缺失同步快速失败 (503), 不入后台
         from .config import get_llm_provider_cfg as _glc
         _glc(None)
@@ -2749,190 +2685,18 @@ async def api_candidates_generate(collection: str, doc_id: int,
         return JSONResponse(status_code=404, content={"error": "文献不存在"})
     conn = get_conn(collection)
     try:
-        blocks = conn.execute(
-            "SELECT page_num, block_num, text FROM blocks_fts "
-            "WHERE doc_id = ? ORDER BY page_num, block_num LIMIT 40",
-            (doc_id,)).fetchall()
-        if not blocks:
-            return JSONResponse(status_code=400,
-                                content={"error": "文献无文本块，无法生成"})
+        has_blocks = conn.execute(
+            "SELECT 1 FROM blocks_fts WHERE doc_id = ? LIMIT 1",
+            (doc_id,)).fetchone()
     finally:
         conn.close()
-
-    sample = "\n".join(
-        f"[p{b['page_num']}b{b['block_num']}] {b['text'][:120]}"
-        for b in blocks)
-    fields = []
-    if "toc" in want:
-        fields.append('"toc": [{"label": "目录/主题节点", '
-                      '"category": "自由类目标签（如 职官/兵事/贡赋/舆地 或自拟）", '
-                      '"page_num": 页码, '
-                      '"children": [同构子节点数组, 最多嵌套3层, 叶子可省略]}]'
-                      '（根节点 3-8 个, 层级按目录实际结构）')
-    if "entities" in want:
-        _ev = []
-        try:
-            _vc = get_conn(collection)
-            try:
-                _ev = [r["term"] for r in _vc.execute(
-                    "SELECT term FROM vocabs WHERE kind = 'entity_category' ORDER BY id"
-                ).fetchall()]
-            finally:
-                _vc.close()
-        except sqlite3.OperationalError:
-            _ev = []
-        _cat_desc = ('实体类别（从词表选择: ' + '/'.join(_ev) + '）'
-                     if _ev else '实体类别（如 人名/地名/机构/物产/职官）')
-        fields.append('"entities": [{"label": "实体名（人名/地名/机构/物产等）", '
-                      '"category": "' + _cat_desc + '", '
-                      '"page_num": 页码, "confidence": 0到1}]（3-15 个）')
-    if "summary" in want:
-        fields.append('"summary": "100-200字摘要"')
-    if "meta" in want:
-        _bt = normalize_bib_type(doc["bib_type"])
-        _fields_desc = ", ".join(
-            f'"{f}": "{BIB_FIELD_LABELS.get(f, f)}"'
-            for f in BIB_TYPE_FIELDS.get(_bt, BIB_TYPE_FIELDS["@book"]))
-        fields.append('"meta": {' + _fields_desc + '}（从题名页/序跋/卷端/'
-                      '版权页识别, 按 ' + (_bt or "@book") + ' 字段, '
-                      '不确定的字段给空串）')
-    system = (
-        "你是文献编目助手。基于给定的文献块样本（每行前缀 [p页b块]），"
-        "输出严格 JSON：{" + ", ".join(fields) + "}。"
-        "只输出要求的字段, 只输出 JSON, 不要解释。"
-    )
-    extra_prompt = (prompt or "").strip()
-    if "meta" in want and extra_prompt:
-        system += f"\n补充要求（用户指示, 优先遵循）: {extra_prompt}"
-    user_content = sample
-    toc_src = (toc_source or "").strip()
-    if "toc" in want and toc_src:
-        system += ("\n用户提供了目录文本（多级缩进/编号等形式）— "
-                   "优先按该目录文本解析出 toc 树（保留其层级与页码/卷次信息）, "
-                   "文献块样本仅作参考。")
-        user_content = ("目录文本:\n" + toc_src[:6000]
-                        + "\n\n文献块样本(参考):\n" + sample)
-    bib_src = (bib_source or "").strip()
-    if "meta" in want and bib_src:
-        system += ("\n用户提供了书目数据 (BibTeX/RIS/引文格式等) — "
-                   "优先解析书目数据填 meta 字段, 文献块样本仅作参考。")
-        user_content = f"书目数据:\n{bib_src[:4000]}\n\n文献块样本(参考):\n{sample}"
+    if not has_blocks:
+        return JSONResponse(status_code=400,
+                            content={"error": "文献无文本块，无法生成"})
 
     def _bg():
-        content, model = chat(
-            [{"role": "system", "content": system},
-             {"role": "user", "content": user_content}])
-        try:
-            parsed = json.loads(
-                content[content.index('{'):content.rindex('}') + 1])
-        except (ValueError, AttributeError):
-            raise ValueError(f"LLM 输出无法解析: {content[:120]}")
-
-        toc_tree_raw = parsed.get("toc") or [] if "toc" in want else []
-
-        def _clean_tree(nodes, depth=0):
-            out = []
-            for x in nodes if isinstance(nodes, list) else []:
-                if not isinstance(x, dict):
-                    continue
-                label = str(x.get("label") or "").strip()
-                if not label:
-                    continue
-                node = {"label": label,
-                        "category": str(x.get("category") or '').strip() or None,
-                        "page_num": int(x.get("page_num") or 0) or None,
-                        "from": "ai"}
-                if depth < 2:
-                    kids = _clean_tree(x.get("children") or [], depth + 1)
-                    if kids:
-                        node["children"] = kids
-                out.append(node)
-            return out
-
-        def _count_tree(nodes):
-            n = 0
-            for x in nodes:
-                n += 1 + _count_tree(x.get("children") or [])
-            return n
-
-        toc_tree = _clean_tree(toc_tree_raw)
-        entity_items = parsed.get("entities") or [] if "entities" in want else []
-        summary_text = (parsed.get("summary") or "").strip() \
-            if "summary" in want else ""
-        meta_items = parsed.get("meta") or {} if "meta" in want else {}
-
-        n_meta = 0
-        if isinstance(meta_items, dict) and meta_items:
-            conn_m = get_conn(collection)
-            try:
-                drow = conn_m.execute(
-                    "SELECT bib_type, bib_data FROM documents WHERE id = ?",
-                    (doc_id,)).fetchone()
-                try:
-                    bib = json.loads(
-                        drow["bib_data"] or "{}") if drow else {}
-                except ValueError:
-                    bib = {}
-                doc_bt = normalize_bib_type(
-                    drow["bib_type"] if drow else doc.get("bib_type"))
-                # 回填键集对齐 bibEditor 字段表 (按 bib_type) + note 兜底
-                fk_set = set(BIB_TYPE_FIELDS.get(
-                    doc_bt, BIB_TYPE_FIELDS["@book"])) | {"note"}
-                for fk in fk_set:
-                    v = str(meta_items.get(fk) or "").strip()
-                    if v and not bib.get(fk):
-                        bib[fk] = v
-                        n_meta += 1
-                if n_meta:
-                    synced = sync_doc_fields(bib)
-                    conn_m.execute(
-                        "UPDATE documents SET bib_data = ?, title = ?, "
-                        "author = ? WHERE id = ?",
-                        (json.dumps(bib, ensure_ascii=False),
-                         synced["title"], synced["author"], doc_id))
-                    conn_m.commit()
-            finally:
-                conn_m.close()
-
-        conn = get_conn(collection)
-        try:
-            # 页码语义: 目录节点页码=原书页 (来自书目目录文本/LLM 读目录页),
-            # 不做换算; 实体页码来自内容块物理页 (pdf), 校准时换算为原书页落库
-            pm_groups = _pm_groups(_load_page_map(conn, doc_id))
-            if pm_groups:
-                for it in entity_items:
-                    if it.get("page_num"):
-                        it["page_num"] = _pm_reverse(pm_groups, int(it["page_num"]))
-            n_toc = 0   # toc 改树形: 不插平铺候选, 树经 result.tree 前端确认
-            n_ent = 0
-            for it in entity_items:
-                label = str(it.get("label") or "").strip()
-                if not label:
-                    continue
-                conn.execute(
-                    """INSERT INTO card_candidates
-                       (doc_id, ctype, label, category, confidence, page_num, status)
-                       VALUES (?, 'entity', ?, ?, ?, ?, 'pending')""",
-                    (doc_id, label,
-                     str(it.get("category") or '').strip() or None,
-                     float(it.get("confidence") or 0.5),
-                     int(it.get("page_num") or 0) or None))
-                n_ent += 1
-            if summary_text:
-                conn.execute(
-                    """INSERT INTO doc_cards (doc_id, kind, content, status, updated_at)
-                       VALUES (?, 'summary', ?, 'draft', datetime('now'))
-                       ON CONFLICT(doc_id, kind) DO UPDATE SET
-                         content = excluded.content,
-                         updated_at = datetime('now')""",
-                    (doc_id, json.dumps({"text": summary_text},
-                                        ensure_ascii=False)))
-            conn.commit()
-            return {"ok": True, "toc": _count_tree(toc_tree),
-                    "tree": toc_tree, "entities": n_ent, "meta": n_meta,
-                    "summary": bool(summary_text), "model": model}
-        finally:
-            conn.close()
+        return gen_cards_core(collection, doc_id, targets=targets, prompt=prompt,
+                              toc_source=toc_source, bib_source=bib_source)
 
     jid = _bg_job_start("cards-gen", _bg)
     return {"ok": True, "job": jid, "targets": sorted(want)}
@@ -3008,12 +2772,12 @@ def _wiki_llm_payload(conn):
 @app.post("/collections/{collection}/wiki/generate")
 async def wiki_generate(collection: str):
     """一键生成知识地图: LLM 编译 → 清旧插新 → ready + 基线戳."""
-    from .llm import chat, LLMNotConfigured
-    from .config import get_default_llm_provider_id
+    from .config import get_llm_provider_cfg
+    from .generate import gen_wiki_core
     if collection not in list_collections():
         return JSONResponse(status_code=404, content={"error": "书架不存在"})
     try:  # 配置缺失同步快速失败 (503), 不入后台
-        get_default_llm_provider_id()
+        get_llm_provider_cfg(None)
     except RuntimeError as e:
         return JSONResponse(status_code=503, content={"error": str(e)})
     conn = get_conn(collection)
@@ -3030,62 +2794,14 @@ async def wiki_generate(collection: str):
             "ON CONFLICT(collection) DO UPDATE SET status = 'generating'",
             (collection,))
         conn.commit()
-        conn.close()  # 主连接即关, 后台自开 (线程独立)
-
-        def _bg():
-            conn = get_conn(collection)
-            try:
-                provider_id = get_default_llm_provider_id()
-                payload = json.dumps(_wiki_llm_payload(conn),
-                                     ensure_ascii=False)
-                content, model = chat(
-                    [{"role": "system", "content": WIKI_SYSTEM_PROMPT},
-                     {"role": "user", "content": payload}], provider_id)
-                i0, i1 = content.find('{'), content.rfind('}') + 1
-                if i0 < 0 or i1 <= i0:
-                    raise ValueError("LLM 输出未包含 JSON 对象")
-                pages = json.loads(content[i0:i1]).get("pages", [])
-                if not pages:
-                    raise ValueError("LLM 输出 pages 为空")
-                rev_now = conn.execute(
-                    "SELECT COUNT(*) c FROM revision_log").fetchone()["c"]
-                conn.execute(
-                    "DELETE FROM wiki_pages WHERE collection = ?",
-                    (collection,))
-                for pos, pg in enumerate(pages):
-                    slug = (pg.get("slug") or pg.get("title")
-                            or f"page-{pos}")[:60]
-                    conn.execute(
-                        "INSERT INTO wiki_pages "
-                        "(collection, slug, title, content, refs, position) "
-                        "VALUES(?,?,?,?,?,?) "
-                        "ON CONFLICT(collection, slug) DO NOTHING",
-                        (collection, slug, pg.get("title") or slug,
-                         pg.get("content") or "",
-                         json.dumps(pg.get("refs") or []), pos))
-                conn.execute(
-                    "UPDATE wiki_status SET status = 'ready', base_edits = ?, "
-                    "generated_at = datetime('now', 'localtime') "
-                    "WHERE collection = ?",
-                    (rev_now, collection))
-                conn.commit()
-                return {"pages": len(pages), "model": model}
-            except Exception:
-                conn.execute(
-                    "UPDATE wiki_status SET status = 'none' "
-                    "WHERE collection = ?", (collection,))
-                conn.commit()
-                raise
-            finally:
-                conn.close()
-
-        jid = _bg_job_start("wiki-gen", _bg)
-        return {"ok": True, "job": jid}
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        conn.close()
+
+    def _bg():
+        return gen_wiki_core(collection)
+
+    jid = _bg_job_start("wiki-gen", _bg)
+    return {"ok": True, "job": jid}
 
 
 @app.get("/collections/{collection}/wiki/status")
@@ -3202,55 +2918,28 @@ def _entity_hits(collection: str, q: str, limit: int = 10):
 @app.post("/collections/{collection}/entitygraph/generate")
 async def entitygraph_generate(collection: str, doc_id: int = Form(None)):
     """编译实体图 (全量; doc_id 给定时仅重建该文献的提及)."""
-    from . import entity as ent
-    from .config import get_default_llm_provider_id
+    from .config import get_llm_provider_cfg
+    from .generate import gen_entitygraph_core
     if collection not in list_collections():
         return JSONResponse(status_code=404, content={"error": "书架不存在"})
     if collection in _ENTITY_RUNNING:
         return JSONResponse(status_code=409,
                             content={"error": "正在编译中，请稍候"})
     try:
-        get_default_llm_provider_id()
+        get_llm_provider_cfg(None)
     except RuntimeError as e:
         return JSONResponse(status_code=503, content={"error": str(e)})
     _ENTITY_RUNNING.add(collection)
-    conn = get_conn(collection)
-    try:
-        conn.execute(
-            "INSERT INTO entity_status(collection, status, base_edits, generated_at) "
-            "VALUES(?, 'generating', 0, NULL) "
-            "ON CONFLICT(collection) DO UPDATE SET status = 'generating'",
-            (collection,))
-        conn.commit()
-        conn.close()
+    doc_ids = [int(doc_id)] if doc_id else None
 
-        def _bg():
-            conn2 = get_conn(collection)
-            try:
-                provider_id = get_default_llm_provider_id()
-                doc_ids = [int(doc_id)] if doc_id else None
-                total = ent.generate_graph(collection, doc_ids, provider_id)
-                return {"mentions": total}
-            except Exception:
-                try:
-                    conn2.execute(
-                        "UPDATE entity_status SET status = 'none' "
-                        "WHERE collection = ?", (collection,))
-                    conn2.commit()
-                except Exception:
-                    pass
-                raise
-            finally:
-                conn2.close()
-                _ENTITY_RUNNING.discard(collection)
-
-        jid = _bg_job_start("entitygraph-gen", _bg)
-        return {"ok": True, "job": jid}
-    finally:
+    def _bg():
         try:
-            conn.close()
-        except Exception:
-            pass
+            return gen_entitygraph_core(collection, doc_ids)
+        finally:
+            _ENTITY_RUNNING.discard(collection)
+
+    jid = _bg_job_start("entitygraph-gen", _bg)
+    return {"ok": True, "job": jid}
 
 
 @app.get("/collections/{collection}/entitygraph/status")
