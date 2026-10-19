@@ -62,6 +62,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
     block_num UNINDEXED,
     text
 );
+CREATE VIRTUAL TABLE IF NOT EXISTS cards_fts USING fts5(
+    card_id UNINDEXED,
+    kind UNINDEXED,
+    doc_id UNINDEXED,
+    title UNINDEXED,
+    text,
+    tokenize='trigram'
+);
 
 CREATE TABLE IF NOT EXISTS page_regions (
     doc_id INTEGER NOT NULL,
@@ -401,6 +409,66 @@ def _migrate(conn):
         CREATE INDEX IF NOT EXISTS idx_mentions_doc
             ON entity_mentions(doc_id)
     """)
+
+    # ── 卡片 FTS 回填 (2026-10-19): reviewed 的 toc/entity 卡进 cards_fts ──
+    # 幂等: 仅当 cards_fts 为空且 doc_cards 有 reviewed 卡时回填一次;
+    # 之后由 api 的 _card_fts_sync 在保存/状态切换/采纳时维护。
+    try:
+        n_fts = conn.execute("SELECT COUNT(*) FROM cards_fts").fetchone()[0]
+        if n_fts == 0:
+            rows = conn.execute(
+                "SELECT dc.id, dc.doc_id, dc.kind, dc.content, d.title "
+                "FROM doc_cards dc JOIN documents d ON d.id = dc.doc_id "
+                "WHERE dc.status = 'reviewed' "
+                "  AND dc.kind IN ('toc', 'entity')").fetchall()
+            for r in rows:
+                flat = _card_flat_text(r["kind"], r["content"])
+                if flat:
+                    conn.execute(
+                        "INSERT INTO cards_fts(card_id, kind, doc_id, title, text) "
+                        "VALUES(?,?,?,?,?)",
+                        (r["id"], r["kind"], r["doc_id"],
+                         r["title"] or "", flat))
+    except Exception:
+        pass   # 旧库无表/结构差异 → 跳过, _card_hits 有空兜底
+
+
+def _card_flat_text(kind: str, content_json: str) -> str:
+    """卡片内容扁平化为可检索文本 (只取人读字段, 不含 JSON 键名).
+
+    toc: 递归 tree/nodes 取 label+category; entity: items 取 label+category。
+    """
+    import json as _json
+    try:
+        c = _json.loads(content_json or '{}') if content_json else {}
+    except (ValueError, TypeError):
+        return ''
+    parts: list[str] = []
+
+    if kind == 'toc':
+        def _walk(nodes):
+            for n in nodes if isinstance(nodes, list) else []:
+                if not isinstance(n, dict):
+                    continue
+                lbl = str(n.get('label') or '').strip()
+                if lbl:
+                    parts.append(lbl)
+                cat = str(n.get('category') or '').strip()
+                if cat:
+                    parts.append(cat)
+                _walk(n.get('children') or [])
+        _walk(c.get('tree') or c.get('nodes') or [])
+    elif kind == 'entity':
+        for it in c.get('items') or []:
+            if not isinstance(it, dict):
+                continue
+            lbl = str(it.get('label') or '').strip()
+            if lbl:
+                parts.append(lbl)
+            cat = str(it.get('category') or '').strip()
+            if cat:
+                parts.append(cat)
+    return ' '.join(parts)
 
 
 def init_db(collection: str):

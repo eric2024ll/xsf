@@ -732,6 +732,11 @@ def remove_doc(doc_id: int, collection: str):
         conn.execute(
             'DELETE FROM blocks_fts WHERE doc_id = ?', (doc_id,)
         )
+        # 卡片/候选/提及随文献清理 (避免孤儿数据进检索)
+        conn.execute('DELETE FROM doc_cards WHERE doc_id = ?', (doc_id,))
+        conn.execute('DELETE FROM card_candidates WHERE doc_id = ?', (doc_id,))
+        conn.execute('DELETE FROM cards_fts WHERE doc_id = ?', (doc_id,))
+        conn.execute('DELETE FROM entity_mentions WHERE doc_id = ?', (doc_id,))
         conn.execute('DELETE FROM documents WHERE id = ?', (doc_id,))
         conn.commit()
     finally:

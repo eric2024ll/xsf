@@ -523,40 +523,90 @@ def _pm_forward(groups: list, default: str, printed: int) -> int:
     return _pm_map(g["anchors"], printed)
 
 
+def _card_fts_sync(conn, card_id: int):
+    """卡内容变更后同步 cards_fts (reviewed 的 toc/entity 卡进索引, 其余移除)."""
+    from .db import _card_flat_text
+    conn.execute("DELETE FROM cards_fts WHERE card_id = ?", (card_id,))
+    row = conn.execute(
+        "SELECT dc.id, dc.doc_id, dc.kind, dc.content, dc.status, d.title "
+        "FROM doc_cards dc JOIN documents d ON d.id = dc.doc_id "
+        "WHERE dc.id = ?", (card_id,)).fetchone()
+    if row and row["status"] == 'reviewed' and row["kind"] in ('toc', 'entity'):
+        flat = _card_flat_text(row["kind"], row["content"])
+        if flat:
+            conn.execute(
+                "INSERT INTO cards_fts(card_id, kind, doc_id, title, text) "
+                "VALUES(?,?,?,?,?)",
+                (row["id"], row["kind"], row["doc_id"], row["title"] or "", flat))
+
+
+def _q_variants(token: str) -> list[str]:
+    """查询段的繁简变体 (数量截断防组合爆炸)."""
+    from .search import _all_variants
+    vs = _all_variants(token)
+    if len(vs) > 32:
+        vs = {token}   # 长词放弃笛卡尔积, 依赖 trigram 的繁简不敏感场景靠用户输入形式
+    return sorted(vs)
+
+
 def _card_hits(collection: str, q: str, limit: int = 20) -> list:
-    """P4 (2026-10-17): reviewed 卡进检索路 (卡片内容量小, LIKE 匹配)."""
-    hits = []
+    """reviewed 卡命中 (cards_fts, trigram 子串 + 繁简互转).
+
+    整段 ≥3 字走 FTS 短语 (bm25 排序); 含 <3 字段时 INSTR 兜底 (卡表小, 全扫)。
+    """
+    tokens = [t for t in (q or '').split() if t]
+    if not tokens:
+        return []
     conn = get_conn(collection)
     try:
-        esc_q = q.replace('\\', '\\\\').replace('%', r'\%') \
-                .replace('_', r'\_')
-        rows = conn.execute(
-            """SELECT dc.id AS card_id, dc.kind, dc.content,
-                      d.id AS doc_id, d.title
-               FROM doc_cards dc JOIN documents d ON d.id = dc.doc_id
-               WHERE dc.status = 'reviewed'
-                 AND dc.content LIKE ? ESCAPE '\\'
-               LIMIT ?""",
-            (f"%{esc_q}%", limit)).fetchall()
-    except Exception:
-        rows = []   # 旧库无 doc_cards 表等 → 空命中兜底
+        rows, seen = [], set()
+        long_tokens = [t for t in tokens if len(t) >= 3]
+        if long_tokens:
+            match_expr = ' AND '.join(
+                '(' + ' OR '.join(f'"{v}"' for v in _q_variants(t)) + ')'
+                for t in long_tokens)
+            try:
+                for r in conn.execute(
+                        """SELECT card_id, kind, doc_id, title, text
+                           FROM cards_fts WHERE cards_fts MATCH ?
+                           ORDER BY bm25(cards_fts) LIMIT ?""",
+                        (match_expr, limit * 2)).fetchall():
+                    rows.append(r)
+                    seen.add(r["card_id"])
+            except Exception:
+                pass
+        if len(tokens) != len(long_tokens) or len(rows) < limit:
+            # 短词兜底: 每个 token 至少一个繁简变体出现 (AND 语义)
+            try:
+                for r in conn.execute(
+                        """SELECT card_id, kind, doc_id, title, text
+                           FROM cards_fts LIMIT 1000""").fetchall():
+                    if r["card_id"] in seen:
+                        continue
+                    tx = f"{r['title'] or ''} {r['text'] or ''}"
+                    if all(any(v in tx for v in _q_variants(t))
+                           for t in tokens):
+                        rows.append(r)
+                        if len(rows) >= limit:
+                            break
+            except Exception:
+                pass
     finally:
         conn.close()
-    for row in rows:
-        try:
-            content = json.loads(row["content"] or "{}")
-        except ValueError:
-            continue
-        flat = " / ".join(
-            f"{k}: {v}" for k, v in content.items()
-            if isinstance(v, (str, int, float)))
-        if q.lower() not in flat.lower():
-            # 嵌套结构 (nodes/entities) 逐项匹配
-            deep = json.dumps(content, ensure_ascii=False)
-            if q.lower() not in deep.lower():
-                continue
-            flat = ""
-        snippet = flat or deep[:160]
+    hits = []
+    for row in rows[:limit]:
+        text = row["text"] or ""
+        pos = -1
+        for t in tokens:
+            for v in _q_variants(t):
+                p = text.find(v)
+                if p >= 0:
+                    pos = p
+                    break
+            if pos >= 0:
+                break
+        snippet = (text[max(0, pos - 40):pos + 120]
+                   if pos >= 0 else text[:160])
         hits.append({
             "card_id": row["card_id"], "kind": row["kind"],
             "doc_id": row["doc_id"],
@@ -2369,6 +2419,11 @@ async def api_card_save(collection: str, doc_id: int,
                  status = excluded.status,
                  updated_at = datetime('now')""",
             (doc_id, kind, content, status))
+        row = conn.execute(
+            "SELECT id FROM doc_cards WHERE doc_id = ? AND kind = ?",
+            (doc_id, kind)).fetchone()
+        if row:
+            _card_fts_sync(conn, row["id"])
         conn.commit()
         return {"ok": True}
     finally:
@@ -2386,6 +2441,8 @@ async def api_card_status(collection: str, card_id: int,
         cur = conn.execute(
             "UPDATE doc_cards SET status = ?, updated_at = datetime('now') "
             "WHERE id = ?", (status, card_id))
+        if cur.rowcount:
+            _card_fts_sync(conn, card_id)
         conn.commit()
         if cur.rowcount == 0:
             return JSONResponse(status_code=404, content={"error": "卡片不存在"})
@@ -2495,6 +2552,7 @@ async def api_candidate_review(collection: str, cand_id: int,
                 "UPDATE doc_cards SET content = ?, updated_at = datetime('now') "
                 "WHERE id = ?",
                 (json.dumps(card_content, ensure_ascii=False), card_id))
+            _card_fts_sync(conn, card_id)
         conn.commit()
         return {"ok": True, "status": new_status}
     finally:
