@@ -1567,23 +1567,26 @@ function pmInterpOne(anchors, printed) {
   var kk = mx !== lx ? (my - ly) / (mx - lx) : 1;
   return Math.round(my + (printed - mx) * kk);
 }
-function pmInterp(printed) {
+function pmInterp(printed, seq) {
   var gs = pmGroups();
   if (!gs.length) return printed;
   var def = (window.__pageMap && window.__pageMap.default) || '';
-  var cands = gs.filter(function (g) {
-    return Math.min.apply(null, g.anchors.map(function (a) { return a[0]; })) <= printed
-      && printed <= Math.max.apply(null, g.anchors.map(function (a) { return a[0]; }));
-  });
   var g = null;
-  for (var i = 0; i < cands.length; i++) { if (cands[i].label === def) { g = cands[i]; break; } }
-  if (!g) g = cands[0] || gs.filter(function (x) { return x.label === def; })[0] || gs[0];
+  if (seq) g = gs.filter(function (x) { return x.label === seq; })[0] || null;
+  if (!g) {
+    var cands = gs.filter(function (x) {
+      return Math.min.apply(null, x.anchors.map(function (a) { return a[0]; })) <= printed
+        && printed <= Math.max.apply(null, x.anchors.map(function (a) { return a[0]; }));
+    });
+    for (var i = 0; i < cands.length; i++) { if (cands[i].label === def) { g = cands[i]; break; } }
+    if (!g) g = cands[0] || gs.filter(function (x) { return x.label === def; })[0] || gs[0];
+  }
   return pmInterpOne(g.anchors, printed);
 }
-function goPrinted(p) {
+function goPrinted(p, seq) {
   if (!p) return;
-  var target = pmInterp(p);
-  var drift = pmGroups().length ? '（原书 p' + p + ' → PDF p' + target + '）' : '';
+  var target = pmInterp(p, seq);
+  var drift = pmGroups().length ? '（' + (seq ? seq + ' ' : '') + '原书 p' + p + ' → PDF p' + target + '）' : '';
   if (drift) showToast('页码校准跳转 ' + drift);
   goPage(target);
 }
@@ -2506,7 +2509,7 @@ window.__tocTree = [];
 {% if toc.content.get('tree') %}
 window.__tocTree = {{ toc.content.get('tree') | tojson }};
 {% elif toc.content.get('nodes') %}
-window.__tocTree = {{ toc.content.get('nodes') | tojson }}.map(n => ({ label: n.label, category: n.category, page_num: n.page_num, block_num: n.block_num, from: n.from }));
+window.__tocTree = {{ toc.content.get('nodes') | tojson }}.map(n => ({ label: n.label, category: n.category, page_num: n.page_num, block_num: n.block_num, seq: n.seq, from: n.from }));
 {% endif %}
 window.__tocSel = null;   // 选中路径, 如 [0,2]
 window.__tocStatus = '{{ toc.status or "draft" }}';
@@ -2535,7 +2538,7 @@ function renderTocTree() {
     return `<div class="toc-row${sel ? ' sel' : ''}" style="margin-left:${depth * 22}px;">
       <span class="toc-label" onclick="tocSel(${JSON.stringify(path).replace(/"/g, '&quot;')})">${__escT(n.label)}</span>
       ${n.category ? `<span class="toc-cat">${__escT(n.category)}</span>` : ''}
-      ${n.page_num ? `<button onclick="goPrinted(${n.page_num})" title="跳到原书 p${n.page_num}" style="padding:1px 6px;font-size:0.75rem;">p${n.page_num}</button>` : ''}
+      ${n.page_num ? `<button onclick="goPrinted(${n.page_num}, ${n.seq ? JSON.stringify(n.seq) : 'null'})" title="跳到原书 p${n.page_num}" style="padding:1px 6px;font-size:0.75rem;">${n.seq ? n.seq + '·' : ''}p${n.page_num}</button>` : ''}
       <span class="toc-ops">
         ${btn('tocEdit', path, '改', '修改名称/类目/页码')}
         ${btn('tocAddChild', path, '+子', '添加子节点')}
@@ -2563,7 +2566,7 @@ function tocAddChild(path) {
   const label = prompt('子节点名:'); if (!label) return;
   const { node } = __tocFind(path); if (!node) return;
   node.children = node.children || [];
-  node.children.push({ label, category: null, page_num: node.page_num, from: '手工' });
+  node.children.push({ label, category: null, page_num: node.page_num, seq: node.seq || null, from: '手工' });
   renderTocTree();
   __tocPersist();
 }
@@ -2572,9 +2575,13 @@ function tocEdit(path) {
   const label = prompt('节点名:', node.label); if (label === null) return;
   const cat = prompt('类目（可空）:', node.category || ''); if (cat === null) return;
   const pg = prompt('页码（可空）:', node.page_num || ''); if (pg === null) return;
+  const gl = pmGroups().map(function (g) { return g.label; }).filter(Boolean);
+  const sq = node.page_num ? prompt('页码组' + (gl.length ? '（可选: ' + gl.join(' / ') + '）' : '（未建组——页码校准面板可建）') + '，可空=按默认组:', node.seq || '') : '';
+  if (node.page_num && sq === null) return;
   if (label.trim()) node.label = label.trim();
   node.category = cat.trim() || null;
   node.page_num = parseInt(pg, 10) || null;
+  if (node.page_num) node.seq = (sq || '').trim() || null; else node.seq = null;
   renderTocTree();
   __tocPersist();
 }
