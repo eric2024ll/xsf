@@ -114,12 +114,23 @@ async def lifespan(app: FastAPI):
     """启动时初始化所有已有 collection 的 DB; 启动文件夹扫描线程"""
     for coll in list_collections():
         init_db(coll)
+        try:
+            conn = get_conn(coll)
+            conn.execute("UPDATE entity_status SET status = 'none' "
+                         "WHERE status = 'generating'")
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
     start_scan_threads()
     yield
     shutdown_scan()
 
 
 app = FastAPI(title="小書房：放書架的地方，也能看書", version=_VERSION, lifespan=lifespan)
+
+# 实体图编译的进程内锁 (DB 的 entity_status 仅供 UI 显示, 不作锁: 重启/崩溃后不残留)
+_ENTITY_RUNNING: set = set()
 
 app.add_middleware(
     CORSMiddleware,
@@ -3103,18 +3114,16 @@ async def entitygraph_generate(collection: str, doc_id: int = Form(None)):
     from .config import get_default_llm_provider_id
     if collection not in list_collections():
         return JSONResponse(status_code=404, content={"error": "书架不存在"})
+    if collection in _ENTITY_RUNNING:
+        return JSONResponse(status_code=409,
+                            content={"error": "正在编译中，请稍候"})
     try:
         get_default_llm_provider_id()
     except RuntimeError as e:
         return JSONResponse(status_code=503, content={"error": str(e)})
+    _ENTITY_RUNNING.add(collection)
     conn = get_conn(collection)
     try:
-        cur = conn.execute(
-            "SELECT status FROM entity_status WHERE collection = ?",
-            (collection,)).fetchone()
-        if cur and cur["status"] == 'generating':
-            return JSONResponse(status_code=409,
-                                content={"error": "正在编译中，请稍候"})
         conn.execute(
             "INSERT INTO entity_status(collection, status, base_edits, generated_at) "
             "VALUES(?, 'generating', 0, NULL) "
@@ -3141,6 +3150,7 @@ async def entitygraph_generate(collection: str, doc_id: int = Form(None)):
                 raise
             finally:
                 conn2.close()
+                _ENTITY_RUNNING.discard(collection)
 
         jid = _bg_job_start("entitygraph-gen", _bg)
         return {"ok": True, "job": jid}
