@@ -16,9 +16,16 @@ import json
 import os
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 from .db import get_conn
 from .llm import chat, _extract_json_array
+
+
+# 并发度 (编译提速: 抽取批 / CBDB 查询), 可用环境变量覆盖
+_EXTRACT_WORKERS = int(os.environ.get('XSF_EXTRACT_WORKERS', '8'))
+_CBDB_WORKERS = int(os.environ.get('XSF_CBDB_WORKERS', '6'))
+_CBDB_CACHE = {}
 
 
 # ── CBDB resolver (可插拔锚, 无库/不可用即降级 None) ──
@@ -36,25 +43,32 @@ def _cbdb_py():
     return None
 
 
-def cbdb_find(name, timeout=25):
+def cbdb_find(name, timeout=8):
     """CBDB 查人物 → {pid,name,dynasty,birth,death} 或 None。
 
     不可用 / 未找到 / 多义 (>1 条同名) 一律返回 None (宁分不误合)。
+    进程内缓存 (含未命中), 避免同名词重复起子进程。
     """
+    if name in _CBDB_CACHE:
+        return _CBDB_CACHE[name]
     py = _cbdb_py()
     if not py:
+        _CBDB_CACHE[name] = None
         return None
     try:
         r = subprocess.run(['python3', py, 'find', name],
                            capture_output=True, text=True, timeout=timeout)
     except Exception:
+        _CBDB_CACHE[name] = None
         return None
     out = r.stdout or ''
     m = re.search(r'找到\s*(\d+)\s*条', out)
     if not m or int(m.group(1)) != 1:
+        _CBDB_CACHE[name] = None
         return None
     mm = re.search(r'PID\s+(\d+)\s+(\S+)\s+(\S+)\s*\(([^)]*)\)', out)
     if not mm:
+        _CBDB_CACHE[name] = None
         return None
     pid, cn, dy, yrs = mm.group(1), mm.group(2), mm.group(3), mm.group(4)
     by = dth = None
@@ -62,9 +76,23 @@ def cbdb_find(name, timeout=25):
     if ym:
         by = int(ym.group(1)) if ym.group(1).isdigit() else None
         dth = int(ym.group(2)) if ym.group(2).isdigit() else None
-    return {'pid': int(pid), 'name': cn,
-            'dynasty': None if dy == '?' else dy,
-            'birth': by, 'death': dth}
+    hit = {'pid': int(pid), 'name': cn,
+           'dynasty': None if dy == '?' else dy,
+           'birth': by, 'death': dth}
+    _CBDB_CACHE[name] = hit
+    return hit
+
+
+def _cbdb_lookup_many(names):
+    """并发 CBDB 查询 → {name: hit|None}; 去重后投池。"""
+    uniq = list(dict.fromkeys(names))
+    if not uniq:
+        return {}
+    out = {}
+    with ThreadPoolExecutor(max_workers=_CBDB_WORKERS) as ex:
+        for n, hit in zip(uniq, ex.map(cbdb_find, uniq)):
+            out[n] = hit
+    return out
 
 
 def _cbdb_props(hit):
@@ -166,7 +194,7 @@ def _authoritative_seeds(conn, doc_id, kind):
     return out
 
 
-def _batches(blocks, max_blocks=4, max_chars=800):
+def _batches(blocks, max_blocks=8, max_chars=1400):
     cur, n = [], 0
     for b in blocks:
         t = b['text'] or ''
@@ -190,6 +218,8 @@ def extract_mentions(conn, doc_id, provider_id=None):
     blocks = conn.execute(
         "SELECT page_num, block_num, text FROM blocks_fts "
         "WHERE doc_id = ? ORDER BY page_num, block_num", (doc_id,)).fetchall()
+    # 低价值块跳过 (页码/页眉等过短块), 省调用
+    blocks = [b for b in blocks if len((b['text'] or '').strip()) >= 6]
     system = ENTITY_SYSTEM
     if kind == 'paper':
         system += "\n本文献是期刊论文, 正文关键词段落中的词语优先作为实体。"
@@ -200,7 +230,8 @@ def extract_mentions(conn, doc_id, provider_id=None):
         system += ("\n文献自带%s (必须全部纳入抽取结果): %s"
                    % (label, '、'.join(s['surface'] for s in seeds)))
     out = []
-    for batch in _batches(blocks):
+
+    def _one(batch):
         idx = []
         lines = []
         for i, b in enumerate(batch):
@@ -212,7 +243,8 @@ def extract_mentions(conn, doc_id, provider_id=None):
                 [{"role": "system", "content": system},
                  {"role": "user", "content": user}], provider_id=provider_id)
         except Exception:
-            continue
+            return []
+        res = []
         for item in _extract_json_array(content or ''):
             if not isinstance(item, dict):
                 continue
@@ -228,9 +260,16 @@ def extract_mentions(conn, doc_id, provider_id=None):
                         break
             except (TypeError, ValueError):
                 pass
-            out.append({'surface': surface,
+            res.append({'surface': surface,
                         'category': (item.get('category') or '').strip() or None,
                         'page_num': pn, 'block_num': bn})
+        return res
+
+    batches = list(_batches(blocks))
+    if batches:
+        with ThreadPoolExecutor(max_workers=_EXTRACT_WORKERS) as ex:
+            for res in ex.map(_one, batches):
+                out.extend(res)
     have = {re.sub(r'\s+', '', m['surface'] or '') for m in out}
     for s in seeds:
         n = re.sub(r'\s+', '', s['surface'] or '')
@@ -343,6 +382,17 @@ def _llm_disambiguate(surfaces, canon_list, provider_id=None):
 def resolve_surfaces(conn, surfaces_cat, provider_id=None):
     """归一: [{'surface','category'}] → {surface: entity_id}。"""
     idx = load_index(conn)
+    # 预扫描: 收集需要 CBDB 的人名 (不在索引中), 并发查询一次
+    need, seen = [], set()
+    for sc in surfaces_cat:
+        k = _norm(sc['surface'])
+        if k in idx['canon'] or k in idx['alias']:
+            continue
+        cat = sc.get('category')
+        if cat and '人' in cat and k not in seen:
+            seen.add(k)
+            need.append(sc['surface'])
+    cbdb_hits = _cbdb_lookup_many(need)
     resolved, pending = {}, []
     for sc in surfaces_cat:
         surface, cat = sc['surface'], sc.get('category')
@@ -353,7 +403,7 @@ def resolve_surfaces(conn, surfaces_cat, provider_id=None):
         if k in idx['alias']:
             resolved[surface] = idx['alias'][k]
             continue
-        hit = cbdb_find(surface) if (cat and '人' in cat) else None
+        hit = cbdb_hits.get(surface) if (cat and '人' in cat) else None
         if hit:
             if hit['pid'] in idx['cbdb']:
                 resolved[surface] = idx['cbdb'][hit['pid']]
