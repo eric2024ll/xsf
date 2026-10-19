@@ -451,9 +451,76 @@ def _load_page_map(conn, doc_id):
             v = json.loads(row["page_map"])
             if isinstance(v, list) and v:
                 return v
+            if isinstance(v, dict) and v.get("v") == 2 and v.get("groups"):
+                return v
         except ValueError:
             pass
     return None
+
+
+def _pm_groups(raw) -> list:
+    """归一为分组列表 [{label, anchors}]. v1 [[printed,pdf],..] → 单组 label=''.
+    多序列: 前言/正文各自从第 1 页起时, printed 会重复, 须分组各存各的."""
+    if not raw:
+        return []
+    if isinstance(raw, dict) and raw.get("v") == 2:
+        gs = []
+        for g in raw.get("groups") or []:
+            a = g.get("anchors") or []
+            if a:
+                gs.append({"label": str(g.get("label") or ""),
+                           "anchors": [[int(x[0]), int(x[1])] for x in a]})
+        return gs
+    if isinstance(raw, list):
+        return [{"label": "", "anchors": [[int(x[0]), int(x[1])] for x in raw]}]
+    return []
+
+
+def _pm_default(raw) -> str:
+    if isinstance(raw, dict) and raw.get("v") == 2:
+        return str(raw.get("default") or "")
+    return ""
+
+
+def _pm_v2(groups: list, default: str = "") -> dict:
+    return {"v": 2, "groups": groups, "default": default}
+
+
+def _pm_reverse(groups: list, pdf: int) -> int:
+    """pdf 物理页 → 原书页 (落库方向). pdf 全书唯一, 各组 pdf 域不重叠:
+    取覆盖域命中的组; 无命中取 pdf 距最近锚点的组; 组内分段线性."""
+    if not groups:
+        return pdf
+    best = None
+    for g in groups:
+        pdfs = [a[1] for a in g["anchors"]]
+        lo, hi = min(pdfs), max(pdfs)
+        if lo <= pdf <= hi:
+            best = g
+            break
+    if best is None:
+        best = min(groups, key=lambda g: min(
+            abs(pdf - a[1]) for a in g["anchors"]))
+    return _pm_map(best["anchors"], pdf, reverse=True)
+
+
+def _pm_forward(groups: list, default: str, printed: int) -> int:
+    """原书页 → pdf 物理页 (跳转方向). printed 跨组可重复 (序/正文各有 p1):
+    候选 = printed 覆盖域命中的组; default 组优先, 无命中组时按 default 外推."""
+    if not groups:
+        return printed
+    cands = [g for g in groups
+             if min(a[0] for a in g["anchors"]) <= printed
+             <= max(a[0] for a in g["anchors"])]
+    g = None
+    for c in cands:
+        if c["label"] == default:
+            g = c
+            break
+    if g is None:
+        g = cands[0] if cands else next(
+            (c for c in groups if c["label"] == default), groups[0])
+    return _pm_map(g["anchors"], printed)
 
 
 def _card_hits(collection: str, q: str, limit: int = 20) -> list:
@@ -2512,50 +2579,96 @@ async def api_page_map_get(collection: str, doc_id: int):
         return JSONResponse({"error": "书架不存在"}, status_code=404)
     conn = get_conn(collection)
     try:
-        anchors = _load_page_map(conn, doc_id) or []
-        return {"ok": True, "anchors": anchors}
+        raw = _load_page_map(conn, doc_id)
+        return {"ok": True, "groups": _pm_groups(raw),
+                "default": _pm_default(raw)}
     finally:
         conn.close()
 
 
+def _pm_upsert_anchor(groups: list, label: str, printed: int, pdf: int):
+    """组内 printed 去重后并入; 组不存在则新建 (排在末尾)."""
+    for g in groups:
+        if g["label"] == label:
+            g["anchors"] = [a for a in g["anchors"] if a[0] != printed]
+            g["anchors"].append([printed, pdf])
+            g["anchors"].sort(key=lambda a: a[0])
+            return
+    groups.append({"label": label, "anchors": [[printed, pdf]]})
+
+
 @app.post("/collections/{collection}/doc/{doc_id}/page-map")
 async def api_page_map_add(collection: str, doc_id: int,
-                           printed: int = Form(...), pdf: int = Form(...)):
-    """加校准锚点: 翻到 pdf 页, 填该页原书页码 printed."""
+                           printed: int = Form(...), pdf: int = Form(...),
+                           label: str = Form("")):
+    """加校准锚点: 翻到 pdf 页, 填该页原书页码 printed.
+    label = 页码序列组 (前言/正文各自从 1 起时分组各标各的; 空 = 默认组)."""
     if collection not in list_collections():
         return JSONResponse({"error": "书架不存在"}, status_code=404)
     if printed < 1 or pdf < 1:
         return JSONResponse({"error": "页码须为正整数"}, status_code=400)
+    label = (label or "").strip()
     conn = get_conn(collection)
     try:
         if not conn.execute("SELECT 1 FROM documents WHERE id = ?",
                             (doc_id,)).fetchone():
             return JSONResponse({"error": "文献不存在"}, status_code=404)
-        anchors = _load_page_map(conn, doc_id) or []
-        anchors = [a for a in anchors if int(a[0]) != printed]
-        anchors.append([printed, pdf])
-        anchors.sort(key=lambda a: a[0])
+        raw = _load_page_map(conn, doc_id)
+        groups = _pm_groups(raw)
+        default = _pm_default(raw) if raw else label
+        _pm_upsert_anchor(groups, label, printed, pdf)
+        if not any(g["label"] == default for g in groups):
+            default = groups[0]["label"]
         conn.execute(
             "UPDATE documents SET page_map = ? WHERE id = ?",
-            (json.dumps(anchors), doc_id))
+            (json.dumps(_pm_v2(groups, default), ensure_ascii=False), doc_id))
         conn.commit()
-        return {"ok": True, "anchors": anchors}
+        return {"ok": True, "groups": groups, "default": default}
     finally:
         conn.close()
 
 
 @app.delete("/collections/{collection}/doc/{doc_id}/page-map")
 async def api_page_map_del(collection: str, doc_id: int,
-                           printed: int = Form(...)):
+                           printed: int = Form(...), label: str = Form("")):
     conn = get_conn(collection)
     try:
-        anchors = _load_page_map(conn, doc_id) or []
-        anchors = [a for a in anchors if int(a[0]) != printed]
+        raw = _load_page_map(conn, doc_id)
+        groups = _pm_groups(raw)
+        default = _pm_default(raw)
+        label = (label or "").strip()
+        for g in groups:
+            if g["label"] == label:
+                g["anchors"] = [a for a in g["anchors"] if a[0] != printed]
+        groups = [g for g in groups if g["anchors"]]
+        if not any(g["label"] == default for g in groups):
+            default = groups[0]["label"] if groups else ""
         conn.execute(
             "UPDATE documents SET page_map = ? WHERE id = ?",
-            (json.dumps(anchors), doc_id))
+            (json.dumps(_pm_v2(groups, default), ensure_ascii=False)
+             if groups else None, doc_id))
         conn.commit()
-        return {"ok": True, "anchors": anchors}
+        return {"ok": True, "groups": groups, "default": default}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/page-map/default")
+async def api_page_map_set_default(collection: str, doc_id: int,
+                                   label: str = Form(...)):
+    """设默认页码组: 页码跨组歧义时 (序 p1 vs 正文 p1) 按该组跳转."""
+    conn = get_conn(collection)
+    try:
+        raw = _load_page_map(conn, doc_id)
+        groups = _pm_groups(raw)
+        label = (label or "").strip()
+        if not any(g["label"] == label for g in groups):
+            return JSONResponse({"error": "组不存在"}, status_code=404)
+        conn.execute(
+            "UPDATE documents SET page_map = ? WHERE id = ?",
+            (json.dumps(_pm_v2(groups, label), ensure_ascii=False), doc_id))
+        conn.commit()
+        return {"ok": True, "groups": groups, "default": label}
     finally:
         conn.close()
 
@@ -2568,8 +2681,8 @@ async def api_page_map_convert(collection: str, doc_id: int):
         return JSONResponse({"error": "书架不存在"}, status_code=404)
     conn = get_conn(collection)
     try:
-        anchors = _load_page_map(conn, doc_id)
-        if not anchors:
+        groups = _pm_groups(_load_page_map(conn, doc_id))
+        if not groups:
             return JSONResponse({"error": "尚未校准页码 (page_map 为空)"}, status_code=400)
         toc_n = ent_n = cand_n = 0
 
@@ -2578,7 +2691,7 @@ async def api_page_map_convert(collection: str, doc_id: int):
             for nd in nodes:
                 pn = nd.get("page_num")
                 if pn:
-                    nd["page_num"] = _pm_map(anchors, int(pn), reverse=True)
+                    nd["page_num"] = _pm_reverse(groups, int(pn))
                     n2 += 1
                 n2 += _conv_tree(nd.get("children") or [])
             return n2
@@ -2598,8 +2711,7 @@ async def api_page_map_convert(collection: str, doc_id: int):
             elif kind == "entity" and content.get("items"):
                 for it in content["items"]:
                     if it.get("page_num"):
-                        it["page_num"] = _pm_map(anchors, int(it["page_num"]),
-                                                 reverse=True)
+                        it["page_num"] = _pm_reverse(groups, int(it["page_num"]))
                         ent_n += 1
             conn.execute(
                 "UPDATE doc_cards SET content = ?, updated_at = datetime('now') "
@@ -2611,7 +2723,7 @@ async def api_page_map_convert(collection: str, doc_id: int):
                 (doc_id,)).fetchall():
             conn.execute(
                 "UPDATE card_candidates SET page_num = ? WHERE id = ?",
-                (_pm_map(anchors, int(c["page_num"]), reverse=True), c["id"]))
+                (_pm_reverse(groups, int(c["page_num"])), c["id"]))
             cand_n += 1
         conn.commit()
         return {"ok": True, "toc": toc_n, "entities": ent_n, "candidates": cand_n}
@@ -2798,19 +2910,18 @@ async def api_candidates_generate(collection: str, doc_id: int,
         conn = get_conn(collection)
         try:
             # 页码校准钩子: 采样页码是 pdf 物理页, 已校准则换算为原书页 (printed) 落库
-            pm_anchors = _load_page_map(conn, doc_id)
-            if pm_anchors:
+            pm_groups = _pm_groups(_load_page_map(conn, doc_id))
+            if pm_groups:
                 def _conv_toc(nodes):
                     for nd in nodes:
                         pn = nd.get("page_num")
                         if pn:
-                            nd["page_num"] = _pm_map(pm_anchors, int(pn), reverse=True)
+                            nd["page_num"] = _pm_reverse(pm_groups, int(pn))
                         _conv_toc(nd.get("children") or [])
                 _conv_toc(toc_tree)
                 for it in entity_items:
                     if it.get("page_num"):
-                        it["page_num"] = _pm_map(pm_anchors, int(it["page_num"]),
-                                                 reverse=True)
+                        it["page_num"] = _pm_reverse(pm_groups, int(it["page_num"]))
             n_toc = 0   # toc 改树形: 不插平铺候选, 树经 result.tree 前端确认
             n_ent = 0
             for it in entity_items:
@@ -3779,7 +3890,11 @@ async def proofread_page(
                 bib_type_fields=BIB_TYPE_FIELDS,
                 linked_pdf=linked_pdf,
                 doc_lang=(doc["lang"] or "zh") if "lang" in doc.keys() else "zh",
-                page_map=json.loads(doc["page_map"]) if (
+                page_map=(lambda raw: {
+                    "groups": _pm_groups(raw),
+                    "default": _pm_default(raw),
+                    "total": sum(len(g["anchors"]) for g in _pm_groups(raw)),
+                })(json.loads(doc["page_map"])) if (
                     "page_map" in doc.keys() and doc["page_map"]) else None,
                 doc_rows=_tri_rows_for(doc),
             ),

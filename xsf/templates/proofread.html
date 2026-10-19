@@ -986,13 +986,15 @@ mark {
     <div class="tp-pane" data-pane="toc">
       {% if toc.status %}<div class="cg-hint" style="padding:6px 2px 0;">当前状态: <span class="badge {{ toc.status }}">{{ toc.status }}</span>（reviewed 进检索路）</div>{% endif %}
         <details class="card-sec" id="pmCalib" style="margin-bottom:8px;">
-          <summary>页码校准{{ '（已校准 ' ~ (page_map | length) ~ ' 锚点）' if page_map else '（未校准——原书页码与 PDF 页不一致时跳转会漂移）' }}</summary>
+          <summary>页码校准{{ ('（已校准 ' ~ page_map.total ~ ' 锚点 · ' ~ page_map.groups | length ~ ' 组）') if page_map and page_map.total else '（未校准——原书页码与 PDF 页不一致时跳转会漂移）' }}</summary>
           <div style="padding:8px 2px; display:flex; flex-direction:column; gap:6px;">
-            <div class="cg-hint">翻到某页（用左侧翻页），填该页的<b>原书页码</b>，即成一个锚点；一锚=固定偏移，多锚=分段（多卷/罗马前言各加一锚）。</div>
+            <div class="cg-hint">翻到某页（用左侧翻页），填该页的<b>原书页码</b>，即成一个锚点。<b>前言/正文各自从第 1 页起时，选不同的页码组各标各的</b>（组内页码独立，互不干扰）；页码跨组撞号时按「默认组」跳转（正文组设为默认）。</div>
             <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
               <span class="cg-hint">当前 PDF 页:</span><b id="pmCurPdf">{{ page_num }}</b>
               <span class="cg-hint">原书页码:</span>
               <input type="number" id="pmPrinted" min="1" style="width:70px;" placeholder="如 3">
+              <span class="cg-hint">页码组:</span>
+              <select id="pmLabel" style="width:110px;" onchange="pmLabelChange(this)"></select>
               <button class="btn" onclick="pmAdd()">加锚点</button>
             </div>
             <div id="pmList"></div>
@@ -1091,7 +1093,7 @@ mark {
 <script>
 const collection = {{ collection | tojson }};
 const docId = {{ doc.id | default('null') | tojson }};
-window.__pageMap = {{ page_map | tojson if page_map is defined else 'null' }};   // [[printed, pdf], ..] 页码校准锚点
+window.__pageMap = {{ page_map | tojson if page_map is defined else 'null' }};   // {groups: [{label, anchors: [[printed,pdf],..]}], default, total} 多序列页码校准
 const doc = {{ doc | tojson }};
 const page = {{ page_num | default(1) }};
 const docLang = {{ (doc_lang or 'zh') | tojson }};
@@ -1545,10 +1547,13 @@ function rebindWorkArea() {
   }
   window.scrollTo(0, 0);
 }
-function pmInterp(printed) {
-  var a = window.__pageMap;
-  if (!a || !a.length) return printed;
-  var pts = a.map(function (x) { return [x[0], x[1]]; }).sort(function (p, q) { return p[0] - q[0]; });
+function pmGroups() {
+  var m = window.__pageMap;
+  if (!m || !m.groups || !m.groups.length) return [];
+  return m.groups;
+}
+function pmInterpOne(anchors, printed) {
+  var pts = anchors.map(function (x) { return [x[0], x[1]]; }).sort(function (p, q) { return p[0] - q[0]; });
   if (pts.length === 1) return printed + (pts[0][1] - pts[0][0]);
   for (var i = 0; i < pts.length - 1; i++) {
     var x0 = pts[i][0], y0 = pts[i][1], x1 = pts[i + 1][0], y1 = pts[i + 1][1];
@@ -1562,10 +1567,23 @@ function pmInterp(printed) {
   var kk = mx !== lx ? (my - ly) / (mx - lx) : 1;
   return Math.round(my + (printed - mx) * kk);
 }
+function pmInterp(printed) {
+  var gs = pmGroups();
+  if (!gs.length) return printed;
+  var def = (window.__pageMap && window.__pageMap.default) || '';
+  var cands = gs.filter(function (g) {
+    return Math.min.apply(null, g.anchors.map(function (a) { return a[0]; })) <= printed
+      && printed <= Math.max.apply(null, g.anchors.map(function (a) { return a[0]; }));
+  });
+  var g = null;
+  for (var i = 0; i < cands.length; i++) { if (cands[i].label === def) { g = cands[i]; break; } }
+  if (!g) g = cands[0] || gs.filter(function (x) { return x.label === def; })[0] || gs[0];
+  return pmInterpOne(g.anchors, printed);
+}
 function goPrinted(p) {
   if (!p) return;
   var target = pmInterp(p);
-  var drift = window.__pageMap && window.__pageMap.length ? '（原书 p' + p + ' → PDF p' + target + '）' : '';
+  var drift = pmGroups().length ? '（原书 p' + p + ' → PDF p' + target + '）' : '';
   if (drift) showToast('页码校准跳转 ' + drift);
   goPage(target);
 }
@@ -2732,36 +2750,84 @@ async function recompileDocEntities() {
 function pmRender() {
   var box = document.getElementById('pmList');
   if (!box) return;
-  var a = window.__pageMap || [];
-  box.innerHTML = a.length ? '<table class="cand-table"><tr><th>原书页</th><th>PDF 页</th><th>偏移</th><th></th></tr>' +
-    a.map(function (x) {
+  var gs = pmGroups();
+  var def = (window.__pageMap && window.__pageMap.default) || '';
+  var total = 0;
+  var html = gs.map(function (g) {
+    total += g.anchors.length;
+    var isDef = g.label === def || (!def && g === gs[0]);
+    var name = g.label === '' ? '（默认组）' : g.label;
+    var rows = g.anchors.map(function (x) {
       return '<tr><td>' + x[0] + '</td><td>' + x[1] + '</td><td>' + (x[1] - x[0] >= 0 ? '+' : '') + (x[1] - x[0]) +
-        '</td><td><button onclick="pmDel(' + x[0] + ')">删</button></td></tr>';
-    }).join('') + '</table>' : '';
+        '</td><td><button onclick="pmDel(\'' + g.label + '\',' + x[0] + ')">删</button></td></tr>';
+    }).join('');
+    return '<div style="margin:4px 0;"><div style="display:flex;gap:6px;align-items:center;">' +
+      '<b>' + name + '</b> <span class="cg-hint">(' + g.anchors.length + ' 锚)</span>' +
+      (isDef ? ' <span class="badge reviewed">默认</span>' :
+        ' <button class="btn" style="padding:1px 8px;font-size:0.75rem;" onclick="pmSetDefault(\'' + g.label + '\')">设为默认</button>') +
+      '</div>' +
+      (rows ? '<table class="cand-table"><tr><th>原书页</th><th>PDF 页</th><th>偏移</th><th></th></tr>' + rows + '</table>' : '') +
+      '</div>';
+  }).join('');
+  box.innerHTML = html;
+  var sel = document.getElementById('pmLabel');
+  if (sel) {
+    var cur = sel.value;
+    var opts = gs.map(function (g) { return g.label; });
+    if (opts.indexOf(cur) < 0) cur = opts.indexOf(def) >= 0 ? def : (opts[0] !== undefined ? opts[0] : '');
+    sel.innerHTML = opts.map(function (l) { return '<option value="' + l + '">' + (l === '' ? '（默认组）' : l) + '</option>'; }).join('') +
+      '<option value="__new">+ 新组…</option>';
+    sel.value = cur;
+  }
   var s = document.getElementById('pmCalib') ? document.getElementById('pmCalib').querySelector('summary') : null;
-  if (s) s.textContent = a.length ? '页码校准（已校准 ' + a.length + ' 锚点）' : '页码校准（未校准）';
+  if (s) s.textContent = total ? '页码校准（已校准 ' + total + ' 锚点 · ' + gs.length + ' 组）' : '页码校准（未校准）';
+}
+function pmLabelChange(sel) {
+  if (sel.value === '__new') {
+    var l = prompt('新组名（如: 序 / 正文 / 附录）');
+    if (l === null) { sel.value = ''; return; }
+    l = l.trim();
+    var exists = pmGroups().some(function (g) { return g.label === l; });
+    if (!exists && l !== '') {
+      var opt = document.createElement('option');
+      opt.value = l; opt.textContent = l;
+      sel.insertBefore(opt, sel.querySelector('option[value="__new"]'));
+    }
+    sel.value = l || '';
+  }
+}
+async function pmSync(d) {
+  window.__pageMap = { groups: d.groups, default: d.default,
+    total: d.groups.reduce(function (n, g) { return n + g.anchors.length; }, 0) };
+  pmRender();
 }
 async function pmAdd() {
   var printed = parseInt(document.getElementById('pmPrinted').value, 10);
   if (!printed || printed < 1) { showToast('请填原书页码'); return; }
   var d = await postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/page-map`,
-    { printed: printed, pdf: document.getElementById('pmCurPdf').textContent });
+    { printed: printed, pdf: document.getElementById('pmCurPdf').textContent,
+      label: document.getElementById('pmLabel').value || '' });
   if (!d.ok) { showToast('失败: ' + (d.error || '')); return; }
-  window.__pageMap = d.anchors;
   document.getElementById('pmPrinted').value = '';
-  pmRender();
-  showToast('锚点已存（共 ' + d.anchors.length + ' 个）');
+  pmSync(d);
+  showToast('锚点已存');
 }
-async function pmDel(printed) {
+async function pmDel(label, printed) {
   var r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/page-map`,
-    { method: 'DELETE', body: new URLSearchParams({ printed: printed }) });
+    { method: 'DELETE', body: new URLSearchParams({ printed: printed, label: label || '' }) });
   var d = await r.json();
   if (!d.ok) { showToast('失败: ' + (d.error || '')); return; }
-  window.__pageMap = d.anchors;
-  pmRender();
+  pmSync(d);
+}
+async function pmSetDefault(label) {
+  var d = await postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/page-map/default`,
+    { label: label });
+  if (!d.ok) { showToast('失败: ' + (d.error || '')); return; }
+  pmSync(d);
+  showToast('默认页码组: ' + (label === '' ? '（默认组）' : label));
 }
 async function pmConvert() {
-  if (!window.__pageMap || !window.__pageMap.length) { showToast('先加至少一个锚点'); return; }
+  if (!pmGroups().length) { showToast('先加至少一个锚点'); return; }
   if (!confirm('将目录树/实体/待审候选的页码按校准换算为原书页（一次性，重复执行会二次换算）。继续？')) return;
   if (!confirm('确认执行？已有页码若本就是原书页（如粘贴目录解析），请取消。')) return;
   var d = await postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/page-map/convert`, {});
