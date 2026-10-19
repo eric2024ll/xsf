@@ -221,7 +221,7 @@ python scripts/collection_io.py import <collection> <archive.tar.gz> \
 
 ## Windows 便携版
 
-免安装 zip（双击 `小書房.exe` → 起服务 + 开浏览器 + 托盘常驻），详见 `packaging/README-使用说明.txt`（随 zip 分发）。
+免安装 zip（双击 `小書房.exe` → 起服务 + 开浏览器 + 托盘常驻），详见 `packaging/README.txt` 与 `packaging/使用说明.txt`（随 zip 分发）。
 
 ```bash
 # 构建 (GitHub Actions, 推荐): Actions → windows-portable → Run workflow

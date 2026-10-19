@@ -20,7 +20,8 @@ $version = (python -c "import importlib.metadata as m; print(m.version('xsf'))")
 $zip = Join-Path $repo "$DistDir/xsf-portable-win64-$version.zip"
 
 Copy-Item (Join-Path $repo 'packaging/env.example.txt') $coll -Force
-Copy-Item (Join-Path $PSScriptRoot 'README-使用说明.txt') $coll -Force
+Copy-Item (Join-Path $PSScriptRoot 'README.txt') $coll -Force
+Copy-Item (Join-Path $PSScriptRoot '使用说明.txt') $coll -Force
 Copy-Item (Join-Path $PSScriptRoot 'add-to-path.bat') $coll -Force
 
 if (Test-Path $zip) { Remove-Item $zip -Force }

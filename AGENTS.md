@@ -132,7 +132,7 @@ cd ~/xsf
 
 - **构建**: GitHub Actions `windows-portable` workflow (workflow_dispatch 手动触发, 或 push tag `v*` 自动构建并附 release)
 - **本地复现** (Windows + Python 3.12): `pip install -e ".[desktop,build,office,mcp]"` → `pyinstaller packaging/xsf.spec --noconfirm` → `pwsh packaging/make_portable.ps1`
-- **产物**: `dist/xsf-portable-win64-<ver>.zip` — `小書房.exe` (托盘 GUI, windowed) + `xsf.exe` (CLI) + `xsf-mcp.exe` 共享 `_internal/`, 附 `env.example.txt` / `README-使用说明.txt` / `add-to-path.bat`
+- **产物**: `dist/xsf-portable-win64-<ver>.zip` — `小書房.exe` (托盘 GUI, windowed) + `xsf.exe` (CLI) + `xsf-mcp.exe` 共享 `_internal/`, 附 `env.example.txt` / `README.txt` / `使用说明.txt` / `add-to-path.bat`
 - **配置文件加载**: `xsf/env.py` — 环境变量 > `$XSF_ENV` 显式 > exe 旁 `.env`/`env.txt` > exe 上级 `.env`/`env.txt` > 包根 `.env`/`env.txt` (同级 `.env` 优先; `env.txt` 为 Windows 便携版通道——资源管理器无法手工建点开头文件名; 托盘菜单「编辑配置文件」可程序生成; Linux systemd 部署不受影响, 只填缺失键)
 - **托盘启动器**: `xsf/desktop.py` — 绑 127.0.0.1 (XSF_HOST 可改), 端口 8090 起顺延 (XSF_PORT), 单实例检测, pystray 托盘
 - **OCR**: 便携版不内置本地引擎, 走远程 provider (generic_http 内网 GPU / aistudio 云端)
