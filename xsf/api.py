@@ -2675,8 +2675,9 @@ async def api_page_map_set_default(collection: str, doc_id: int,
 
 @app.post("/collections/{collection}/doc/{doc_id}/page-map/convert")
 async def api_page_map_convert(collection: str, doc_id: int):
-    """一键反算: 树/实体 items/待审候选的 page_num 从 pdf 物理页换算为原书页.
-    前提 page_map 已校准; 幂等不可逆 (重复执行会二次换算), 前端需双重确认."""
+    """一键反算: 实体 items/待审候选的 page_num 从 pdf 物理页换算为原书页.
+    目录节点页码本就是原书页, 不参与换算. 前提 page_map 已校准;
+    换算不可逆 (重复执行会二次换算), 前端需双重确认."""
     if collection not in list_collections():
         return JSONResponse({"error": "书架不存在"}, status_code=404)
     conn = get_conn(collection)
@@ -2684,31 +2685,17 @@ async def api_page_map_convert(collection: str, doc_id: int):
         groups = _pm_groups(_load_page_map(conn, doc_id))
         if not groups:
             return JSONResponse({"error": "尚未校准页码 (page_map 为空)"}, status_code=400)
-        toc_n = ent_n = cand_n = 0
+        ent_n = cand_n = 0
 
-        def _conv_tree(nodes):
-            n2 = 0
-            for nd in nodes:
-                pn = nd.get("page_num")
-                if pn:
-                    nd["page_num"] = _pm_reverse(groups, int(pn))
-                    n2 += 1
-                n2 += _conv_tree(nd.get("children") or [])
-            return n2
-
-        for kind in ("toc", "entity"):
-            row = conn.execute(
-                "SELECT id, content FROM doc_cards WHERE doc_id = ? AND kind = ?",
-                (doc_id, kind)).fetchone()
-            if not row:
-                continue
+        row = conn.execute(
+            "SELECT id, content FROM doc_cards WHERE doc_id = ? AND kind = 'entity'",
+            (doc_id,)).fetchone()
+        if row:
             try:
                 content = json.loads(row["content"] or "{}")
             except ValueError:
                 content = {}
-            if kind == "toc" and content.get("tree"):
-                toc_n = _conv_tree(content["tree"])
-            elif kind == "entity" and content.get("items"):
+            if content.get("items"):
                 for it in content["items"]:
                     if it.get("page_num"):
                         it["page_num"] = _pm_reverse(groups, int(it["page_num"]))
@@ -2726,7 +2713,7 @@ async def api_page_map_convert(collection: str, doc_id: int):
                 (_pm_reverse(groups, int(c["page_num"])), c["id"]))
             cand_n += 1
         conn.commit()
-        return {"ok": True, "toc": toc_n, "entities": ent_n, "candidates": cand_n}
+        return {"ok": True, "entities": ent_n, "candidates": cand_n}
     finally:
         conn.close()
 
@@ -2909,16 +2896,10 @@ async def api_candidates_generate(collection: str, doc_id: int,
 
         conn = get_conn(collection)
         try:
-            # 页码校准钩子: 采样页码是 pdf 物理页, 已校准则换算为原书页 (printed) 落库
+            # 页码语义: 目录节点页码=原书页 (来自书目目录文本/LLM 读目录页),
+            # 不做换算; 实体页码来自内容块物理页 (pdf), 校准时换算为原书页落库
             pm_groups = _pm_groups(_load_page_map(conn, doc_id))
             if pm_groups:
-                def _conv_toc(nodes):
-                    for nd in nodes:
-                        pn = nd.get("page_num")
-                        if pn:
-                            nd["page_num"] = _pm_reverse(pm_groups, int(pn))
-                        _conv_toc(nd.get("children") or [])
-                _conv_toc(toc_tree)
                 for it in entity_items:
                     if it.get("page_num"):
                         it["page_num"] = _pm_reverse(pm_groups, int(it["page_num"]))
