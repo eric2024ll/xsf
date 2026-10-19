@@ -2600,7 +2600,7 @@ def _pm_upsert_anchor(groups: list, label: str, printed: int, pdf: int):
 @app.post("/collections/{collection}/doc/{doc_id}/page-map")
 async def api_page_map_add(collection: str, doc_id: int,
                            printed: int = Form(...), pdf: int = Form(...),
-                           label: str = Form("")):
+                           label: str = Form(None)):
     """加校准锚点: 翻到 pdf 页, 填该页原书页码 printed.
     label = 页码序列组 (前言/正文各自从 1 起时分组各标各的; 空 = 默认组)."""
     if collection not in list_collections():
@@ -2630,7 +2630,7 @@ async def api_page_map_add(collection: str, doc_id: int,
 
 @app.delete("/collections/{collection}/doc/{doc_id}/page-map")
 async def api_page_map_del(collection: str, doc_id: int,
-                           printed: int = Form(...), label: str = Form("")):
+                           printed: int = Form(...), label: str = Form(None)):
     conn = get_conn(collection)
     try:
         raw = _load_page_map(conn, doc_id)
@@ -2655,7 +2655,7 @@ async def api_page_map_del(collection: str, doc_id: int,
 
 @app.post("/collections/{collection}/doc/{doc_id}/page-map/default")
 async def api_page_map_set_default(collection: str, doc_id: int,
-                                   label: str = Form(...)):
+                                   label: str = Form(None)):
     """设默认页码组: 页码跨组歧义时 (序 p1 vs 正文 p1) 按该组跳转."""
     conn = get_conn(collection)
     try:
