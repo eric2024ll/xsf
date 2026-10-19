@@ -3121,7 +3121,7 @@ async def api_entities(collection: str, q: str = None, category: str = None,
                 "SELECT COUNT(*) c FROM entity_mentions "
                 "WHERE entity_id = ? AND valid = 1",
                 (r["id"],)).fetchone()["c"]
-            if with_mentions:
+            if with_mentions or doc_id:
                 e["mentions"] = _entity_mentions(conn, r["id"], doc_id)
             out.append(e)
         return {"collection": collection, "entities": out}
