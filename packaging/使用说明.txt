@@ -126,6 +126,28 @@ CLI(整体备份 / 迁移 / 服务器↔本地同步): scripts/collection_io.py
   所有命令可加 --provider <id> 显式指定; 未配置 LLM 会以退出码 3 报错。
 
 
+【Agent 协作 (skill · 只读检索)】
+  AI agent (如 opencode/lit-search) 通过 xsf skill 检索本库、核对引文。
+  位置: ~/.agents/skills/xsf/ ; 调用: 由 agent 自动加载 (也可手动)
+    python3 ~/.agents/skills/xsf/xsf_api.py <子命令> [参数]
+  - 只读端点 (不含写入/生成; 上传/编辑/重 OCR 走 Web, 生成走 xsf gen CLI)
+  - 服务地址链自动顺延 (本机 127.0.0.1:8090 → 内网 192.168.1.113:8090),
+    XSF_URL 环境变量可覆盖; 输出 JSON, 加 --pretty 缩进 / --mark 保留高亮
+  - 子命令:
+      collections                              列出书架
+      search <q> -c 书架 [-n N]                全文检索 (繁简互容)
+      context <doc_id> <页> <块> -c 书架 [-r R]  命中块上下文 (核对 OCR 原文)
+      content <doc_id> -c 书架 [--page N]      文献全文/整页
+      hits <doc_id> <词> -c 书架               文内全部命中位置
+      docs -c 书架 [-n N]                      最近入库文献
+      query -c 书架 [--tag/--author/--title/--year/--bib-type] [--sort ..]  元数据筛选
+      entities [q] -c 书架 [--category ..] [--doc ID]  实体图谱 (归一实体)
+      entity <id> -c 书架                      实体详情 (提及锚点+共现邻居)
+      stats [书架]                             统计
+  - 典型: search 拿 doc_id/页/块 → context 核对原文; entity 取跨文献证据链。
+  - 注意: 检索词避免用英文引号 " (触发 FTS 语法错误); 引文以 context 原文为准。
+
+
 【常见问题】
 - 书架不见 / 上传的文献列表里看不到: 先跑 xsf doctor(CLI 与服务共用 XSF_DATA;
   若脚本设了别的 XSF_DATA, 书架会建到另一份数据目录, doctor 会列出差异)
