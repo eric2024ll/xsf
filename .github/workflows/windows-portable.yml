@@ -62,5 +62,9 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             gh release upload "$env:GITHUB_REF_NAME" dist/*.zip --clobber --repo "$env:GITHUB_REPOSITORY"
           } else {
-            gh release create "$env:GITHUB_REF_NAME" dist/*.zip --generate-notes --repo "$env:GITHUB_REPOSITORY"
+            # release 说明 = tag 注释文字 (打 tag 时 -m 写的内容), 不用 --generate-notes 免出完整 changelog
+            $notes = (git tag -l --format='%(contents)' "$env:GITHUB_REF_NAME") -join "`n"
+            if (-not $notes.Trim()) { $notes = "$env:GITHUB_REF_NAME" }
+            $notes | Out-File -Encoding utf8 release-notes.txt
+            gh release create "$env:GITHUB_REF_NAME" dist/*.zip --notes-file release-notes.txt --repo "$env:GITHUB_REPOSITORY"
           }
