@@ -134,8 +134,9 @@ def _ingest_new(collection: str) -> tuple[list, list, list]:
                 r = ingest_markdown(f, collection=collection)
                 r['ext'] = 'md'
             r['filename'] = fn
-            # PDF 一律入 OCR 队列 (2026-09-04 决策, 不区分 born-digital)
-            r['needs_ocr'] = r['ext'] == 'pdf'
+            # PDF 提取零行才入 OCR 队列 (2026-10-21 决策;
+            # 有文本层的不重跑, 防覆盖优质原生提取)
+            r['needs_ocr'] = r['ext'] == 'pdf' and r.get('lines', 0) == 0
             r['cross'] = _cross_collections(fn, collection)
             if r['cross']:
                 logger.warning("跨书架同名 coll=%s %s 也存在于: %s",
@@ -177,15 +178,21 @@ def _query(collection: str, sql: str, params=()):
 
 
 def _pending_ocr(collection: str) -> list:
-    """全库所有未 OCR 的 PDF (doc_type != 'ocr'), 供入队.
+    """尚无可用文本的 PDF, 供入队.
 
-    天然幂等: OCR 完成后 doc_type→'ocr' 不再返回;
-    OCR 后仍空文本的也不会死循环重试 (同样被 doc_type 闸门挡住).
+    判定 = 已有文本则不待 OCR: native 管线 (born-digital/pdf_native)
+    已提取出行的 pdf 不入队 (2026-10-21 决策, 修正 2026-09-04
+    「PDF 一律入队」— 实测自动 OCR 反而覆盖更优的原生文本层);
+    native 但零行的 (误分流/提取失败) 仍入队补救.
+    天然幂等: OCR 完成后 doc_type→'ocr' 不再返回.
     """
     rows = _query(collection, """
         SELECT d.id, d.filename, d.page_count
         FROM documents d
         WHERE d.doc_type != 'ocr' AND d.filename LIKE '%.pdf'
+          AND NOT (d.doc_type IN ('born-digital', 'pdf_native')
+                   AND EXISTS (SELECT 1 FROM lines l
+                               WHERE l.doc_id = d.id))
     """)
     return [{'id': r['id'], 'filename': r['filename'],
              'pages': r['page_count']} for r in rows]
