@@ -614,6 +614,86 @@ def _card_hits(collection: str, q: str, limit: int = 20) -> list:
     return hits
 
 
+def _record_search_event(collection: str, query: str, total_docs: int,
+                         entity_hits: int, wiki_hits: int, card_hits: int,
+                         expanded: bool):
+    """记录一次检索事件 (效用度量); 返回 event_id 供点击归因。"""
+    try:
+        conn = get_conn(collection)
+        try:
+            cur = conn.execute(
+                "INSERT INTO search_events(query,total_docs,entity_hits,"
+                " wiki_hits,card_hits,expanded) VALUES(?,?,?,?,?,?)",
+                (query, total_docs, entity_hits, wiki_hits, card_hits,
+                 1 if expanded else 0))
+            eid = cur.lastrowid
+            if eid and eid % 50 == 0:      # 轻量修剪: 保留最近 5000 条
+                conn.execute(
+                    "DELETE FROM search_events WHERE id <= "
+                    "(SELECT COALESCE(MAX(id),0)-5000 FROM search_events)")
+            conn.commit()
+            return eid
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+@app.post("/collections/{collection}/search-events/{eid}/click")
+async def search_event_click(collection: str, eid: int):
+    """标记该次检索产生了点击 (首次即生效)。"""
+    if collection not in list_collections():
+        return JSONResponse(status_code=404, content={"error": "书架不存在"})
+    conn = get_conn(collection)
+    try:
+        conn.execute("UPDATE search_events SET clicked = 1 WHERE id = ?", (eid,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+@app.get("/collections/{collection}/search-stats")
+async def api_search_stats(collection: str, limit: int = 2000):
+    """检索效用: 点击率、有/无实体命中时的点击率与提升度。"""
+    if collection not in list_collections():
+        return JSONResponse(status_code=404, content={"error": "书架不存在"})
+    n = max(1, min(int(limit or 2000), 5000))
+    conn = get_conn(collection)
+    try:
+        rows = conn.execute(
+            "SELECT total_docs, entity_hits, wiki_hits, card_hits, expanded, "
+            "       clicked FROM search_events ORDER BY id DESC LIMIT ?",
+            (n,)).fetchall()
+    finally:
+        conn.close()
+
+    def rate(sub, key='clicked'):
+        if not sub:
+            return None
+        return round(sum(1 for r in sub if r[key]) / len(sub), 4)
+
+    total = len(rows)
+    with_e = [r for r in rows if r['entity_hits'] > 0]
+    without_e = [r for r in rows if r['entity_hits'] == 0]
+    ctr = rate(rows)
+    ctr_e = rate(with_e)
+    ctr_n = rate(without_e)
+    lift = (round(ctr_e - ctr_n, 4)
+            if ctr_e is not None and ctr_n is not None else None)
+    return {
+        "searches": total,
+        "zero_hit": sum(1 for r in rows if r['total_docs'] == 0),
+        "clicked": sum(1 for r in rows if r['clicked']),
+        "ctr": ctr,
+        "with_entity": len(with_e),
+        "ctr_with_entity": ctr_e,
+        "ctr_without_entity": ctr_n,
+        "entity_lift": lift,
+        "expanded": sum(1 for r in rows if r['expanded']),
+    }
+
+
 def _record_miss(collection: str, query: str, total_docs: int,
                  source: str = 'web'):
     """零命中查询记入检索问题库 (C1)。绝不抛异常影响检索。"""
@@ -691,12 +771,20 @@ async def api_search_grouped(collection: str, q: str,
         if stats["docs"] == 0:
             _record_miss(collection, q, 0, 'web')
         from .search import expansions_for
+        expanded = expansions_for(q, collection)
+        cards = _card_hits(collection, q)
+        wiki = _wiki_hits(collection, q)
+        entities = _entity_hits(collection, q)
+        event_id = _record_search_event(
+            collection, q, stats["docs"], len(entities or []),
+            len(wiki or []), len(cards or []), bool(expanded))
         return {"query": q, "collection": collection,
                 "groups": groups,
-                "expanded": expansions_for(q, collection),
-                "cards": _card_hits(collection, q),
-                "wiki": _wiki_hits(collection, q),
-                "entities": _entity_hits(collection, q),
+                "expanded": expanded,
+                "cards": cards,
+                "wiki": wiki,
+                "entities": entities,
+                "event_id": event_id,
                 "total_blocks": stats["blocks"], "total_docs": stats["docs"],
                 "groups_truncated": len(groups) >= limit}
     except Exception as e:
@@ -3250,7 +3338,8 @@ async def entities_export(collection: str):
 @app.get("/collections/{collection}/entities")
 async def api_entities(collection: str, q: str = None, category: str = None,
                        limit: int = 500, with_mentions: int = 0,
-                       doc_id: int = None):
+                       doc_id: int = None, era: str = None,
+                       scope: str = None, year: int = None):
     """实体列表 JSON (实体页与 agent/lit-search 共用出口)."""
     conn = get_conn(collection)
     try:
@@ -3267,8 +3356,11 @@ async def api_entities(collection: str, q: str = None, category: str = None,
                "FROM entities")
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY canonical LIMIT ?"
-        params.append(limit)
+        filtered = bool(era or scope or (year is not None))
+        sql += " ORDER BY canonical"
+        if not filtered:            # 有约束过滤时先全取再由 Python 限条
+            sql += " LIMIT ?"
+            params.append(limit)
         out = []
         for r in conn.execute(sql, params).fetchall():
             e = dict(r)
@@ -3281,9 +3373,28 @@ async def api_entities(collection: str, q: str = None, category: str = None,
                 "SELECT COUNT(*) c FROM entity_mentions "
                 "WHERE entity_id = ? AND valid = 1",
                 (r["id"],)).fetchone()["c"]
+            # C3 轻量约束过滤 (时代/地域/年份)
+            pr = e["props"] if isinstance(e["props"], dict) else {}
+            if era:
+                hay = str(pr.get("era") or pr.get("朝代") or "")
+                if era not in hay:
+                    continue
+            if scope:
+                if scope not in str(pr.get("scope") or ""):
+                    continue
+            if year is not None:
+                ys, ye = pr.get("year_start"), pr.get("year_end")
+                if ys is None and ye is None:
+                    continue
+                if isinstance(ys, int) and year < ys:
+                    continue
+                if isinstance(ye, int) and year > ye:
+                    continue
             if with_mentions or doc_id:
                 e["mentions"] = _entity_mentions(conn, r["id"], doc_id)
             out.append(e)
+            if len(out) >= limit:
+                break
         return {"collection": collection, "entities": out}
     finally:
         conn.close()
@@ -3526,6 +3637,26 @@ async def api_entity_addition(collection: str, entity_id: int,
                              (json.dumps(al, ensure_ascii=False), entity_id))
         conn.commit()
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/entities/{entity_id}/constraint")
+async def api_entity_constraint(collection: str, entity_id: int,
+                                era: str = Form(None),
+                                scope: str = Form(None),
+                                year_start: str = Form(None),
+                                year_end: str = Form(None)):
+    """C3 轻量约束: 写时代/地域/年份区间 (props), 留补录痕迹。"""
+    from . import entity as ent
+    conn = get_conn(collection)
+    try:
+        props = ent.set_constraint(conn, entity_id, era=era, scope=scope,
+                                   year_start=year_start, year_end=year_end)
+        if props is None:
+            return JSONResponse(status_code=404,
+                                content={"error": "实体不存在"})
+        return {"ok": True, "props": props}
     finally:
         conn.close()
 

@@ -88,7 +88,9 @@
     <div class="st-search-row">
       <input type="text" id="searchInput" placeholder="输入搜索词..." autocomplete="off" value="{{ q }}">
       <button type="button" id="searchBtn" onclick="doSearch()">搜索</button>
+      <button type="button" onclick="toggleStats()" title="检索效用统计">统计</button>
     </div>
+    <div id="statsSec" style="display:none;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);font-size:0.82rem;color:var(--text-muted);">加载中…</div>
   </div>
   <div id="resultCount" class="result-count"></div>
   <div id="results">
@@ -120,6 +122,33 @@ async function doSearch(){
 // ── FTS5: 按文档分组视图 ───────────────────────────────
 
 var groupData=[];
+var __eventId=null, __clickedSent=false;
+
+function recordClick(){
+  if(!__eventId||__clickedSent) return;
+  __clickedSent=true;
+  fetch('/collections/'+encodeURIComponent(currentCollection)+
+        '/search-events/'+__eventId+'/click',{method:'POST'}).catch(function(){});
+}
+
+async function toggleStats(){
+  var el=document.getElementById('statsSec');
+  if(el.style.display==='block'){el.style.display='none';return;}
+  el.style.display='block';el.textContent='加载中…';
+  try{
+    var r=await fetch('/collections/'+encodeURIComponent(currentCollection)+'/search-stats');
+    var d=await r.json();
+    if(d.error){throw new Error(d.error);}
+    function pct(x){return x==null?'—':(x*100).toFixed(1)+'%';}
+    el.innerHTML='近 <b>'+d.searches+'</b> 次检索 · 点击率 <b>'+pct(d.ctr)+
+      '</b> · 实体命中时 <b>'+pct(d.ctr_with_entity)+
+      '</b>（'+d.with_entity+' 次） · 无实体时 <b>'+pct(d.ctr_without_entity)+
+      '</b> · 提升度 <b>'+(d.entity_lift==null?'—':(d.entity_lift*100).toFixed(1)+'pp')+
+      '</b> · 零命中 '+d.zero_hit;
+  }catch(e){
+    el.textContent='统计加载失败: '+e.message;
+  }
+}
 
 async function doFtsSearch(q){
   var btn=document.getElementById('searchBtn');
@@ -141,6 +170,7 @@ async function doFtsSearch(q){
 }
 
 function renderGroups(data){
+  __eventId=data.event_id||null; __clickedSent=false;
   var countEl=document.getElementById('resultCount');
   var container=document.getElementById('results');
   container.innerHTML='';
@@ -258,9 +288,9 @@ function buildBlockItem(r){
   if(r.page_num){
     var proofUrl='/collections/'+collEnc+'/doc/'+r.doc_id+'/proofread?page='+r.page_num+'&keyword='+encodeURIComponent(currentQuery)+'&block='+r.block_num;
     if(r.line_id)proofUrl+='&line='+r.line_id;
-    actions+='<a href="'+proofUrl+'" target="_blank">校对</a>';
+    actions+='<a href="'+proofUrl+'" target="_blank" onclick="recordClick()">校对</a>';
   }
-  actions+='<button type="button" onclick="pmOpen('+attrEsc(JSON.stringify(currentCollection))+','+r.doc_id+','+(r.page_num?('{pageNum:'+r.page_num+',blockNum:'+r.block_num+','):'{')+'highlightTerms:highlightTerms,title:'+attrEsc(JSON.stringify(r.title||''))+'})">预览</button></div>';
+  actions+='<button type="button" onclick="recordClick();pmOpen('+attrEsc(JSON.stringify(currentCollection))+','+r.doc_id+','+(r.page_num?('{pageNum:'+r.page_num+',blockNum:'+r.block_num+','):'{')+'highlightTerms:highlightTerms,title:'+attrEsc(JSON.stringify(r.title||''))+'})">预览</button></div>';
   div.innerHTML=
     meta+
     '<div class="result-text">'+preview+'</div>'+

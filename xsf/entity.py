@@ -129,6 +129,15 @@ def _cbdb_props(hit):
         props['卒'] = hit['death']
     if hit.get('birth') or hit.get('death'):
         props['生卒'] = f"{hit.get('birth') or '?'}-{hit.get('death') or '?'}"
+    # C3 轻量约束: 生卒年份抽为可过滤的 year_start/year_end
+    for src, key in (('birth', 'year_start'), ('death', 'year_end')):
+        raw = str(hit.get(src) or '')
+        m = re.search(r'(\d{3,4})', raw)
+        if m:
+            try:
+                props[key] = int(m.group(1))
+            except ValueError:
+                pass
     return props
 
 
@@ -510,16 +519,25 @@ def _set_ext_ids(conn, entity_id, ext, props=None):
     conn.execute(f"UPDATE entities SET {', '.join(updates)} WHERE id = ?", params)
 
 
-def _llm_disambiguate(surfaces, canon_list, provider_id=None):
-    """批量判候选名称是否等于某已有实体。返回 {surface: canonical|''}。"""
+def _llm_disambiguate(surfaces, canon_list, provider_id=None, canon_meta=None):
+    """批量判候选名称是否等于某已有实体。返回 {surface: canonical|''}。
+
+    canon_meta: {canonical: 时代/地域等提示} — 供同名不同时代的区分 (C3)。
+    """
     if not surfaces or not canon_list:
         return {}
     sys_p = ("你是史料实体归一助手。给定「候选名称」与「已有实体」，判断每个"
              "候选是否与某个已有实体指同一事物 (考虑别名、字号、异写)。"
+             "**注意: 同名但时代或地域不同 (如不同朝代的同名人物、异地的同名机构) "
+             "应判为不同实体, 不可合并。**"
              "仅输出 JSON 数组 [{\"surface\":\"候选\",\"match\":\"已有实体名或空\"}]，"
              "没有匹配填空字符串。不要臆造。")
+    meta = canon_meta or {}
+    def _c(c):
+        hint = (meta.get(c) or '').strip()
+        return f"- {c}（{hint}）" if hint else f"- {c}"
     user = ("候选名称:\n" + "\n".join(f"- {s}" for s in surfaces) +
-            "\n\n已有实体:\n" + "\n".join(f"- {c}" for c in canon_list))
+            "\n\n已有实体:\n" + "\n".join(_c(c) for c in canon_list))
     try:
         content, _ = chat(
             [{"role": "system", "content": sys_p},
@@ -579,10 +597,20 @@ def resolve_surfaces(conn, surfaces_cat, provider_id=None):
         pending.append(sc)
 
     if pending:
-        canon_list = [r['canonical'] for r in
-                      conn.execute("SELECT canonical FROM entities")]
+        rows = conn.execute("SELECT canonical, props FROM entities").fetchall()
+        canon_list = [r['canonical'] for r in rows]
+        canon_meta = {}
+        for r in rows:
+            try:
+                pr = json.loads(r['props'] or '{}')
+            except (ValueError, TypeError):
+                pr = {}
+            bits = [str(pr[k]) for k in ('朝代', 'era', 'scope', '生卒')
+                    if pr.get(k)]
+            if bits:
+                canon_meta[r['canonical']] = ' '.join(bits)
         surf2match = _llm_disambiguate([p['surface'] for p in pending],
-                                       canon_list, provider_id)
+                                       canon_list, provider_id, canon_meta)
         for sc in pending:
             surface, cat = sc['surface'], sc.get('category')
             k = _norm(surface)
@@ -599,6 +627,45 @@ def resolve_surfaces(conn, surfaces_cat, provider_id=None):
                 idx['canon'][k] = eid
                 resolved[surface] = eid
     return resolved
+
+
+def set_constraint(conn, entity_id, era=None, scope=None,
+                   year_start=None, year_end=None):
+    """C3 轻量约束: 写时代/地域/年份区间到 props, 并留补录痕迹。"""
+    row = conn.execute("SELECT props FROM entities WHERE id = ?",
+                       (entity_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        props = json.loads(row['props'] or '{}')
+    except (ValueError, TypeError):
+        props = {}
+    changed = {}
+    for k, v in (('era', era), ('scope', scope),
+                 ('year_start', year_start), ('year_end', year_end)):
+        if v is None:
+            continue
+        v = v.strip() if isinstance(v, str) else v
+        if v == '' :
+            continue
+        if k in ('year_start', 'year_end'):
+            try:
+                v = int(v)
+            except (TypeError, ValueError):
+                continue
+        props[k] = v
+        changed[k] = v
+    if changed:
+        conn.execute("UPDATE entities SET props = ? WHERE id = ?",
+                     (json.dumps(props, ensure_ascii=False), entity_id))
+        conn.execute(
+            "INSERT INTO entity_additions(entity_id, kind, value, evidence, created_at) "
+            "VALUES(?,?,?,?,datetime('now','localtime'))",
+            (entity_id, 'prop',
+             json.dumps(changed, ensure_ascii=False),
+             '轻量约束 (时代/地域/年份)'))
+        conn.commit()
+    return props
 
 
 def ingest_doc(conn, doc_id, provider_id=None):

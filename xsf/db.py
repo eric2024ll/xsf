@@ -440,6 +440,23 @@ def _migrate(conn):
         )
     """)
 
+    # ── 检索效用度量 (帮忙率) ──
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS search_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT NOT NULL,
+            total_docs INTEGER NOT NULL DEFAULT 0,
+            entity_hits INTEGER NOT NULL DEFAULT 0,
+            wiki_hits INTEGER NOT NULL DEFAULT 0,
+            card_hits INTEGER NOT NULL DEFAULT 0,
+            expanded INTEGER NOT NULL DEFAULT 0,
+            clicked INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_search_events_time "
+                 "ON search_events(created_at)")
+
     # ── blocks_fts trigram 化 (2026-10-19): unicode61 整串 CJK 单 token,
     # 子串命不中 → 重建为 trigram (≥3 字子串匹配)。
     # 2026-10-19 二改: 加 trans 列 (多语种译文进索引, 中文可搜外文文献);

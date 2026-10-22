@@ -129,6 +129,8 @@ table.eg-tbl th { color: var(--text-muted); font-weight: 500; }
     <aside class="eg-side">
       <input type="text" id="egQ" placeholder="搜索实体…" oninput="egRenderList()">
       <select id="egCat" onchange="egRenderList()"><option value="">全部类别</option></select>
+      <input type="text" id="egEra" placeholder="时代（如 清）" oninput="egRenderList()">
+      <input type="number" id="egYear" placeholder="年份（如 1850）" oninput="egRenderList()">
       <div class="eg-list" id="egList"></div>
     </aside>
     <main class="eg-main" id="egMain">
@@ -161,9 +163,20 @@ async function egLoad(){
 function egRenderList(){
   var q = (document.getElementById('egQ').value||'').trim().toLowerCase();
   var cat = document.getElementById('egCat').value;
+  var era = (document.getElementById('egEra').value||'').trim();
+  var yearV = document.getElementById('egYear').value;
+  var year = yearV===''?null:parseInt(yearV,10);
   var list = EG_LIST.filter(function(e){
     if(cat && e.category !== cat) return false;
     if(q){ var hay = (e.canonical + ' ' + (e.aliases||[]).join(' ')).toLowerCase(); if(hay.indexOf(q)<0) return false; }
+    var pr = e.props||{};
+    if(era){ var eh = String(pr.era||pr['朝代']||''); if(eh.indexOf(era)<0) return false; }
+    if(year!=null && !isNaN(year)){
+      var ys = pr.year_start, ye = pr.year_end;
+      if(ys==null && ye==null) return false;
+      if(typeof ys==='number' && year < ys) return false;
+      if(typeof ye==='number' && year > ye) return false;
+    }
     return true;
   });
   document.getElementById('egList').innerHTML = list.map(function(e){
@@ -194,6 +207,17 @@ async function egShow(id){
   } else {
     h.push('<div class="eg-sec"><h3>属性</h3><span class="hint">暂无（CBDB 命中时自动继承；也可下方补录）</span></div>');
   }
+
+  // C3 轻量约束
+  var _pr = e.props||{};
+  h.push('<div class="eg-sec"><h3>时代 / 地域约束</h3>'
+    + '<div class="add-form">'
+    + '<input style="width:80px" id="cEra" placeholder="时代" value="'+esc(_pr.era||'')+'">'
+    + '<input style="width:100px" id="cScope" placeholder="地域" value="'+esc(_pr.scope||'')+'">'
+    + '<input style="width:76px" id="cYS" placeholder="起年" value="'+esc(_pr.year_start==null?'':_pr.year_start)+'">'
+    + '<input style="width:76px" id="cYE" placeholder="止年" value="'+esc(_pr.year_end==null?'':_pr.year_end)+'">'
+    + '<button class="mini-btn" onclick="egConstraint('+id+')">保存约束</button></div>'
+    + '<p class="hint" style="margin:4px 0 0;">同名不同时代/地域的实体在归一与筛选时分开；年份用于时间点过滤。</p></div>');
 
   // 人工补录
   h.push('<div class="eg-sec"><h3>人工补录 (证据锚必填)</h3>'
@@ -266,6 +290,19 @@ async function egAdd(id){
   var r = await fetch(api('/entities/'+id+'/additions'), {method:'POST', body:fd});
   var d = await r.json();
   if(!r.ok){ alert(d.error||'失败'); return; }
+  egShow(id);
+}
+
+async function egConstraint(id){
+  function v(x){ var el=document.getElementById(x); return el?el.value.trim():''; }
+  var fd = new FormData();
+  fd.append('era', v('cEra')); fd.append('scope', v('cScope'));
+  fd.append('year_start', v('cYS')); fd.append('year_end', v('cYE'));
+  var r = await fetch(api('/entities/'+id+'/constraint'), {method:'POST', body:fd});
+  var d = await r.json();
+  if(!r.ok){ alert(d.error||'保存失败'); return; }
+  var lr = await fetch(api('/entities?with_mentions=0&limit=2000'));
+  var ld = await lr.json(); EG_LIST = ld.entities || [];
   egShow(id);
 }
 
