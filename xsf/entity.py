@@ -297,31 +297,35 @@ SEED_SYSTEM = (
     "严禁编造; 文本中若确无关键词与索引, 返回 {\"keywords\":[],\"index\":[]}。")
 
 
-def extract_seeds(conn, doc_id, provider_id=None):
+def extract_seeds(conn, doc_id, provider_id=None, source=None):
     """模型提取实体依据 (关键词/索引) → {'keywords':[...], 'index':[...], 'model':...}。
+    source 给定 (粘贴/导入的文本) 时以其为准解析; 否则从文献块中识别,
     输入优先含「索引/关键词」的块, 再补前若干块。"""
-    blocks = conn.execute(
-        "SELECT page_num, block_num, text FROM blocks_fts "
-        "WHERE doc_id = ? ORDER BY page_num, block_num", (doc_id,)).fetchall()
-    picked, seen = [], set()
-    for b in blocks:
-        if not (b['text'] or '').strip():
-            continue
-        if re.search(r'索引|關鍵詞|关键词|关键字|index|key\s*words?',
-                     b['text'], re.I):
+    if source and source.strip():
+        text = source.strip()[:12000]
+    else:
+        blocks = conn.execute(
+            "SELECT page_num, block_num, text FROM blocks_fts "
+            "WHERE doc_id = ? ORDER BY page_num, block_num", (doc_id,)).fetchall()
+        picked, seen = [], set()
+        for b in blocks:
+            if not (b['text'] or '').strip():
+                continue
+            if re.search(r'索引|關鍵詞|关键词|关键字|index|key\s*words?',
+                         b['text'], re.I):
+                k = (b['page_num'], b['block_num'])
+                if k not in seen:
+                    seen.add(k); picked.append(b)
+        for b in blocks:
+            if len(picked) >= 40:
+                break
             k = (b['page_num'], b['block_num'])
-            if k not in seen:
+            if (b['text'] or '').strip() and k not in seen:
                 seen.add(k); picked.append(b)
-    for b in blocks:
-        if len(picked) >= 40:
-            break
-        k = (b['page_num'], b['block_num'])
-        if (b['text'] or '').strip() and k not in seen:
-            seen.add(k); picked.append(b)
-    if not picked:
-        return {'keywords': [], 'index': [], 'model': None}
-    text = "\n".join(f"[p{b['page_num']}b{b['block_num']}] {b['text']}"
-                     for b in picked[:40])
+        if not picked:
+            return {'keywords': [], 'index': [], 'model': None}
+        text = "\n".join(f"[p{b['page_num']}b{b['block_num']}] {b['text']}"
+                         for b in picked[:40])
     content, model = chat(
         [{"role": "system", "content": SEED_SYSTEM},
          {"role": "user", "content": "文献文本:\n" + text}],

@@ -3010,7 +3010,8 @@ def _entity_hits(collection: str, q: str, limit: int = 10):
 
 @app.post("/collections/{collection}/doc/{doc_id}/entity-source/extract")
 async def entity_source_extract(collection: str, doc_id: int,
-                                provider_id: str = Form(None)):
+                                provider_id: str = Form(None),
+                                source: str = Form(None)):
     """模型提取实体依据 (关键词/索引) — 返回建议, 不落库 (前端确认后走 cards/save)."""
     from .config import get_llm_provider_cfg
     from . import entity as ent
@@ -3025,7 +3026,7 @@ async def entity_source_extract(collection: str, doc_id: int,
         return JSONResponse(status_code=503, content={"error": str(e)})
     conn = get_conn(collection)
     try:
-        res = ent.extract_seeds(conn, doc_id, provider_id)
+        res = ent.extract_seeds(conn, doc_id, provider_id, source=source)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
     finally:

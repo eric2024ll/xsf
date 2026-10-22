@@ -1061,12 +1061,18 @@ mark {
           实体依据（关键词 / 索引）<span id="seedHint">{% if seed_kws or seed_idx %}已设置（作为实体编译依据）{% else %}未设置：将自动识别文献自带关键词/索引{% endif %}</span>
         </summary>
         <div style="padding:8px 0;">
-          <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">关键词（每行一个）</div>
+          <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">粘贴索引 / 关键词文本（AI 解析；也可直接手填下方）</div>
+          <textarea id="seedSourceTa" rows="4" style="width:100%;box-sizing:border-box;" placeholder="粘贴文献的索引页或关键词列表（条目与页码任意格式）"></textarea>
+          <div style="display:flex;gap:6px;align-items:center;margin:6px 0;">
+            <input type="file" id="seedFileInput" accept=".txt,.md,.csv" onchange="loadSeedFile(this)" style="flex:1;min-width:140px;">
+            <button class="btn-primary" onclick="genSeedImport()">AI 解析粘贴内容</button>
+          </div>
+          <div style="font-size:0.8rem;color:var(--text-muted);margin:6px 0 4px;">关键词（每行一个，可手动增删）</div>
           <textarea id="seedKw" rows="3" style="width:100%;box-sizing:border-box;" placeholder="人名、地名、机构、概念…">{{ seed_kws | join('\n') }}</textarea>
-          <div style="font-size:0.8rem;color:var(--text-muted);margin:6px 0 4px;">索引条目（每行「条目|页码」，页码可省）</div>
+          <div style="font-size:0.8rem;color:var(--text-muted);margin:6px 0 4px;">索引条目（每行「条目|页码」，页码可省，可手动增删）</div>
           <textarea id="seedIdx" rows="4" style="width:100%;box-sizing:border-box;" placeholder="例：曾国藩|12">{% set ns = namespace(lines=[]) %}{% for it in seed_idx %}{% set _ = ns.lines.append((it.get('term') or '') ~ ('|' ~ it.get('page_num') if it.get('page_num') is not none else '')) %}{% endfor %}{{ ns.lines | join('\n') }}</textarea>
           <div class="card-actions" style="margin-top:6px;">
-            <button onclick="aiExtractSeeds()">AI 提取</button>
+            <button onclick="aiExtractSeeds()">从正文提取</button>
             <button class="btn-primary" onclick="saveSeeds()">保存依据</button>
             <button onclick="clearSeeds()">清空（回自动识别）</button>
           </div>
@@ -2760,20 +2766,37 @@ function _seedCardBody() {
     }).filter(Boolean);
   return { kw: kw, idx: idx, content: JSON.stringify({ keywords: kw, index: idx }) };
 }
-async function aiExtractSeeds() {
-  const btn = event && event.target; if (btn) { btn.disabled = true; btn.textContent = '提取中…'; }
+function loadSeedFile(inp) {
+  const f = inp.files && inp.files[0]; if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const ta = document.getElementById('seedSourceTa');
+    if (ta) ta.value = String(reader.result || '');
+  };
+  reader.readAsText(f);
+}
+async function _seedExtract(fd, btn, label) {
+  if (btn) { btn.disabled = true; btn.textContent = '解析中…'; }
   try {
-    const fd = new FormData();
     const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/entity-source/extract`,
       { method: 'POST', body: fd });
     const d = await r.json();
-    if (!r.ok || !d.ok) { showToast('提取失败: ' + (d.error || r.status)); return; }
+    if (!r.ok || !d.ok) { showToast('解析失败: ' + (d.error || r.status)); return; }
     document.getElementById('seedKw').value = (d.keywords || []).join('\n');
     document.getElementById('seedIdx').value = (d.index || [])
       .map(x => x.term + (x.page_num != null ? '|' + x.page_num : '')).join('\n');
-    showToast('已提取，请核对后点「保存依据」', 5000);
-  } catch (e) { showToast('提取失败: ' + e); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = 'AI 提取'; } }
+    showToast('已解析，请核对/增删后点「保存依据」', 5000);
+  } catch (e) { showToast('解析失败: ' + e); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = label; } }
+}
+async function aiExtractSeeds() {
+  return _seedExtract(new FormData(), event && event.target, '从正文提取');
+}
+async function genSeedImport() {
+  const src = (document.getElementById('seedSourceTa').value || '').trim();
+  if (!src) { showToast('请先粘贴索引/关键词文本或选择文件'); return; }
+  const fd = new FormData(); fd.append('source', src);
+  return _seedExtract(fd, event && event.target, 'AI 解析粘贴内容');
 }
 async function saveSeeds() {
   const b = _seedCardBody();
