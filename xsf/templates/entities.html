@@ -109,6 +109,17 @@ table.eg-tbl th { color: var(--text-muted); font-weight: 500; }
     </div>
   </details>
 
+  <details class="mount-sec" id="auditSec">
+    <summary>语义层巡查（可疑实体 / 反馈） <span id="auditSummary" class="hint"></span></summary>
+    <div class="mount-body">
+      <p class="hint">机械巡查：重复片段 / 别名撞他人规范名 / 规范名包含。确认后可在右侧详情合并或标错；下方为消费侧反馈。</p>
+      <h4 style="font-size:0.82rem;margin:6px 0 4px;">可疑实体</h4>
+      <div id="suspectList"><p class="hint">加载中…</p></div>
+      <h4 style="font-size:0.82rem;margin:10px 0 4px;">反馈</h4>
+      <div id="reportList"><p class="hint">加载中…</p></div>
+    </div>
+  </details>
+
   <div id="egEmpty" class="empty-state" style="display:none;">
     <p>尚未编译实体图。</p>
     <p class="hint">点右上「编译实体图」从文献抽取实体（需配置 llm_chat provider）。</p>
@@ -225,6 +236,17 @@ async function egShow(id){
     + '<button class="mini-btn" onclick="egMerge('+id+')">合并</button>'
     + '<span class="hint">本实体将并入目标，别名与提及随迁。</span></div></div>');
 
+  // 报告问题 (消费侧反馈)
+  h.push('<div class="eg-sec"><h3>报告问题</h3>'
+    + '<div class="add-form">'
+    + '<select id="repKind"><option value="wrong_merge">误合并</option>'
+    + '<option value="wrong_split">误拆分</option>'
+    + '<option value="wrong_page">页码/锚点错</option>'
+    + '<option value="wrong_category">类别错</option>'
+    + '<option value="other">其他</option></select>'
+    + '<input class="val" id="repNote" placeholder="说明（如：此人与 XX 实为两人）">'
+    + '<button class="mini-btn" onclick="egReport('+id+')">提交</button></div></div>');
+
   document.getElementById('egMain').innerHTML = h.join('');
 }
 
@@ -313,6 +335,53 @@ async function missResolve(id){
   }
 }
 
+async function egReport(id){
+  var kind = document.getElementById('repKind').value;
+  var note = (document.getElementById('repNote').value || '').trim();
+  if (!note) { alert('请填写说明'); return; }
+  var fd = new FormData(); fd.append('kind', kind); fd.append('note', note);
+  var r = await fetch(api('/entities/' + id + '/report'), {method:'POST', body:fd});
+  var d = await r.json();
+  if (!r.ok) { alert(d.error || '失败'); return; }
+  alert('已提交，将在「语义层巡查」中处理');
+  egAuditLoad();
+}
+async function egAuditLoad(){
+  var sb = document.getElementById('suspectList');
+  var rb = document.getElementById('reportList');
+  if (!sb || !rb) return;
+  try {
+    var s = await (await fetch(api('/entities/suspects'))).json();
+    var items = s.items || [];
+    var TN = {repeat:'重复', alias_dup:'别名撞名', contain:'包含'};
+    sb.innerHTML = items.length ? items.map(function(x){
+      return '<div class="miss-row"><span class="hint">[' + esc(TN[x.type] || x.type) + ']</span>' +
+        '<span class="miss-q">' + esc(x.canonical) + '</span>' +
+        '<span class="hint">' + esc(x.detail || '') + '</span>' +
+        '<button class="mini-btn" onclick="egShow(' + x.entity_id + ')">查看</button></div>';
+    }).join('') : '<p class="hint">未发现可疑实体。</p>';
+    var rr = await (await fetch(api('/entity-reports'))).json();
+    var rs = rr.items || [];
+    rb.innerHTML = rs.length ? rs.map(function(x){
+      return '<div class="miss-row" data-rid="' + x.id + '">' +
+        '<span class="miss-q">' + esc(x.canonical || ('#' + x.entity_id)) + '</span>' +
+        '<span class="hint">' + esc(x.kind) + ' · ' + esc(x.note || '') + '</span>' +
+        '<button class="mini-btn" onclick="egShow(' + x.entity_id + ')">查看</button>' +
+        '<button class="mini-btn" onclick="egReportResolve(' + x.id + ')">已处理</button></div>';
+    }).join('') : '<p class="hint">暂无反馈。</p>';
+    var sum = document.getElementById('auditSummary');
+    if (sum) sum.textContent = (items.length || rs.length)
+      ? ('(' + items.length + ' 可疑 / ' + rs.length + ' 反馈)') : '';
+  } catch (e) {
+    sb.innerHTML = '<p class="hint">加载失败: ' + esc(e) + '</p>';
+  }
+}
+async function egReportResolve(id){
+  var fd = new FormData(); fd.append('resolved', '1');
+  var r = await fetch(api('/entity-reports/' + id + '/resolve'), {method:'POST', body:fd});
+  if (r.ok) egAuditLoad();
+}
+
 async function egStatus(){
   var r = await fetch(api('/entitygraph/status'));
   var d = await r.json();
@@ -375,6 +444,7 @@ async function saveMount(name){
 
 egMounts();
 egMissLoad();
+egAuditLoad();
 egStatus(); egLoad().then(function(){
   var id = new URLSearchParams(location.search).get('id');
   if(id) egShow(parseInt(id, 10));

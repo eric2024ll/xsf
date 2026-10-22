@@ -3319,6 +3319,82 @@ async def api_mounts_set(name: str, enabled: str = Form("1"),
     return {"ok": True, "status": ent.mount_status()}
 
 
+@app.get("/collections/{collection}/entities/suspects")
+async def api_entity_suspects(collection: str):
+    """编译错误巡查: 重复片段 / 别名撞他人规范名 / 规范名包含。"""
+    if collection not in list_collections():
+        return JSONResponse(status_code=404, content={"error": "书架不存在"})
+    from . import entity as ent
+    conn = get_conn(collection)
+    try:
+        items = ent.detect_suspicious(conn)
+    finally:
+        conn.close()
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/collections/{collection}/entities/{entity_id}/report")
+async def api_entity_report(collection: str, entity_id: int,
+                            kind: str = Form("other"), note: str = Form(None),
+                            doc_id: int = Form(None), page_num: int = Form(None),
+                            mention_id: int = Form(None),
+                            source: str = Form("web")):
+    """消费侧反馈: 报告实体归一错误 (供巡查处置)。"""
+    conn = get_conn(collection)
+    try:
+        if not conn.execute("SELECT id FROM entities WHERE id = ?",
+                            (entity_id,)).fetchone():
+            return JSONResponse(status_code=404,
+                                content={"error": "实体不存在"})
+        conn.execute(
+            "INSERT INTO entity_reports"
+            "(entity_id, kind, note, doc_id, page_num, mention_id, source) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (entity_id, kind or 'other', note, doc_id, page_num,
+             mention_id, source or 'web'))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+@app.get("/collections/{collection}/entity-reports")
+async def api_entity_reports(collection: str, include_resolved: int = 0,
+                             limit: int = 200):
+    if collection not in list_collections():
+        return JSONResponse(status_code=404, content={"error": "书架不存在"})
+    conn = get_conn(collection)
+    try:
+        where = "" if include_resolved else "WHERE r.resolved = 0"
+        rows = conn.execute(
+            f"SELECT r.id, r.entity_id, r.kind, r.note, r.doc_id, r.page_num, "
+            f"       r.mention_id, r.source, r.resolved, r.created_at, "
+            f"       e.canonical AS canonical "
+            f"FROM entity_reports r LEFT JOIN entities e ON e.id = r.entity_id "
+            f"{where} ORDER BY r.resolved ASC, r.id DESC LIMIT ?",
+            (max(1, min(int(limit or 200), 1000)),)).fetchall()
+    finally:
+        conn.close()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/collections/{collection}/entity-reports/{rid}/resolve")
+async def api_entity_report_resolve(collection: str, rid: int,
+                                    resolved: int = Form(1)):
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            "UPDATE entity_reports SET resolved = ? WHERE id = ?",
+            (1 if resolved else 0, rid))
+        conn.commit()
+        if cur.rowcount == 0:
+            return JSONResponse(status_code=404,
+                                content={"error": "记录不存在"})
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
 @app.get("/collections/{collection}/entities/{entity_id}")
 async def api_entity_detail(collection: str, entity_id: int):
     conn = get_conn(collection)

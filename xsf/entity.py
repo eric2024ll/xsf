@@ -652,6 +652,74 @@ def generate_graph(collection, doc_ids=None, provider_id=None, progress=None):
         conn.close()
 
 
+def detect_suspicious(conn):
+    """编译错误巡查 → [{'type','entity_id','canonical','detail','other_id','other_canonical'}]。
+
+    三类 (无需 LLM):
+    - repeat    规范名含相邻重复片段 (如「水浒水浒传」)
+    - alias_dup 甲的别名等于乙的规范名 (归一遗漏/误分)
+    - contain   一个规范名包含另一个 (长度差 ≤6, 疑拆分/粘连)
+    """
+    rows = conn.execute(
+        "SELECT id, canonical, category, aliases FROM entities").fetchall()
+    ents = []
+    for r in rows:
+        try:
+            aliases = json.loads(r['aliases'] or '[]')
+        except (ValueError, TypeError):
+            aliases = []
+        if not isinstance(aliases, list):
+            aliases = []
+        ents.append({'id': r['id'], 'canonical': r['canonical'] or '',
+                     'category': r['category'], 'aliases': [
+                         str(a).strip() for a in aliases if str(a).strip()]})
+    out, seen = [], set()
+
+    def add(t, e, detail, other=None):
+        key = (t, e['id'], other['id'] if other else None)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({
+            'type': t, 'entity_id': e['id'], 'canonical': e['canonical'],
+            'detail': detail,
+            'other_id': other['id'] if other else None,
+            'other_canonical': other['canonical'] if other else None,
+        })
+
+    # 1 重复片段
+    for e in ents:
+        c = _norm(e['canonical'])
+        m = re.search(r'(.{2,})\1', c)
+        if m:
+            add('repeat', e, f"疑似重复片段「{m.group(1)}」")
+
+    # 2 别名撞他人规范名
+    canon_map = {}
+    for e in ents:
+        canon_map.setdefault(_norm(e['canonical']), e)
+    for e in ents:
+        for a in e['aliases']:
+            tgt = canon_map.get(_norm(a))
+            if tgt and tgt['id'] != e['id']:
+                add('alias_dup', e, f"别名「{a}」即另一实体规范名", tgt)
+
+    # 3 规范名包含 (仅中短名, 避免长标题噪声)
+    for e in ents:
+        ce = _norm(e['canonical'])
+        if len(ce) < 2 or len(ce) > 24:
+            continue
+        for o in ents:
+            if o['id'] == e['id']:
+                continue
+            co = _norm(o['canonical'])
+            if ce == co or len(co) < len(ce) + 1:
+                continue
+            if ce in co and len(co) - len(ce) <= 6:
+                add('contain', e, f"规范名被「{o['canonical']}」包含", o)
+    return out
+
+
 def migrate_legacy(collection, provider_id=None):
     """一次性: 旧 per-doc 实体卡 items → 上卷为提及 (归一到书架实体)。"""
     conn = get_conn(collection)

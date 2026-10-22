@@ -412,6 +412,21 @@ def _migrate(conn):
             ON entity_mentions(doc_id)
     """)
     # 检索未命中轨迹 (C1): 零命中查询沉淀 → 人工提炼为 alias/constraint 补丁。
+    # 实体错误反馈 (C4): 消费侧(检索/引文核对/人工)发现归一错误 → 报告 → 巡查处置。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entity_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER,
+            kind TEXT DEFAULT 'other',
+            note TEXT,
+            doc_id INTEGER,
+            page_num INTEGER,
+            mention_id INTEGER,
+            source TEXT DEFAULT 'web',
+            resolved INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS search_misses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
