@@ -2396,9 +2396,9 @@ async def api_card_save(collection: str, doc_id: int,
                         kind: str = Form(...), content: str = Form(...),
                         status: str = Form('draft')):
     """保存/更新单卡 (每 doc 每 kind 一张, upsert)."""
-    if kind not in ('meta', 'toc', 'summary', 'entity'):
+    if kind not in ('meta', 'toc', 'summary', 'entity', 'entity_source'):
         return JSONResponse(status_code=400,
-                            content={"error": "kind 只支持 meta/toc/summary/entity"})
+                            content={"error": "kind 只支持 meta/toc/summary/entity/entity_source"})
     if status not in ('draft', 'reviewed'):
         return JSONResponse(status_code=400,
                             content={"error": "status 只支持 draft/reviewed"})
@@ -3006,6 +3006,31 @@ def _entity_hits(collection: str, q: str, limit: int = 10):
     except Exception:
         rows = []
     return rows
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/entity-source/extract")
+async def entity_source_extract(collection: str, doc_id: int,
+                                provider_id: str = Form(None)):
+    """模型提取实体依据 (关键词/索引) — 返回建议, 不落库 (前端确认后走 cards/save)."""
+    from .config import get_llm_provider_cfg
+    from . import entity as ent
+    if collection not in list_collections():
+        return JSONResponse(status_code=404, content={"error": "书架不存在"})
+    doc = _get_card_doc(collection, doc_id)
+    if doc is None:
+        return JSONResponse(status_code=404, content={"error": "文献不存在"})
+    try:
+        get_llm_provider_cfg(None)
+    except RuntimeError as e:
+        return JSONResponse(status_code=503, content={"error": str(e)})
+    conn = get_conn(collection)
+    try:
+        res = ent.extract_seeds(conn, doc_id, provider_id)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        conn.close()
+    return {"ok": True, **res}
 
 
 @app.post("/collections/{collection}/entitygraph/generate")

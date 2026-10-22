@@ -1052,6 +1052,26 @@ mark {
         <span class="cg-title">本文献提及</span>
         <span class="cg-hint">实体图由 LLM 从文献编译（可再生）· 详情/合并/补录在「实体图谱」页</span>
       </div>
+      {% set _seed = cards_map.get('entity_source', {'content': {}}) %}
+      {% set _sc = _seed.content if _seed.content is mapping else {} %}
+      {% set seed_kws = _sc.get('keywords') or [] %}
+      {% set seed_idx = _sc.get('index') or [] %}
+      <details class="seed-box" style="margin:6px 0 10px;">
+        <summary style="cursor:pointer;font-size:0.86rem;color:var(--text-muted);">
+          实体依据（关键词 / 索引）<span id="seedHint">{% if seed_kws or seed_idx %}已设置（作为实体编译依据）{% else %}未设置：将自动识别文献自带关键词/索引{% endif %}</span>
+        </summary>
+        <div style="padding:8px 0;">
+          <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">关键词（每行一个）</div>
+          <textarea id="seedKw" rows="3" style="width:100%;box-sizing:border-box;" placeholder="人名、地名、机构、概念…">{{ seed_kws | join('\n') }}</textarea>
+          <div style="font-size:0.8rem;color:var(--text-muted);margin:6px 0 4px;">索引条目（每行「条目|页码」，页码可省）</div>
+          <textarea id="seedIdx" rows="4" style="width:100%;box-sizing:border-box;" placeholder="例：曾国藩|12">{% set ns = namespace(lines=[]) %}{% for it in seed_idx %}{% set _ = ns.lines.append((it.get('term') or '') ~ ('|' ~ it.get('page_num') if it.get('page_num') is not none else '')) %}{% endfor %}{{ ns.lines | join('\n') }}</textarea>
+          <div class="card-actions" style="margin-top:6px;">
+            <button onclick="aiExtractSeeds()">AI 提取</button>
+            <button class="btn-primary" onclick="saveSeeds()">保存依据</button>
+            <button onclick="clearSeeds()">清空（回自动识别）</button>
+          </div>
+        </div>
+      </details>
         {% if doc_entities %}
         <table class="toc-table" id="entityTable"><tbody id="entityBody">
           <tr><th>实体</th><th>类别</th><th>页</th><th></th></tr>
@@ -2725,6 +2745,55 @@ function addEntityItem() {
     { kind: 'entity', content: JSON.stringify(window.__entityContent), status: window.__entityStatus })
     .then(d => showToast(d.ok ? '已添加并落库 — 当前 ' + window.__entityContent.items.length + ' 条'
                               : '落库失败: ' + (d.error || '')));
+}
+// ── 实体依据 (关键词/索引, 作为实体编译依据) ──
+function _seedCardBody() {
+  const kw = (document.getElementById('seedKw').value || '').split('\n')
+    .map(s => s.trim()).filter(Boolean);
+  const idx = (document.getElementById('seedIdx').value || '').split('\n')
+    .map(s => s.trim()).filter(Boolean).map(function (l) {
+      const p = l.split('|');
+      const t = (p[0] || '').trim();
+      if (!t) return null;
+      const pn = parseInt(p[1], 10);
+      return { term: t, page_num: isNaN(pn) ? null : pn };
+    }).filter(Boolean);
+  return { kw: kw, idx: idx, content: JSON.stringify({ keywords: kw, index: idx }) };
+}
+async function aiExtractSeeds() {
+  const btn = event && event.target; if (btn) { btn.disabled = true; btn.textContent = '提取中…'; }
+  try {
+    const fd = new FormData();
+    const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/entity-source/extract`,
+      { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok || !d.ok) { showToast('提取失败: ' + (d.error || r.status)); return; }
+    document.getElementById('seedKw').value = (d.keywords || []).join('\n');
+    document.getElementById('seedIdx').value = (d.index || [])
+      .map(x => x.term + (x.page_num != null ? '|' + x.page_num : '')).join('\n');
+    showToast('已提取，请核对后点「保存依据」', 5000);
+  } catch (e) { showToast('提取失败: ' + e); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = 'AI 提取'; } }
+}
+async function saveSeeds() {
+  const b = _seedCardBody();
+  const fd = new FormData();
+  fd.append('kind', 'entity_source'); fd.append('content', b.content); fd.append('status', 'draft');
+  try {
+    const r = await fetch(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
+      { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok || !d.ok) { showToast('保存失败: ' + (d.error || r.status)); return; }
+    const hint = document.getElementById('seedHint');
+    if (hint) hint.textContent = (b.kw.length || b.idx.length)
+      ? '已设置（作为实体编译依据）' : '未设置：将自动识别文献自带关键词/索引';
+    showToast((b.kw.length || b.idx.length) ? '实体依据已保存' : '已清空，回自动识别', 4000);
+  } catch (e) { showToast('保存失败: ' + e); }
+}
+function clearSeeds() {
+  document.getElementById('seedKw').value = '';
+  document.getElementById('seedIdx').value = '';
+  saveSeeds();
 }
 // ── 本文献提及: 纠错回流 + 局部重编 (P8) ──
 async function invalidateMention(mid, btn) {

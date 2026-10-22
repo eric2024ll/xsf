@@ -15,6 +15,7 @@ entities / entity_mentions。事实源是文献 (资产层); 本模块产物**�
 import json
 import os
 import re
+import sqlite3
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
@@ -164,9 +165,68 @@ def _doc_kind(bib_type):
     return 'other'
 
 
+SEED_CARD_KIND = 'entity_source'
+
+
+def _dedupe_seeds(seeds):
+    seen, out = set(), []
+    for s in seeds:
+        n = re.sub(r'\s+', '', s['surface'] or '')
+        if n and n not in seen:
+            seen.add(n)
+            out.append(s)
+    return out
+
+
+def load_seed_card(conn, doc_id):
+    """读取实体依据卡 (kind='entity_source') → {'keywords':[...], 'index':[{term,page_num}]}。
+    无卡或空卡返回 None (→ 回退文献自带关键词/索引的自动识别)。"""
+    try:
+        row = conn.execute(
+            "SELECT content FROM doc_cards WHERE doc_id = ? AND kind = ?",
+            (doc_id, SEED_CARD_KIND)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row:
+        return None
+    try:
+        c = json.loads(row['content'] or '{}') or {}
+    except (ValueError, TypeError):
+        return None
+    kw = [str(x).strip() for x in (c.get('keywords') or []) if str(x).strip()]
+    idx = []
+    for it in (c.get('index') or []):
+        if isinstance(it, dict):
+            t, pn = (it.get('term') or '').strip(), it.get('page_num')
+        elif isinstance(it, str):
+            t, pn = it.strip(), None
+        else:
+            continue
+        if not t:
+            continue
+        try:
+            pn = int(pn) if pn not in (None, '') else None
+        except (TypeError, ValueError):
+            pn = None
+        idx.append({'term': t, 'page_num': pn})
+    if not kw and not idx:
+        return None
+    return {'keywords': kw, 'index': idx}
+
+
 def _authoritative_seeds(conn, doc_id, kind):
     """文献自带的权威实体来源 → [{surface,category,page_num,block_num,source}]。
+    优先「实体依据卡」(关键词/索引, 人工或模型整理); 无卡则自动识别:
     论文: bib 关键词 + 正文关键词段; 图书: 索引段条目。"""
+    card = load_seed_card(conn, doc_id)
+    if card:
+        seeds = [{'surface': t, 'category': None, 'page_num': None,
+                  'block_num': None, 'source': 'card:keywords'}
+                 for t in card['keywords']]
+        seeds += [{'surface': it['term'], 'category': None,
+                   'page_num': it['page_num'], 'block_num': None,
+                   'source': 'card:index'} for it in card['index']]
+        return _dedupe_seeds(seeds)
     seeds = []
     row = conn.execute("SELECT bib_data FROM documents WHERE id = ?",
                        (doc_id,)).fetchone()
@@ -208,13 +268,80 @@ def _authoritative_seeds(conn, doc_id, kind):
                 if 1 < len(term) <= 24:
                     seeds.append({'surface': term, 'category': None, 'page_num': pg,
                                   'block_num': bk, 'source': 'text:index'})
-    seen, out = set(), []
-    for s in seeds:
-        n = re.sub(r'\s+', '', s['surface'] or '')
-        if n and n not in seen:
-            seen.add(n)
-            out.append(s)
-    return out
+    return _dedupe_seeds(seeds)
+
+
+def _extract_json_obj(content):
+    """从模型输出里取 JSON 对象 (去 ``` 包裹, 截取首个 { 到末个 })。"""
+    if not content:
+        return {}
+    t = content.strip()
+    t = re.sub(r'^```(?:json)?\s*', '', t)
+    t = re.sub(r'\s*```$', '', t)
+    i, j = t.find('{'), t.rfind('}')
+    if i >= 0 and j > i:
+        try:
+            v = json.loads(t[i:j + 1])
+            return v if isinstance(v, dict) else {}
+        except ValueError:
+            pass
+    return {}
+
+
+SEED_SYSTEM = (
+    "你是文献编目助手。给定文献文本, 提取可作为实体图谱建构依据的条目, "
+    "只输出严格 JSON (无解释): "
+    '{"keywords":["词1","词2"],"index":[{"term":"条目","page_num":数字或null}]}。'
+    "keywords=文献的关键词/主题词(人名、地名、机构、概念); "
+    "index=文献自带的索引条目(term 为条目名, page_num 为原书页码, 无则 null)。"
+    "严禁编造; 文本中若确无关键词与索引, 返回 {\"keywords\":[],\"index\":[]}。")
+
+
+def extract_seeds(conn, doc_id, provider_id=None):
+    """模型提取实体依据 (关键词/索引) → {'keywords':[...], 'index':[...], 'model':...}。
+    输入优先含「索引/关键词」的块, 再补前若干块。"""
+    blocks = conn.execute(
+        "SELECT page_num, block_num, text FROM blocks_fts "
+        "WHERE doc_id = ? ORDER BY page_num, block_num", (doc_id,)).fetchall()
+    picked, seen = [], set()
+    for b in blocks:
+        if not (b['text'] or '').strip():
+            continue
+        if re.search(r'索引|關鍵詞|关键词|关键字|index|key\s*words?',
+                     b['text'], re.I):
+            k = (b['page_num'], b['block_num'])
+            if k not in seen:
+                seen.add(k); picked.append(b)
+    for b in blocks:
+        if len(picked) >= 40:
+            break
+        k = (b['page_num'], b['block_num'])
+        if (b['text'] or '').strip() and k not in seen:
+            seen.add(k); picked.append(b)
+    if not picked:
+        return {'keywords': [], 'index': [], 'model': None}
+    text = "\n".join(f"[p{b['page_num']}b{b['block_num']}] {b['text']}"
+                     for b in picked[:40])
+    content, model = chat(
+        [{"role": "system", "content": SEED_SYSTEM},
+         {"role": "user", "content": "文献文本:\n" + text}],
+        provider_id=provider_id)
+    obj = _extract_json_obj(content or '')
+    kw = [str(x).strip() for x in (obj.get('keywords') or []) if str(x).strip()]
+    idx = []
+    for it in (obj.get('index') or []):
+        if not isinstance(it, dict):
+            continue
+        t = (it.get('term') or '').strip()
+        if not t:
+            continue
+        pn = it.get('page_num')
+        try:
+            pn = int(pn) if pn not in (None, '') else None
+        except (TypeError, ValueError):
+            pn = None
+        idx.append({'term': t, 'page_num': pn})
+    return {'keywords': kw[:200], 'index': idx[:500], 'model': model}
 
 
 def _batches(blocks, max_blocks=8, max_chars=1400):
