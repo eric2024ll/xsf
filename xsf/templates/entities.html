@@ -37,6 +37,10 @@
 .mount-sec { margin: 10px 0; }
 .mount-sec > summary { cursor: pointer; font-size: 0.85rem; color: var(--text-muted); }
 .mount-body { padding: 8px 2px; max-width: 760px; }
+.miss-list { display: flex; flex-direction: column; gap: 6px; }
+.miss-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            padding: 4px 0; border-bottom: 1px dashed var(--border, #ddd); }
+.miss-q { font-weight: 600; }
 .mount-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
 .mount-row .mount-lbl { min-width: 110px; font-size: 0.85rem; }
 .mount-row input[type=text] { padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 0.82rem; }
@@ -94,6 +98,14 @@ table.eg-tbl th { color: var(--text-muted); font-weight: 500; }
         <button class="mini-btn" onclick="saveMount('cbdb')">保存</button>
         <span id="mCbdbStatus" class="hint"></span>
       </div>
+    </div>
+  </details>
+
+  <details class="mount-sec" id="missSec">
+    <summary>检索未命中（待提炼） <span id="missSummary" class="hint"></span></summary>
+    <div class="mount-body">
+      <p class="hint">零命中的检索词自动记入此处。核对后可为某实体补充别名——补录后该词即可检索到（实体别名扩展）。</p>
+      <div id="missList" class="miss-list"><p class="hint">加载中…</p></div>
     </div>
   </details>
 
@@ -247,6 +259,60 @@ async function egMerge(id){
   await egLoad(); egShow(d.into_id);
 }
 
+async function egMissLoad(){
+  var box = document.getElementById('missList');
+  if (!box) return;
+  try {
+    var d = await (await fetch(api('/search-misses'))).json();
+    var items = d.items || [];
+    var sum = document.getElementById('missSummary');
+    if (sum) sum.textContent = items.length ? ('(' + items.length + ')') : '';
+    if (!items.length) {
+      box.innerHTML = '<p class="hint">暂无未处理的未命中查询。</p>';
+      return;
+    }
+    box.innerHTML = items.map(function(m){
+      return '<div class="miss-row" data-id="' + m.id + '">' +
+        '<span class="miss-q">' + esc(m.query) + '</span>' +
+        '<span class="hint">×' + (m.hits || 1) + ' · ' + esc(m.last_seen || '') + '</span>' +
+        '<input class="miss-ent" placeholder="实体名或ID" style="width:120px;">' +
+        '<button class="mini-btn" onclick="missAddAlias(' + m.id + ',this)">加为别名</button>' +
+        '<button class="mini-btn" onclick="missResolve(' + m.id + ')">忽略</button>' +
+        '</div>';
+    }).join('');
+  } catch (e) {
+    box.innerHTML = '<p class="hint">加载失败: ' + esc(e) + '</p>';
+  }
+}
+async function missAddAlias(id, btn){
+  var row = btn.closest('.miss-row');
+  var ent = ((row && row.querySelector('.miss-ent').value) || '').trim();
+  if (!ent) { alert('请填写实体名或 ID'); return; }
+  var fd = new FormData(); fd.append('entity', ent);
+  var r = await fetch(api('/search-misses/' + id + '/add-alias'),
+                      { method: 'POST', body: fd });
+  var d = await r.json();
+  if (r.ok && d.ok) {
+    if (row) row.remove();
+    alert('已把「' + d.alias + '」加为「' + d.canonical + '」的别名');
+    egMissLoad(); egLoad();
+  } else {
+    alert('失败: ' + (d.error || r.status));
+  }
+}
+async function missResolve(id){
+  var fd = new FormData(); fd.append('resolved', '1');
+  var r = await fetch(api('/search-misses/' + id + '/resolve'),
+                      { method: 'POST', body: fd });
+  if (r.ok) {
+    var el = document.querySelector('.miss-row[data-id="' + id + '"]');
+    if (el) el.remove();
+    var sum = document.getElementById('missSummary');
+    var n = document.querySelectorAll('.miss-row').length;
+    if (sum) sum.textContent = n ? ('(' + n + ')') : '';
+  }
+}
+
 async function egStatus(){
   var r = await fetch(api('/entitygraph/status'));
   var d = await r.json();
@@ -308,6 +374,7 @@ async function saveMount(name){
 }
 
 egMounts();
+egMissLoad();
 egStatus(); egLoad().then(function(){
   var id = new URLSearchParams(location.search).get('id');
   if(id) egShow(parseInt(id, 10));

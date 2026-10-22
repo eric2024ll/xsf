@@ -146,7 +146,7 @@ function renderGroups(data){
   container.innerHTML='';
   if(!data.groups||!data.groups.length){
     countEl.innerHTML='<span class="engine-badge fts5">FTS5</span>';
-    container.innerHTML='<div class="no-results">未找到匹配结果</div>';
+    container.innerHTML='<div class="no-results">未找到匹配结果<br><span style="font-size:0.8rem;color:var(--text-muted);">已记入检索问题库；可在「实体图谱」页为相关实体补充别名后重试</span></div>';
     return;
   }
   var truncNote=data.groups_truncated?'（命中文献超过 '+data.groups.length+' 篇，仅列前 '+data.groups.length+' 篇）':'';

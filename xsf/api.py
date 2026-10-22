@@ -614,6 +614,27 @@ def _card_hits(collection: str, q: str, limit: int = 20) -> list:
     return hits
 
 
+def _record_miss(collection: str, query: str, total_docs: int,
+                 source: str = 'web'):
+    """零命中查询记入检索问题库 (C1)。绝不抛异常影响检索。"""
+    q = (query or '').strip()
+    if not q or total_docs > 0:
+        return
+    try:
+        conn = get_conn(collection)
+        try:
+            conn.execute(
+                "INSERT INTO search_misses(query, hits, source) VALUES(?,1,?) "
+                "ON CONFLICT(query) DO UPDATE SET "
+                "  hits = hits + 1, last_seen = datetime('now')",
+                (q, source))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 @app.get("/collections/{collection}/search")
 async def api_search(collection: str, q: str, limit: int = 20,
                      offset: int = 0, source_type: str = None,
@@ -644,6 +665,8 @@ async def api_search(collection: str, q: str, limit: int = 20,
             })
         total = count_hits(q, collection=collection,
                            source_type=source_type, doc_id=doc_id)["blocks"]
+        if total == 0 and doc_id is None:
+            _record_miss(collection, q, 0, 'web')
         return {"query": q, "collection": collection,
                 "count": len(out), "results": out,
                 "cards": _card_hits(collection, q),
@@ -665,6 +688,8 @@ async def api_search_grouped(collection: str, q: str,
         groups = search_grouped(q, collection=collection,
                                 source_type=source_type, limit=limit)
         stats = count_hits(q, collection=collection, source_type=source_type)
+        if stats["docs"] == 0:
+            _record_miss(collection, q, 0, 'web')
         from .search import expansions_for
         return {"query": q, "collection": collection,
                 "groups": groups,
@@ -676,6 +701,113 @@ async def api_search_grouped(collection: str, q: str,
                 "groups_truncated": len(groups) >= limit}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── 检索未命中轨迹 (C1) ────────────────────────────────
+
+@app.get("/collections/{collection}/search-misses")
+async def search_misses_list(collection: str, include_resolved: int = 0,
+                             limit: int = 200):
+    """零命中查询沉淀列表 (未处理优先)。"""
+    if collection not in list_collections():
+        return JSONResponse(status_code=404, content={"error": "书架不存在"})
+    conn = get_conn(collection)
+    try:
+        where = "" if include_resolved else "WHERE resolved = 0"
+        rows = conn.execute(
+            f"SELECT id, query, hits, source, note, resolved, "
+            f"       created_at, last_seen FROM search_misses {where} "
+            f"ORDER BY resolved ASC, last_seen DESC LIMIT ?",
+            (max(1, min(int(limit or 200), 1000)),)).fetchall()
+    finally:
+        conn.close()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/collections/{collection}/search-misses/{mid}/resolve")
+async def search_miss_resolve(collection: str, mid: int,
+                              resolved: int = Form(1),
+                              note: str = Form(None)):
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            "UPDATE search_misses SET resolved = ?, "
+            "  note = COALESCE(?, note) WHERE id = ?",
+            (1 if resolved else 0, note, mid))
+        conn.commit()
+        if cur.rowcount == 0:
+            return JSONResponse(status_code=404,
+                                content={"error": "记录不存在"})
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+@app.delete("/collections/{collection}/search-misses/{mid}")
+async def search_miss_delete(collection: str, mid: int):
+    conn = get_conn(collection)
+    try:
+        conn.execute("DELETE FROM search_misses WHERE id = ?", (mid,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+@app.post("/collections/{collection}/search-misses/{mid}/add-alias")
+async def search_miss_add_alias(collection: str, mid: int,
+                                entity: str = Form(...)):
+    """把未命中查询词补为某实体的别名 (写 entity_additions, kind=alias)。
+
+    entity 可为实体 ID 或规范名/别名。补录后 C2 别名扩展即可命中。
+    """
+    ent = (entity or '').strip()
+    if not ent:
+        return JSONResponse(status_code=400, content={"error": "请填实体名或 ID"})
+    conn = get_conn(collection)
+    try:
+        mrow = conn.execute(
+            "SELECT query FROM search_misses WHERE id = ?", (mid,)).fetchone()
+        if not mrow:
+            return JSONResponse(status_code=404, content={"error": "记录不存在"})
+        q = mrow["query"]
+        if ent.isdigit():
+            er = conn.execute(
+                "SELECT id, canonical, aliases FROM entities WHERE id = ?",
+                (int(ent),)).fetchone()
+        else:
+            er = conn.execute(
+                "SELECT id, canonical, aliases FROM entities "
+                "WHERE canonical = ? OR aliases LIKE ? LIMIT 1",
+                (ent, f'%"{ent}"%')).fetchone()
+        if not er:
+            return JSONResponse(status_code=404,
+                                content={"error": "实体未找到: " + ent})
+        try:
+            aliases = json.loads(er["aliases"] or "[]")
+        except (ValueError, TypeError):
+            aliases = []
+        if not isinstance(aliases, list):
+            aliases = []
+        changed = False
+        if q != er["canonical"] and q not in aliases:
+            aliases.append(q)
+            conn.execute("UPDATE entities SET aliases = ? WHERE id = ?",
+                         (json.dumps(aliases, ensure_ascii=False), er["id"]))
+            changed = True
+        conn.execute(
+            "INSERT INTO entity_additions(entity_id, kind, value, evidence) "
+            "VALUES(?, 'alias', ?, ?)",
+            (er["id"], q, f"检索未命中补录: {q}"))
+        conn.execute(
+            "UPDATE search_misses SET resolved = 1, "
+            "  note = COALESCE(note, '') || ? WHERE id = ?",
+            (f"已加为 {er['canonical']} 别名", mid))
+        conn.commit()
+        return {"ok": True, "entity_id": er["id"],
+                "canonical": er["canonical"], "alias": q, "changed": changed}
+    finally:
+        conn.close()
 
 
 # ── 单 collection 统计 ─────────────────────────────────

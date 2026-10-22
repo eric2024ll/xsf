@@ -411,6 +411,19 @@ def _migrate(conn):
         CREATE INDEX IF NOT EXISTS idx_mentions_doc
             ON entity_mentions(doc_id)
     """)
+    # 检索未命中轨迹 (C1): 零命中查询沉淀 → 人工提炼为 alias/constraint 补丁。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS search_misses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT NOT NULL UNIQUE,
+            hits INTEGER DEFAULT 1,
+            source TEXT DEFAULT 'web',
+            note TEXT,
+            resolved INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            last_seen TEXT DEFAULT (datetime('now'))
+        )
+    """)
 
     # ── blocks_fts trigram 化 (2026-10-19): unicode61 整串 CJK 单 token,
     # 子串命不中 → 重建为 trigram (≥3 字子串匹配)。
