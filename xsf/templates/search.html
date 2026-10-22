@@ -152,6 +152,19 @@ function renderGroups(data){
   var truncNote=data.groups_truncated?'（命中文献超过 '+data.groups.length+' 篇，仅列前 '+data.groups.length+' 篇）':'';
   countEl.innerHTML='共命中 '+data.total_blocks+' 块 · '+data.total_docs+' 篇文献 '+
     truncNote+'<span class="engine-badge fts5">FTS5</span>';
+  if(data.expanded){
+    var expParts=[];
+    Object.keys(data.expanded).forEach(function(k){
+      var vs=data.expanded[k]||[];
+      if(vs.length) expParts.push(k+' → '+vs.join(' / '));
+    });
+    if(expParts.length){
+      var eh=document.createElement('div');
+      eh.style.cssText='font-size:0.8rem;color:var(--text-muted);margin:4px 0 0;';
+      eh.textContent='已按实体别名扩展：'+expParts.join('；');
+      countEl.parentNode.insertBefore(eh, countEl.nextSibling);
+    }
+  }
   if(data.entities&&data.entities.length){
     var eb=document.createElement('div');
     eb.className='doc-group';

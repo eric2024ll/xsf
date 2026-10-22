@@ -1,3 +1,5 @@
+import json
+import sqlite3
 from itertools import product
 
 import jieba
@@ -34,8 +36,49 @@ def _fts_query(query: str) -> str:
     return match_expr or ''
 
 
-def _fts_plan(query: str) -> tuple[str, list[str]]:
-    """trigram 检索计划: (MATCH 表达式 or '', 短词 LIKE 兜底变体表).
+def _norm_name(s: str) -> str:
+    return ''.join((s or '').split())
+
+
+def _parse_aliases(raw) -> list[str]:
+    """aliases 列 (JSON 数组字符串) → 名称列表。"""
+    if not raw:
+        return []
+    try:
+        v = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        return []
+    return [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
+
+
+def _entity_expansions(conn, query: str, limit: int = 8) -> dict:
+    """整条查询命中实体 (规范名/别名) 时 → {查询词: [该实体其它名称]}。
+
+    用于检索前归一扩展 (异体字/别称/音译变体), 救 miss。
+    表缺失时返回 {}。
+    """
+    qn = _norm_name(query)
+    if len(qn) < 2:
+        return {}
+    try:
+        rows = conn.execute(
+            "SELECT canonical, aliases FROM entities "
+            "WHERE LOWER(canonical) = LOWER(?) "
+            "   OR LOWER(aliases) LIKE LOWER(?) LIMIT ?",
+            (qn, f'%"{qn}"%', limit)).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    names = []
+    for r in rows:
+        for n in [r['canonical']] + _parse_aliases(r['aliases']):
+            nn = (n or '').strip()
+            if nn and _norm_name(nn) != qn and nn not in names:
+                names.append(nn)
+    return {query: names} if names else {}
+
+
+def _fts_plan_plain(query: str) -> tuple[str, list[str]]:
+    """trigram 检索计划 (无实体扩展): (MATCH 表达式 or '', 短词 LIKE 兜底变体表).
 
     blocks_fts 为 trigram tokenizer: ≥3 字段走 FTS 短语 (bm25);
     1-2 字段 FTS 命不中, 收集繁简变体交由 LIKE 过滤。
@@ -54,6 +97,28 @@ def _fts_plan(query: str) -> tuple[str, list[str]]:
             like_terms.extend(variants)
     match_expr = ' AND '.join(parts)
     return match_expr, like_terms
+
+
+def _fts_plan(query: str, expansions: dict = None) -> tuple[str, list[str]]:
+    """检索计划。expansions ({词: [实体其它名称]}) 非空时按「名称原子」扩展:
+
+    以整条查询命中实体为前提, 把「查询词 + 该实体全部名称」各作为一个短语,
+    整体 OR —— 避免把别名拆成子词后被 AND/LIKE 组合误杀。
+    仅取 ≥3 字的名称 (trigram 可匹配)。
+    """
+    names = [query]
+    for vs in (expansions or {}).values():
+        names.extend(vs)
+    names = [n.strip() for n in names if n and n.strip()]
+    if expansions and len(names) > 1:
+        parts = []
+        for n in names:
+            vs = [v for v in sorted(_all_variants(n)) if len(v) >= 3]
+            if vs:
+                parts.append('(' + ' OR '.join(f'"{v}"' for v in vs) + ')')
+        if parts:
+            return ' OR '.join(parts), []
+    return _fts_plan_plain(query)
 
 
 def _fts_where(match_expr: str, like_terms: list[str],
@@ -105,15 +170,15 @@ def search(query: str, collection: str,
     source_type: 'primary'/'secondary'/'reference' 之一，用于按来源类型过滤。
     doc_id: 给定时只搜该文档 (用于分组视图展开单篇)。
     """
-    match_expr, like_terms = _fts_plan(query)
-    if not match_expr and not like_terms:
-        return []
-
-    extra_where, filter_params = _search_filters(source_type, doc_id)
-    fts_where, fts_params = _fts_where(match_expr, like_terms)
-
     conn = get_conn(collection)
     try:
+        match_expr, like_terms = _fts_plan(query, _entity_expansions(conn, query))
+        if not match_expr and not like_terms:
+            return []
+
+        extra_where, filter_params = _search_filters(source_type, doc_id)
+        fts_where, fts_params = _fts_where(match_expr, like_terms)
+
         rows = conn.execute(
             f'''SELECT f.doc_id, f.page_num, f.block_num,
                       d.filename, d.title, d.cite_key
@@ -133,15 +198,15 @@ def search(query: str, collection: str,
 def count_hits(query: str, collection: str,
                source_type: str = None, doc_id: int = None) -> dict:
     """统计命中规模: 匹配块总数 + 涉及文献数."""
-    match_expr, like_terms = _fts_plan(query)
-    if not match_expr and not like_terms:
-        return {"blocks": 0, "docs": 0}
-
-    extra_where, filter_params = _search_filters(source_type, doc_id)
-    fts_where, fts_params = _fts_where(match_expr, like_terms)
-
     conn = get_conn(collection)
     try:
+        match_expr, like_terms = _fts_plan(query, _entity_expansions(conn, query))
+        if not match_expr and not like_terms:
+            return {"blocks": 0, "docs": 0}
+
+        extra_where, filter_params = _search_filters(source_type, doc_id)
+        fts_where, fts_params = _fts_where(match_expr, like_terms)
+
         row = conn.execute(
             f'''SELECT COUNT(*) AS blocks, COUNT(DISTINCT f.doc_id) AS docs
                 FROM blocks_fts f
@@ -160,19 +225,17 @@ def search_grouped(query: str, collection: str,
 
     排序: 命中块数降序, 同数按最佳 rank. 供搜索页分组视图.
     """
-    match_expr, like_terms = _fts_plan(query)
-    if not match_expr and not like_terms:
-        return []
-
     extra_where, filter_params = _search_filters(source_type, None)
-    fts_where, fts_params = _fts_where(match_expr, like_terms)
-    # 无 MATCH (纯短词 LIKE) 时 rank 列不可用, 以 rowid 代 tie-break
-    rank_sel = ('MIN(f.rank) AS best_rank' if match_expr
-                else 'MIN(f.rowid) AS best_rank')
-    rank_ord = 'best_rank ASC' if match_expr else 'best_rank ASC'
 
     conn = get_conn(collection)
     try:
+        match_expr, like_terms = _fts_plan(query, _entity_expansions(conn, query))
+        if not match_expr and not like_terms:
+            return []
+        fts_where, fts_params = _fts_where(match_expr, like_terms)
+        rank_sel = ('MIN(f.rank) AS best_rank' if match_expr
+                    else 'MIN(f.rowid) AS best_rank')
+        rank_ord = 'best_rank ASC'
         rows = conn.execute(
             f'''SELECT f.doc_id, d.filename, d.title, d.cite_key,
                        COUNT(*) AS hit_count, {rank_sel}
@@ -188,6 +251,15 @@ def search_grouped(query: str, collection: str,
         conn.close()
 
     return [dict(r) for r in rows]
+
+
+def expansions_for(query: str, collection: str) -> dict:
+    """对外: 查询词的实体别名扩展 {词: [变体, ...]} (供检索页提示)."""
+    conn = get_conn(collection)
+    try:
+        return _entity_expansions(conn, query)
+    finally:
+        conn.close()
 
 
 def get_block_lines(doc_id: int, page_num: int, block_num: int,

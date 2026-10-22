@@ -665,8 +665,10 @@ async def api_search_grouped(collection: str, q: str,
         groups = search_grouped(q, collection=collection,
                                 source_type=source_type, limit=limit)
         stats = count_hits(q, collection=collection, source_type=source_type)
+        from .search import expansions_for
         return {"query": q, "collection": collection,
                 "groups": groups,
+                "expanded": expansions_for(q, collection),
                 "cards": _card_hits(collection, q),
                 "wiki": _wiki_hits(collection, q),
                 "entities": _entity_hits(collection, q),
@@ -5187,18 +5189,19 @@ async def reocr_cancel(collection: str, doc_id: int):
 async def doc_hits(collection: str, doc_id: int, keyword: str, limit: int = 300):
     """返回某文档中匹配关键词的所有 page/block/first_line_id + 高亮摘要。"""
     try:
-        from .search import _fts_plan, _fts_where
-
-        match_expr, like_terms = _fts_plan(keyword)
-        if not match_expr and not like_terms:
-            return {"keyword": keyword, "hits": [], "total": 0, "truncated": False}
+        from .search import _fts_plan, _fts_where, _entity_expansions
 
         if limit < 1:
             limit = 300
 
-        fts_where, fts_params = _fts_where(match_expr, like_terms)
         conn = get_conn(collection)
         try:
+            match_expr, like_terms = _fts_plan(
+                keyword, _entity_expansions(conn, keyword))
+            if not match_expr and not like_terms:
+                return {"keyword": keyword, "hits": [], "total": 0,
+                        "truncated": False}
+            fts_where, fts_params = _fts_where(match_expr, like_terms)
             rows = conn.execute(
                 f"""SELECT f.page_num, f.block_num, MIN(l.id) as line_id, l.text as text
                    FROM blocks_fts f
