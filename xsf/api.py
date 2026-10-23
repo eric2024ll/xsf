@@ -1292,7 +1292,9 @@ async def api_update_doc(collection: str, doc_id: int,
                          bib_type: str = Form(None),
                          bib_data: str = Form(None),
                          lang: str = Form(None),
-                         tri_rows: int = Form(None)):
+                         tri_rows: int = Form(None),
+                         linked_pdf: str = Form(None),
+                         unlink_pdf: bool = Form(False)):
     """更新文献元数据。
 
     可选字段（至少传一个）:
@@ -1301,10 +1303,13 @@ async def api_update_doc(collection: str, doc_id: int,
     - bib_data: JSON 对象字符串（biblatex 字段）
     - lang: 语种（zh=中文单行制; 其他=非中文行制, 如 eng/mnc/ja, 2026-10-17 P2）
     - tri_rows: 行制显式覆盖（1=单行/3=三行/4=四行; 日/俄类语种默认四行）
+    - linked_pdf: 关联 PDF 文件名（置于 uploads/ 下）
+    - unlink_pdf: true 表示解除关联（与 linked_pdf 互斥; 空串等同未提供）
     """
     try:
         if (source_tags is None and bib_type is None and bib_data is None
-                and lang is None and tri_rows is None):
+                and lang is None and tri_rows is None and linked_pdf is None
+                and not unlink_pdf):
             return JSONResponse(
                 status_code=400,
                 content={"error": "未提供可更新字段"},
@@ -1313,6 +1318,35 @@ async def api_update_doc(collection: str, doc_id: int,
         updates = []
         params = []
         result_extra = {}
+
+        # ── linked_pdf (关联 PDF 可写; 仅接受 uploads/ 内文件名) ──
+        if linked_pdf and unlink_pdf:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "linked_pdf 与 unlink_pdf 不能同时提供"},
+            )
+        if unlink_pdf:
+            updates.append("linked_pdf = ?")
+            params.append(None)
+            result_extra["linked_pdf"] = None
+        elif linked_pdf is not None:
+            lp = linked_pdf.strip()
+            if lp:
+                safe = os.path.basename(lp.replace("\\", "/"))
+                if safe != lp or lp in (".", "..") or ".." in lp:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": "linked_pdf 只能是 uploads 内的文件名"},
+                    )
+                lp_val = safe
+            else:
+                lp_val = None
+            updates.append("linked_pdf = ?")
+            params.append(lp_val)
+            result_extra["linked_pdf"] = lp_val
+            if lp_val:
+                result_extra["linked_pdf_exists"] = (
+                    get_upload_path(collection, lp_val).exists())
 
         # ── lang (P2 两制转录) ──
         if lang is not None:
@@ -1500,7 +1534,7 @@ async def api_docs(collection: str, limit: int = 50):
         try:
             rows = conn.execute(
                 """SELECT id, cite_key, title, author,
-                          filename, page_count, doc_type,
+                          filename, page_count, doc_type, linked_pdf,
                           is_primary, is_secondary, is_reference,
                           created_at
                    FROM documents
