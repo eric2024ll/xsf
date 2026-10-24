@@ -2196,12 +2196,15 @@ async def api_export_archive(collection: str, request: Request):
             content = f.read()
         os.unlink(tmp_tar)
 
+        # Content-Disposition 只允许 latin-1: 中文书架名走 RFC 6266 双写法
+        from urllib.parse import quote
+        ascii_name = f"xsf_{pkg_type}_{stamp}.sqpkg"
+        disp = (f'attachment; filename="{ascii_name}"; '
+                f"filename*=UTF-8''{quote(fname, safe='')}")
         return Response(
             content=content,
             media_type="application/gzip",
-            headers={
-                "Content-Disposition": f'attachment; filename="{fname}"'
-            },
+            headers={"Content-Disposition": disp},
         )
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
