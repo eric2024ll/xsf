@@ -4075,33 +4075,110 @@ async def proofread_page(
 
 # ── 页面图片 ────────────────────────────────────────────
 
-@app.get("/collections/{collection}/doc/{doc_id}/page/{page_num}/source")
-async def page_source(collection: str, doc_id: int, page_num: int):
-    """EPUB 章节源文件 (spine 第 N 个 XHTML), 供校对台影印区 iframe 渲染。"""
+def _epub_doc_src(collection: str, doc_id: int):
+    """返回 (epub 路径 | None, 错误响应 | None)。"""
     conn = get_conn(collection)
     try:
         doc = conn.execute(
-            "SELECT filename FROM documents WHERE id = ?", (doc_id,)
+            "SELECT filename, doc_type FROM documents WHERE id = ?", (doc_id,)
         ).fetchone()
     finally:
         conn.close()
     if doc is None:
-        return JSONResponse(status_code=404, content={"error": "文献不存在"})
-
+        return None, JSONResponse(status_code=404, content={"error": "文献不存在"})
+    if doc["doc_type"] != "epub":
+        return None, JSONResponse(
+            status_code=400, content={"error": "该文献不是 EPUB"})
     src = get_upload_path(collection, doc["filename"])
     if not src.exists():
-        return JSONResponse(status_code=404, content={"error": "EPUB 文件不存在"})
+        return None, JSONResponse(
+            status_code=404, content={"error": "EPUB 文件不存在"})
+    return src, None
 
+
+def _epub_media_type(path: str) -> str:
+    import mimetypes
+    lower = path.lower()
+    if lower.endswith((".xhtml", ".html", ".htm")):
+        return "application/xhtml+xml"
+    if lower.endswith(".css"):
+        return "text/css"
+    if lower.endswith(".js"):
+        return "application/javascript"
+    if lower.endswith(".svg"):
+        return "image/svg+xml"
+    mt, _ = mimetypes.guess_type(path)
+    return mt or "application/octet-stream"
+
+
+def _inject_base(content: bytes, base_href: str) -> bytes:
+    """在 <head> 开头注入 <base>, 使章节内相对资源引用可解析。"""
+    base_tag = ('<base href="%s">' % base_href).encode("utf-8")
+    low = content.lower()
+    idx = low.find(b"<head")
+    if idx != -1:
+        gt = content.find(b">", idx)
+        if gt != -1:
+            return content[:gt + 1] + base_tag + content[gt + 1:]
+    idx = low.find(b"<html")
+    if idx != -1:
+        gt = content.find(b">", idx)
+        if gt != -1:
+            return (content[:gt + 1] + b"<head>" + base_tag + b"</head>"
+                    + content[gt + 1:])
+    return b"<head>" + base_tag + b"</head>" + content
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/page/{page_num}/source")
+async def page_source(collection: str, doc_id: int, page_num: int):
+    """EPUB 章节源文件 (spine 第 N 个 XHTML), 供校对台影印区 iframe 渲染。
+
+    注入 <base> 指向 /raw/ 资源端点, 使章节内的相对图片/样式引用可解析。
+    """
+    src, err = _epub_doc_src(collection, doc_id)
+    if err is not None:
+        return err
     try:
+        import posixpath
+        from urllib.parse import quote
         spine = _epub_spine_files(src)
         if page_num < 1 or page_num > len(spine):
             return JSONResponse(status_code=404, content={"error": "章节超出范围"})
-        import zipfile
+        chapter = spine[page_num - 1]
+        chapter_dir = posixpath.dirname(chapter)
+        base_href = ("/collections/" + quote(collection, safe="")
+                     + "/doc/" + str(doc_id) + "/raw/"
+                     + (quote(chapter_dir, safe="/") + "/" if chapter_dir else ""))
         with zipfile.ZipFile(src) as zf:
-            content = zf.read(spine[page_num - 1])
+            content = zf.read(chapter)
+        content = _inject_base(content, base_href)
         return Response(content=content, media_type='application/xhtml+xml')
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"读取章节失败: {e}"})
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/raw/{path:path}")
+async def epub_raw_asset(collection: str, doc_id: int, path: str):
+    """EPUB 包内资源 (图片/CSS/字体等), 供章节 iframe 按相对路径引用。"""
+    src, err = _epub_doc_src(collection, doc_id)
+    if err is not None:
+        return err
+    import posixpath
+    rel = posixpath.normpath(path.lstrip("/"))
+    if rel in ("", ".") or rel.startswith("../") or rel == ".." or "\x00" in rel:
+        return JSONResponse(status_code=404, content={"error": "资源路径非法"})
+    try:
+        with zipfile.ZipFile(src) as zf:
+            try:
+                data = zf.read(rel)
+            except KeyError:
+                return JSONResponse(
+                    status_code=404, content={"error": "资源不存在"})
+    except Exception as e:
+        return JSONResponse(
+            status_code=500, content={"error": f"读取资源失败: {e}"})
+    return Response(content=data, media_type=_epub_media_type(rel),
+                    headers={"Cache-Control": "max-age=3600"})
 
 
 @app.get("/collections/{collection}/doc/{doc_id}/page/{page_num}/image")
