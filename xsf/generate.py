@@ -322,7 +322,8 @@ def gen_entitygraph_core(collection, doc_ids=None, provider_id=None, progress=No
 # ════════════════════════════════════════════════════════════
 
 def autofill_page(collection, doc_id, page_num, targets=None,
-                  provider_id=None, progress=None):
+                  provider_id=None, progress=None,
+                  batch_blocks: int = 4, batch_chars: int = 800):
     """AI 填充某页多行制 draft 层 (translit/gloss/trans 子集)。"""
     progress = progress or _noop
     A = _api()
@@ -357,7 +358,8 @@ def autofill_page(collection, doc_id, page_num, targets=None,
     src_lang = doc["lang"] or "zh"
     progress(f"请求 LLM 填充 (targets={targets}, {len(blocks)} 块)…")
     results, model = autofill_rows(
-        blocks, src_lang=src_lang, targets=targets, provider_id=provider_id)
+        blocks, src_lang=src_lang, targets=targets, provider_id=provider_id,
+        batch_blocks=batch_blocks, batch_chars=batch_chars)
     filled = 0
     touched = set()      # (page_num, block_num) 待重建 FTS 的块
     conn = get_conn(collection)
@@ -424,7 +426,8 @@ def autofill_page(collection, doc_id, page_num, targets=None,
 
 
 def autofill_doc(collection, doc_id, targets=None, provider_id=None,
-                 progress=None):
+                 progress=None,
+                 batch_blocks: int = 4, batch_chars: int = 800):
     """对整个文献的每页跑 autofill (页级循环)。"""
     progress = progress or _noop
     if provider_id is None:
@@ -441,7 +444,8 @@ def autofill_doc(collection, doc_id, targets=None, provider_id=None,
     total = {"filled": 0, "empty": 0}
     for i, pg in enumerate(pages):
         progress(f"页 {pg} ({i + 1}/{len(pages)})")
-        r = autofill_page(collection, doc_id, pg, targets, provider_id)
+        r = autofill_page(collection, doc_id, pg, targets, provider_id,
+                          batch_blocks=batch_blocks, batch_chars=batch_chars)
         total["filled"] += r["filled"]
         total["empty"] += r["empty"]
     return total
