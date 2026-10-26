@@ -77,13 +77,31 @@ def _entity_expansions(conn, query: str, limit: int = 8) -> dict:
     return {query: names} if names else {}
 
 
+def _query_tokens(query: str) -> list[str]:
+    """查询分词：CJK 连续段 jieba 切词，非 CJK 连续段整段保留。
+
+    jieba 会把西里尔查询切成单字（全部 <3 字被丢弃, 只剩 LIKE 兜底且
+    匹配不上）——非 CJK 段必须整体作为一个 token (2026-10-26 修)。
+    """
+    from .ingest import _CJK_SEG
+    tokens = []
+    for i, p in enumerate(_CJK_SEG.split(query)):
+        if not p.strip():
+            continue
+        if i % 2 == 1:
+            tokens.extend(t for t in jieba.cut_for_search(p) if t.strip())
+        else:
+            tokens.append(p)
+    return tokens
+
+
 def _fts_plan_plain(query: str) -> tuple[str, list[str]]:
     """trigram 检索计划 (无实体扩展): (MATCH 表达式 or '', 短词 LIKE 兜底变体表).
 
     blocks_fts 为 trigram tokenizer: ≥3 字段走 FTS 短语 (bm25);
     1-2 字段 FTS 命不中, 收集繁简变体交由 LIKE 过滤。
     """
-    tokens = [t for t in jieba.cut_for_search(query) if t.strip()]
+    tokens = _query_tokens(query)
     if not tokens:
         return '', []
     parts, like_terms = [], []
@@ -140,7 +158,7 @@ def _fts_where(match_expr: str, like_terms: list[str],
 
 def get_highlight_terms(query: str) -> list[str]:
     """生成用于前端高亮的所有繁简变体（按长度降序）。"""
-    tokens = [t for t in jieba.cut_for_search(query) if t.strip()]
+    tokens = _query_tokens(query)
     if not tokens:
         return []
     all_terms: set[str] = set()

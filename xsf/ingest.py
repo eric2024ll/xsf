@@ -8,10 +8,26 @@ from pathlib import Path
 from .db import get_conn
 from .suspect import detect_suspect
 
+_CJK_SEG = re.compile(r'([\u4e00-\u9fff]+)')
+
 
 def _tokenize(text: str) -> str:
-    """jieba 分词，空格连接，供 FTS5 索引"""
-    return ' '.join(jieba.cut_for_search(text))
+    """分词，空格连接，供 FTS5 trigram 索引。
+
+    仅 CJK 连续段走 jieba；非 CJK 段（西里尔/拉丁等）原样保留——
+    jieba 会把西里尔文本切成单字，打散 trigram 索引（2026-10-26 修，
+    《Историческая информатика》PDF 入库检索全空暴露）。
+    """
+    parts = _CJK_SEG.split(text)
+    out = []
+    for i, p in enumerate(parts):
+        if not p.strip():
+            continue
+        if i % 2 == 1:  # 捕获组 = CJK 连续段
+            out.extend(t for t in jieba.cut_for_search(p) if t.strip())
+        else:
+            out.append(p)
+    return ' '.join(out)
 
 
 def _source_flags(source_tags: str):
