@@ -104,7 +104,7 @@ def _fts_plan_plain(query: str) -> tuple[str, list[str]]:
     tokens = _query_tokens(query)
     if not tokens:
         return '', []
-    parts, like_terms = [], []
+    parts, like_groups = [], []
     for t in tokens:
         variants = sorted(_all_variants(t))
         if len(variants) > 32:
@@ -112,9 +112,9 @@ def _fts_plan_plain(query: str) -> tuple[str, list[str]]:
         if len(t) >= 3:
             parts.append('(' + ' OR '.join(f'"{v}"' for v in variants) + ')')
         else:
-            like_terms.extend(variants)
+            like_groups.append(variants)
     match_expr = ' AND '.join(parts)
-    return match_expr, like_terms
+    return match_expr, like_groups
 
 
 def _fts_plan(query: str, expansions: dict = None) -> tuple[str, list[str]]:
@@ -139,20 +139,28 @@ def _fts_plan(query: str, expansions: dict = None) -> tuple[str, list[str]]:
     return _fts_plan_plain(query)
 
 
-def _fts_where(match_expr: str, like_terms: list[str],
+def _fts_where(match_expr: str, like_groups: list[list[str]],
                alias: str = 'f') -> tuple[str, list]:
-    """构造 WHERE 片段 + 参数 (MATCH 与 LIKE 组合; 两者可只有其一)."""
+    """构造 WHERE 片段 + 参数 (MATCH 与 LIKE 组合; 两者可只有其一).
+
+    like_groups: 每个 token 一组繁简变体——组内 OR (命中任一变体即可),
+    组间 AND (多词须都命中)。此前变体展平后彼此 AND, 繁体变体查不到
+    会杀掉整条查询 (2026-10-26 修, 暴露于俄文译文检索)。
+    """
     conds, params = [], []
     if match_expr:
         conds.append(f'blocks_fts MATCH ?')
         params.append(match_expr)
-    if like_terms:
-        esc = [t.replace('\\', '\\\\').replace('%', r'\%')
-               .replace('_', r'\_') for t in like_terms]
-        conds.append('(' + ' OR '.join(
-            f"({alias}.text LIKE ? ESCAPE '\\' OR "
-            f"{alias}.trans LIKE ? ESCAPE '\\')" for _ in esc) + ')')
-        params.extend(v for e in esc for v in (f'%{e}%', f'%{e}%'))
+    if like_groups:
+        groups = []
+        for variants in like_groups:
+            esc = [t.replace('\\', '\\\\').replace('%', r'\%')
+                   .replace('_', r'\_') for t in variants]
+            groups.append('(' + ' OR '.join(
+                f"({alias}.text LIKE ? ESCAPE '\\' OR "
+                f"{alias}.trans LIKE ? ESCAPE '\\')" for _ in esc) + ')')
+            params.extend(v for e in esc for v in (f'%{e}%', f'%{e}%'))
+        conds.append(' AND '.join(groups))
     return ' AND '.join(conds), params
 
 
