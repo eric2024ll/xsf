@@ -63,7 +63,13 @@ jobs:
             gh release upload "$env:GITHUB_REF_NAME" dist/*.zip --clobber --repo "$env:GITHUB_REPOSITORY"
           } else {
             # release 说明 = tag 注释文字 (打 tag 时 -m 写的内容), 不用 --generate-notes 免出完整 changelog
-            $notes = (git tag -l --format='%(contents)' "$env:GITHUB_REF_NAME") -join "`n"
+            # 经 GitHub API 取 (actions/checkout 默认 shallow, 本地 git tag 对象注释不可靠; v0.3.0/v0.3.1 由此错成 commit message)
+            $objType = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:GITHUB_REF_NAME" --jq '.object.type'
+            $notes = ''
+            if ($objType -eq 'tag') {
+              $tagSha = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:GITHUB_REF_NAME" --jq '.object.sha'
+              $notes = gh api "repos/$env:GITHUB_REPOSITORY/git/tags/$tagSha" --jq '.message'
+            }
             if (-not $notes.Trim()) { $notes = "$env:GITHUB_REF_NAME" }
             $notes | Out-File -Encoding utf8 release-notes.txt
             gh release create "$env:GITHUB_REF_NAME" dist/*.zip --notes-file release-notes.txt --repo "$env:GITHUB_REPOSITORY"
