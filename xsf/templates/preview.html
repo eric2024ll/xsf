@@ -45,6 +45,23 @@
   font-size: 0.85rem; color: var(--primary);
 }
 .show-more-btn:hover { background: var(--accent); }
+/* 原件统一模型 (2026-10-28): 左原件右解析双栏 */
+.split { display: flex; height: calc(100vh - 92px); }
+.split .pane { flex: 1 1 50%; overflow: auto; min-width: 0; }
+.split .pane.left { border-right: 1px solid var(--border); }
+.split .pane iframe { width: 100%; height: 100%; border: none; background: #fff; }
+.split .pane .pane-head {
+  position: sticky; top: 0; z-index: 2; background: var(--card-bg);
+  padding: 6px 14px; font-size: 0.78rem; color: var(--text-muted);
+  border-bottom: 1px solid var(--border); display:flex; gap:10px; align-items:center;
+}
+.split .pane.right .doc-body { max-width: none; padding: 14px 20px; }
+.orig-upload { padding: 30px; text-align: center; color: var(--text-muted); font-size: 0.85rem; }
+.orig-upload label {
+  display: inline-block; padding: 6px 16px; margin-top: 10px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius); color: var(--primary);
+}
+.orig-upload label:hover { background: var(--accent); }
 </style>
 </head>
 <body data-page="preview">
@@ -62,14 +79,53 @@
     <a href="/collections/{{ collection | urlencode }}/doc/{{ doc_id }}/proofread">校对</a>
   </span>
 </div>
+{%- set has_orig = doc.linked_pdf %}
+{%- if has_orig or doc.original_virtual %}
+<div class="split">
+  <div class="pane left" id="origPane">
+    <div class="pane-head">
+      <span>原件{% if has_orig %} · {{ doc.linked_pdf }}{% endif %}</span>
+      {% if has_orig %}<a href="/collections/{{ collection | urlencode }}/doc/{{ doc_id }}/original" target="_blank">新窗打开</a>{% endif %}
+    </div>
+    {% if has_orig %}
+    <iframe src="/collections/{{ collection | urlencode }}/doc/{{ doc_id }}/original" title="原件"></iframe>
+    {% else %}
+    <div class="orig-upload">虚拟文档（bib-only，无原件）</div>
+    {% endif %}
+  </div>
+  <div class="pane right">
+    <div class="pane-head"><span>解析文本</span></div>
+    <div class="doc-body" id="docBody">
+      <div class="viewer-loading">加载中...</div>
+    </div>
+  </div>
+</div>
+{% else %}
 <div class="doc-body" id="docBody">
   <div class="viewer-loading">加载中...</div>
 </div>
+<div class="orig-upload">
+  尚未挂载原件。
+  <label>上传原件（pdf / md / docx / epub）
+    <input type="file" accept=".pdf,.md,.markdown,.doc,.docx,.epub,.png,.jpg,.jpeg,.webp" hidden
+           onchange="uploadOriginal(this)">
+  </label>
+</div>
+{% endif %}
 {% endif %}
 
 <script>
 var DOC_ID = {{ doc_id | tojson if doc_id else 'null' }};
 var COLLECTION = {{ collection | tojson }};
+
+async function uploadOriginal(input){
+  if(!input.files || !input.files[0]) return;
+  var fd = new FormData();
+  fd.append('file', input.files[0]);
+  var res = await fetch('/collections/'+encodeURIComponent(COLLECTION)+'/doc/'+DOC_ID+'/link-pdf', {method:'POST', body:fd});
+  if(res.ok){ location.reload(); }
+  else { var d = await res.json().catch(function(){return {};}); alert(d.error || '上传失败'); }
+}
 var _TAG_LABELS = { primary: '原始史料', research: '研究文献', reference: '工具书' };
 var _tags = [];
 var VIEWER_LIMIT = 500;

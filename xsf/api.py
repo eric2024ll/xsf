@@ -1205,6 +1205,11 @@ async def api_add(
                     author=author or None,
                     source_tags=source_tags,
                 )
+                # 原件统一模型 (2026-10-28): 上传入库即把原件移入
+                # files/<id>/original.<ext> (移入式, uploads 不留双份)
+                from .ingest import attach_original
+                await asyncio.to_thread(
+                    attach_original, collection, r['doc_id'], dst, True)
                 cross = _cross_collection_hits(fname, collection)
                 entry = {
                     "filename": fname,
@@ -1475,36 +1480,46 @@ async def api_update_doc(collection: str, doc_id: int,
 
 @app.post("/collections/{collection}/doc/{doc_id}/link-pdf")
 async def api_link_pdf(collection: str, doc_id: int,
-                       file: UploadFile = File(...)):
-    """为文本文档（如 md）关联 PDF 文件（纯展示，不 OCR）。"""
+                       file: UploadFile = File(None)):
+    """为文档补挂原件（2026-10-28 原件统一模型; 兼容旧「关联 PDF」前端）。
+
+    原件存 files/<doc_id>/original.<ext>，linked_pdf 字段记相对路径，
+    同时清除 original_virtual。任意常见类型均可（pdf/md/docx/epub/图片）。
+    """
     try:
-        fname = file.filename or "linked.pdf"
+        fname = file.filename or "original.pdf"
         ext = _file_ext(fname)
-        if ext != 'pdf':
+        allowed = {'pdf', 'md', 'markdown', 'epub', 'doc', 'docx', 'docm',
+                   'png', 'jpg', 'jpeg', 'webp', 'tif', 'tiff'}
+        if ext not in allowed:
             return JSONResponse(
                 status_code=400,
-                content={"error": "仅支持 PDF 文件"},
+                content={"error": f"不支持的文件类型: {ext}"},
             )
 
-        upload_dir = get_upload_dir(collection)
-        dst = upload_dir / fname
         content = await file.read()
+        from .ingest import attach_original as _attach
+        from .config import get_original_dir
+        dst_dir = get_original_dir(collection, doc_id)
+        dst = dst_dir / f"original{'.md' if ext == 'markdown' else '.' + ext}"
         with open(dst, "wb") as f:
             f.write(content)
 
         page_count = 1
-        try:
-            pdf_doc = pymupdf.open(dst)
-            page_count = len(pdf_doc)
-            pdf_doc.close()
-        except Exception:
-            pass
+        if dst.suffix.lower() == '.pdf':
+            try:
+                pdf_doc = pymupdf.open(dst)
+                page_count = len(pdf_doc)
+                pdf_doc.close()
+            except Exception:
+                pass
 
         conn = get_conn(collection)
         try:
             cur = conn.execute(
-                "UPDATE documents SET linked_pdf = ? WHERE id = ?",
-                (fname, doc_id),
+                "UPDATE documents SET linked_pdf = ?, original_virtual = 0 "
+                "WHERE id = ?",
+                (f"files/{doc_id}/original{dst.suffix.lower()}", doc_id),
             )
             if cur.rowcount == 0:
                 return JSONResponse(
@@ -1518,11 +1533,37 @@ async def api_link_pdf(collection: str, doc_id: int,
         return {
             "status": "ok",
             "doc_id": doc_id,
-            "linked_pdf": fname,
+            "linked_pdf": f"files/{doc_id}/original{dst.suffix.lower()}",
             "page_count": page_count,
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/original")
+async def api_original_file(collection: str, doc_id: int):
+    """返回文献原件（inline 预览; 2026-10-28 原件统一模型）。"""
+    from .ingest import get_original_file
+    from .config import resolve_original_path
+    conn = get_conn(collection)
+    try:
+        doc = conn.execute(
+            "SELECT linked_pdf FROM documents WHERE id = ?", (doc_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if doc is None:
+        return JSONResponse(status_code=404, content={"error": "文献不存在"})
+    p = resolve_original_path(collection, doc["linked_pdf"])
+    if not p or not p.exists():
+        return JSONResponse(status_code=404, content={"error": "无原件"})
+    media = {
+        '.pdf': 'application/pdf', '.md': 'text/plain; charset=utf-8',
+        '.epub': 'application/epub+zip', '.png': 'image/png',
+        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp', '.html': 'text/html',
+    }.get(p.suffix.lower(), 'application/octet-stream')
+    return FileResponse(str(p), media_type=media)
 
 
 # ── 文献列表 ──────────────────────────────────────────
@@ -1600,7 +1641,7 @@ async def preview_page(request: Request, collection: str, doc_id: int):
         try:
             doc = conn.execute(
                 """SELECT id, title, author, filename, page_count, doc_type,
-                          source_tags, cite_key
+                          source_tags, cite_key, linked_pdf, original_virtual
                    FROM documents WHERE id = ?""",
                 (doc_id,),
             ).fetchone()
@@ -3870,11 +3911,14 @@ async def proofread_page(
 
             page_count = doc["page_count"] or 1
 
-            # md 文档关联了 PDF 时，翻页范围跟随 PDF
+            # md 文档关联了原件 PDF 时，翻页范围跟随 PDF
+            # (2026-10-28 原件统一模型: linked_pdf = files/<id>/ 原件路径,
+            #  旧格式 uploads 文件名兼容读取)
             linked_pdf = doc["linked_pdf"] if "linked_pdf" in doc.keys() else None
             if linked_pdf:
-                lp_path = get_upload_path(collection, linked_pdf)
-                if lp_path.exists():
+                from .config import resolve_original_path
+                lp_path = resolve_original_path(collection, linked_pdf)
+                if lp_path and lp_path.exists():
                     try:
                         lp_doc = pymupdf.open(lp_path)
                         page_count = max(page_count, len(lp_doc))
@@ -4203,7 +4247,10 @@ async def page_image(collection: str, doc_id: int, page_num: int):
         finally:
             conn.close()
 
-        pdf_path = get_upload_path(collection, filename)
+        from .config import resolve_original_path
+        pdf_path = resolve_original_path(collection, doc["linked_pdf"])
+        if not pdf_path or not pdf_path.exists():
+            pdf_path = get_upload_path(collection, doc["filename"])
         if not pdf_path.exists():
             return JSONResponse(
                 status_code=404,

@@ -196,6 +196,7 @@ def cmd_doctor(args):
     """
     import os
     import socket
+    import sqlite3
     import urllib.request
 
     from .config import get_db_dir, find_orphan_collections
@@ -288,6 +289,58 @@ def cmd_doctor(args):
     if db_orphans or dir_orphans:
         print('\n提示: 孤儿目录可在 Web 书架页用同名新建书架修复 (自动补建 DB);'
               ' 投放孤儿修复后 folder_scan 下一周期即自动认领 uploads/ 文件')
+
+    # ── 原件一致性体检 (2026-10-28 原件统一模型) ──
+    print('\n== 原件体检 ==')
+    from .config import get_collections_dir
+    croot = get_collections_dir()
+    tot_orig = tot_virtual = tot_missing = 0
+    for c in known:
+        dbp = db_dir / c / 'xsf.db'
+        if not dbp.exists():
+            continue
+        conn = sqlite3.connect(dbp)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                'SELECT id, filename, linked_pdf, original_virtual '
+                'FROM documents').fetchall()
+        except sqlite3.OperationalError:
+            conn.close()
+            continue
+        n_orig = n_virt = n_miss = 0
+        misses = []
+        for r in rows:
+            if r['original_virtual']:
+                n_virt += 1
+                continue
+            lp = r['linked_pdf'] or ''
+            p = None
+            if lp:
+                p = (croot / c / lp) if lp.startswith('files/') \
+                    else (croot / c / 'uploads' / lp)
+            if p and p.is_file():
+                n_orig += 1
+                continue
+            if (croot / c / 'uploads' / (r['filename'] or '')).is_file():
+                n_orig += 1
+                continue
+            n_miss += 1
+            if len(misses) < 5:
+                misses.append(f"#{r['id']} {r['filename']}")
+        conn.close()
+        tot_orig += n_orig
+        tot_virtual += n_virt
+        tot_missing += n_miss
+        line = f'  {c}: 原件 {n_orig}, 虚拟 {n_virt}'
+        if n_miss:
+            line += f', !断链 {n_miss} (如: {"; ".join(misses)})'
+        print(line)
+    if tot_missing:
+        print(f'  ! 共 {tot_missing} 篇断链 — 跑 scripts/migrate_original_files.py '
+              '对账迁移; 确无原件的标 original_virtual=1')
+    else:
+        print(f'  合计: 原件 {tot_orig}, 虚拟 {tot_virtual}, 断链 0')
 
 
 def _progress(msg):

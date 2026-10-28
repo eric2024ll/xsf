@@ -886,10 +886,10 @@ mark {
   {% else %}
   <div class="link-pdf-bar">
     <label class="link-pdf-btn">
-      关联 PDF
-      <input type="file" accept="application/pdf" onchange="uploadLinkedPdf(this)" hidden>
+      上传原件
+      <input type="file" accept=".pdf,.md,.doc,.docx,.epub,application/pdf" onchange="uploadLinkedPdf(this)" hidden>
     </label>
-    <span class="link-pdf-hint">上传 PDF 关联此文档（纯展示，不 OCR）</span>
+    <span class="link-pdf-hint">补挂原件到 files/（入库即存原件，此处用于补挂）</span>
   </div>
   {% endif %}
 

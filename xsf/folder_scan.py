@@ -133,6 +133,10 @@ def _ingest_new(collection: str) -> tuple[list, list, list]:
             else:
                 r = ingest_markdown(f, collection=collection)
                 r['ext'] = 'md'
+            # 原件统一模型 (2026-10-28): 投放入库即把原件移入
+            # files/<id>/original.<ext> (移入式, 不留双份)
+            from .ingest import attach_original
+            attach_original(collection, r['doc_id'], f, move=True)
             r['filename'] = fn
             # PDF 提取零行才入 OCR 队列 (2026-10-21 决策;
             # 有文本层的不重跑, 防覆盖优质原生提取)
@@ -154,19 +158,38 @@ def _ingest_new(collection: str) -> tuple[list, list, list]:
 
 
 def _missing(collection: str) -> list:
-    """反向 diff: DB 有记录但投放目录中文件已消失. 只报告不删除 (2026-09-19 决策,
-    库是事实源, 删原件≠删记录; 清理走 purge-missing 接口人工确认)."""
+    """反向 diff: DB 有记录但原件已消失. 只报告不删除 (2026-09-19 决策,
+    库是事实源, 删原件≠删记录; 清理走 purge-missing 接口人工确认).
+
+    2026-10-28 原件统一模型: 原件在 files/<id>/ 的文档视为在场;
+    无原件文档 (original_virtual=1) 不报。
+    """
     updir = _upload_dir(collection)
     try:
         rows = _query(
-            collection, 'SELECT id, filename FROM documents WHERE filename != \'\'')
+            collection,
+            "SELECT id, filename, linked_pdf, original_virtual "
+            "FROM documents WHERE filename != ''")
     except Exception:
         return []
     present: set = set()
     if updir.is_dir():
         present = {f.name for f in updir.iterdir() if f.is_file()}
-    return [{'id': r['id'], 'filename': r['filename']}
-            for r in rows if r['filename'] not in present]
+    cdir = get_collections_dir() / collection
+    out = []
+    for r in rows:
+        if r['original_virtual']:
+            continue
+        lp = r['linked_pdf'] or ''
+        if lp.startswith('files/'):
+            if (cdir / lp).is_file():
+                continue
+        elif lp and (updir / lp).is_file():
+            continue
+        if r['filename'] in present:
+            continue
+        out.append({'id': r['id'], 'filename': r['filename']})
+    return out
 
 
 def _query(collection: str, sql: str, params=()):
