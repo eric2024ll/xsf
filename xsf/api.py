@@ -4038,7 +4038,14 @@ async def proofread_page(
         # 按 150 DPI 渲染时图片自然尺寸
         render_width = None
         render_height = None
-        pdf_path = get_upload_path(collection, doc["filename"])
+        # 原件统一模型 (2026-10-28): 原件在 files/<id>/ (linked_pdf),
+        # 旧格式 uploads/<linked_pdf> 兼容; 再回退 filename (uploads 投放)
+        from .config import resolve_original_path
+        pdf_path = resolve_original_path(
+            collection,
+            doc["linked_pdf"] if "linked_pdf" in doc.keys() else None)
+        if not pdf_path or not pdf_path.exists():
+            pdf_path = get_upload_path(collection, doc["filename"])
         if pdf_path.exists():
             try:
                 pdf_doc = pymupdf.open(pdf_path)
