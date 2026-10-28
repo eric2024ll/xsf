@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from xsf.env import load_env  # noqa: E402
+load_env()  # XSF_COLLECTIONS_DIR 等来自 ~/xsf/.env
 from xsf.config import get_collections_dir, get_db_dir, list_collections  # noqa: E402
 
 

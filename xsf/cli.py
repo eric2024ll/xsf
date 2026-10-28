@@ -199,7 +199,7 @@ def cmd_doctor(args):
     import sqlite3
     import urllib.request
 
-    from .config import get_db_dir, find_orphan_collections
+    from .config import get_collections_dir, get_db_dir, find_orphan_collections
     from .env import find_env_file
 
     print('== 数据目录 ==')
@@ -292,7 +292,6 @@ def cmd_doctor(args):
 
     # ── 原件一致性体检 (2026-10-28 原件统一模型) ──
     print('\n== 原件体检 ==')
-    from .config import get_collections_dir
     croot = get_collections_dir()
     tot_orig = tot_virtual = tot_missing = 0
     for c in known:
