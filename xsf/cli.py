@@ -102,9 +102,12 @@ def cmd_add(args):
         raise
 
     title = result.get('title') or pdf_path.name
+    from .ingest import attach_original
+    orig = attach_original(args.collection, result['doc_id'], pdf_path)
     print(f'已导入: {title}')
     print(f'  书架: {args.collection}')
     print(f'  页/块/行: {result["pages"]} / {result["blocks"]} / {result["lines"]}')
+    print(f'  原件: {orig}')
 
 
 def cmd_search(args):

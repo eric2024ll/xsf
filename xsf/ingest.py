@@ -1,14 +1,65 @@
 import json
 import re
+import shutil
 import posixpath
 
 import pymupdf
 import jieba
 from pathlib import Path
 from .db import get_conn
+from .config import get_collections_dir
 from .suspect import detect_suspect
 
 _CJK_SEG = re.compile(r'([\u4e00-\u9fff]+)')
+
+
+def attach_original(collection: str, doc_id: int, src_path: str | Path,
+                    move: bool = False) -> Path:
+    """入库即存原件（2026-10-28 原件统一模型）。
+
+    把原件存到 files/<doc_id>/original.<ext> 并回写 linked_pdf
+    （字段语义 = 原件相对路径），同时清除 original_virtual。
+    move=True 用于 uploads 投放流（移入式，避免双份存储）；
+    CLI/上传自用户路径时用默认复制。
+
+    设计: mem 小书房/完善路线图 (2026-10-28 用户裁定)
+    """
+    src = Path(src_path)
+    dst_dir = get_collections_dir() / collection / 'files' / str(doc_id)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    rel = f'files/{doc_id}/original{src.suffix.lower()}'
+    dst = get_collections_dir() / collection / rel
+    if move:
+        shutil.move(str(src), str(dst))
+    else:
+        shutil.copy2(src, dst)
+    conn = get_conn(collection)
+    try:
+        conn.execute(
+            'UPDATE documents SET linked_pdf = ?, original_virtual = 0 '
+            'WHERE id = ?',
+            (rel, doc_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return dst
+
+
+def get_original_file(collection: str, doc_id: int) -> Path | None:
+    """读某文献的原件绝对路径（不存在返回 None）。"""
+    from .config import resolve_original_path
+    conn = get_conn(collection)
+    try:
+        r = conn.execute(
+            'SELECT linked_pdf FROM documents WHERE id = ?', (doc_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not r or not r['linked_pdf']:
+        return None
+    p = resolve_original_path(collection, r['linked_pdf'])
+    return p if (p and p.exists()) else None
 
 
 def _tokenize(text: str) -> str:

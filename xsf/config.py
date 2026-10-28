@@ -123,6 +123,32 @@ def get_upload_path(collection: str, filename: str) -> Path:
     return get_collections_dir() / collection / 'uploads' / filename
 
 
+def get_original_dir(collection: str, doc_id: int) -> Path:
+    """某文献的原件目录: <collections>/{collection}/files/{doc_id}/
+
+    2026-10-28 原件统一模型: 入库即存原件, 文本层是派生物。
+    目录不存在时自动创建。
+    """
+    d = get_collections_dir() / collection / 'files' / str(doc_id)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def resolve_original_path(collection: str, linked_pdf: str | None) -> Path | None:
+    """解析 linked_pdf 字段 → 原件绝对路径（纯拼接，不检查存在性）。
+
+    - 新格式: files/<id>/original.<ext>（相对书架目录）
+    - 旧格式: 纯文件名（历史 .snap-N.pdf / uploads 投放名, 兼容读取）
+    - 空 → None
+    """
+    if not linked_pdf:
+        return None
+    v = linked_pdf.strip()
+    if v.startswith('files/'):
+        return get_collections_dir() / collection / v
+    return get_upload_path(collection, v)
+
+
 def get_ocr_config_path() -> Path:
     """OCR 配置文件路径: <XSF_DATA>/ocr-config.json"""
     return get_data_dir() / 'ocr-config.json'

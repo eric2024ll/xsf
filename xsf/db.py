@@ -216,6 +216,13 @@ def _migrate(conn):
         conn.execute("ALTER TABLE documents ADD COLUMN bib_data TEXT DEFAULT NULL")
     if "linked_pdf" not in doc_cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_pdf TEXT DEFAULT NULL")
+    # 2026-10-28 原件统一模型: linked_pdf 字段语义改为「原件路径」(
+    # files/<id>/original.<ext>, 相对书架目录); 本列为 1 表示允许无原件的
+    # 虚拟文档 (bib-only, 如 autofill 测试批量), 不在原件体检中报错。
+    # 设计: mem 小书房/完善路线图 (2026-10-28 用户裁定, 废除 linked_pdf
+    # 旧「关联快照」逻辑, 统一「左原件右解析」)
+    if "original_virtual" not in doc_cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN original_virtual INTEGER DEFAULT 0")
 
     # 轻量修订史 (P1, 2026-10-17): 人工文本修订逐块留痕, 依据最终必填
     # (空 basis=待补, 导出变更包时拒绝), 入包勾选供语料包变更通道
