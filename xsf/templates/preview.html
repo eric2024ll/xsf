@@ -56,6 +56,25 @@
   border-bottom: 1px solid var(--border); display:flex; gap:10px; align-items:center;
 }
 .split .pane.right .doc-body { max-width: none; padding: 14px 20px; }
+/* 原件 PDF 查看器: 按页 PNG + 缩放 (2026-10-28, 原生 viewer 在 iframe 内不可缩放) */
+.pdf-viewer { padding: 10px; overflow: auto; height: calc(100% - 34px); background: var(--accent, #f3f3f3); }
+.pdf-viewer img {
+  display: block; margin: 0 auto 8px; width: var(--zoom, 100%);
+  box-shadow: 0 1px 4px rgba(0,0,0,.25); background: #fff; cursor: zoom-in;
+}
+.pdf-toolbar {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+}
+.pdf-toolbar button {
+  padding: 2px 10px; font-size: 0.8rem; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--text);
+}
+.pdf-toolbar button:hover { background: var(--accent); }
+.pdf-toolbar .zval { min-width: 46px; text-align: center; font-size: 0.8rem; }
+.pdf-toolbar input[type=number] {
+  width: 58px; font-size: 0.8rem; padding: 2px 4px;
+  border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--text);
+}
 .orig-upload { padding: 30px; text-align: center; color: var(--text-muted); font-size: 0.85rem; }
 .orig-upload label {
   display: inline-block; padding: 6px 16px; margin-top: 10px; cursor: pointer;
@@ -88,7 +107,34 @@
       {% if has_orig %}<a href="/collections/{{ collection | urlencode }}/doc/{{ doc_id }}/original" target="_blank">新窗打开</a>{% endif %}
     </div>
     {% if has_orig %}
-    <iframe src="/collections/{{ collection | urlencode }}/doc/{{ doc_id }}/original" title="原件"></iframe>
+      {%- set lp = doc.linked_pdf or '' -%}
+      {%- set is_orig_pdf = lp.lower().endswith('.pdf') or doc.doc_type in ('born-digital', 'scanned', 'pdf_native') -%}
+      {% if is_orig_pdf %}
+      <div class="pdf-toolbar">
+        <button onclick="pvPage(-1)" title="上一页">‹</button>
+        <input type="number" id="pvPageInput" min="1" value="1"
+               onchange="pvGo(parseInt(this.value)||1)" title="页码">
+        <span class="zval">/ {{ doc.page_count or 1 }}</span>
+        <button onclick="pvPage(1)" title="下一页">›</button>
+        <span style="flex:1"></span>
+        <button onclick="pvZoom(-10)" title="缩小">−</button>
+        <span class="zval" id="pvZoomVal">100%</span>
+        <button onclick="pvZoom(10)" title="放大">＋</button>
+        <button onclick="pvZoomSet(100)" title="重置">100%</button>
+        <button onclick="pvFit()" title="适应宽度">适宽</button>
+      </div>
+      <div class="pdf-viewer" id="pvScroll">
+        <img id="pvImg" src="/collections/{{ collection | urlencode }}/doc/{{ doc_id }}/page/1/image"
+             alt="第 1 页">
+      </div>
+      {% elif lp.lower().endswith(('.md', '.markdown', '.txt', '.html')) %}
+      <iframe src="/collections/{{ collection | urlencode }}/doc/{{ doc_id }}/original" title="原件"></iframe>
+      {% else %}
+      <div style="padding:20px;text-align:center;">
+        <img src="/collections/{{ collection | urlencode }}/doc/{{ doc_id }}/original"
+             style="max-width:100%;" alt="原件">
+      </div>
+      {% endif %}
     {% else %}
     <div class="orig-upload">虚拟文档（bib-only，无原件）</div>
     {% endif %}
@@ -126,6 +172,56 @@ async function uploadOriginal(input){
   if(res.ok){ location.reload(); }
   else { var d = await res.json().catch(function(){return {};}); alert(d.error || '上传失败'); }
 }
+
+// ── 原件 PDF 查看器: 翻页/缩放/Ctrl滚轮 (2026-10-28) ──
+var PV = { page: 1, count: {{ (doc.page_count or 1) | tojson }}, zoom: 100, fit: true };
+
+function pvRender(){
+  var img = document.getElementById('pvImg');
+  if(!img) return;
+  img.style.setProperty('--zoom', PV.fit ? '100%' : PV.zoom + '%');
+  img.style.width = PV.fit ? '100%' : PV.zoom + '%';
+  var v = document.getElementById('pvZoomVal');
+  if(v) v.textContent = PV.zoom + '%';
+  var inp = document.getElementById('pvPageInput');
+  if(inp) inp.value = PV.page;
+  img.src = '/collections/'+encodeURIComponent(COLLECTION)+'/doc/'+DOC_ID+'/page/'+PV.page+'/image';
+}
+function pvPage(d){
+  var n = PV.page + d;
+  if(n < 1 || n > PV.count) return;
+  PV.page = n; pvRender();
+}
+function pvGo(n){
+  n = Math.max(1, Math.min(PV.count, n));
+  PV.page = n; pvRender();
+}
+function pvZoom(d){ PV.fit = false; PV.zoom = Math.max(20, Math.min(500, PV.zoom + d)); pvRender(); }
+function pvZoomSet(z){ PV.fit = false; PV.zoom = Math.max(20, Math.min(500, z)); pvRender(); }
+function pvFit(){ PV.fit = true; pvRender(); }
+
+(function(){
+  var img = document.getElementById('pvImg');
+  if(!img) return;
+  // Ctrl+滚轮缩放 (阻止浏览器整页缩放)
+  var sc = document.getElementById('pvScroll');
+  sc.addEventListener('wheel', function(e){
+    if(!e.ctrlKey) return;
+    e.preventDefault();
+    PV.fit = false;
+    PV.zoom = Math.max(20, Math.min(500, PV.zoom + (e.deltaY < 0 ? 10 : -10)));
+    pvRender();
+  }, { passive: false });
+  // 点击图片: 放大一档 (原 zoom-in 光标的落地动作)
+  img.addEventListener('click', function(){ pvZoom(25); });
+  // 左右方向键翻页 (不干扰右侧文本滚动)
+  document.addEventListener('keydown', function(e){
+    var t = e.target && e.target.tagName;
+    if(t === 'INPUT' || t === 'TEXTAREA') return;
+    if(e.key === 'ArrowLeft') pvPage(-1);
+    else if(e.key === 'ArrowRight') pvPage(1);
+  });
+})();
 var _TAG_LABELS = { primary: '原始史料', research: '研究文献', reference: '工具书' };
 var _tags = [];
 var VIEWER_LIMIT = 500;
