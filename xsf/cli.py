@@ -307,14 +307,18 @@ def cmd_doctor(args):
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
-                'SELECT id, filename, linked_pdf, original_virtual '
+                'SELECT id, filename, linked_pdf, original_virtual, doc_type '
                 'FROM documents').fetchall()
         except sqlite3.OperationalError:
             conn.close()
             continue
         n_orig = n_virt = n_miss = n_dirty = 0
+        n_legacy_type = 0
         misses, dirts = [], []
         for r in rows:
+            if r['doc_type'] in ('epub', 'office'):
+                # 格式收敛 (2026-10-31) 后不应再有 epub/office 类型
+                n_legacy_type += 1
             if r['original_virtual']:
                 n_virt += 1
                 continue
@@ -338,6 +342,8 @@ def cmd_doctor(args):
         tot_missing += n_miss
         tot_dirty += n_dirty
         line = f'  {c}: 原件 {n_orig}, 虚拟 {n_virt}'
+        if n_legacy_type:
+            line += f', !退役类型 {n_legacy_type} (epub/office, 跑 convert_epub_docs.py)'
         if n_dirty:
             line += f', !脏路径 {n_dirty} (如: {"; ".join(dirts)})'
         if n_miss:

@@ -787,7 +787,6 @@ mark {
 <div class="error-box">{{ error }}</div>
 {% else %}
 {% set is_md = doc.doc_type == 'markdown' %}
-{% set is_epub = doc.doc_type == 'epub' %}
 {% set has_pdf = is_md and linked_pdf %}
 
 {% include '_nav.html' %}
@@ -815,7 +814,7 @@ mark {
 {% endmacro %}
 
 <div class="main" id="main" data-tab="img">
-  {% if not is_md and not is_epub %}
+  {% if not is_md %}
   <div class="mobile-tabs">
     <button id="tabImg" class="active" onclick="switchTab('img')">圖</button>
     <button id="tabTxt" onclick="switchTab('txt')">文</button>
@@ -865,14 +864,6 @@ mark {
       <div class="draw-layer" id="drawLayer"></div>
     </div>
   </div>
-  {% elif is_epub %}
-  <div class="left" id="leftPanel" style="overflow:auto;">
-    {{ page_nav_left() }}
-    <iframe id="pageSource"
-           src="/collections/{{ collection }}/doc/{{ doc.id }}/page/{{ page_num }}/source"
-           style="width:100%;height:calc(100vh - 140px);border:1px solid var(--border);border-radius:var(--radius);background:#fff;"
-           title="第 {{ page_num }} 章（spine 原文）"></iframe>
-  </div>
   {% elif has_pdf %}
   <div class="left" id="leftPanel" style="overflow:auto;">
     {{ page_nav_left() }}
@@ -887,7 +878,7 @@ mark {
   <div class="link-pdf-bar">
     <label class="link-pdf-btn">
       上传原件
-      <input type="file" accept=".pdf,.md,.doc,.docx,.epub,application/pdf" onchange="uploadLinkedPdf(this)" hidden>
+      <input type="file" accept=".pdf,.md,application/pdf" onchange="uploadLinkedPdf(this)" hidden>
     </label>
     <span class="link-pdf-hint">补挂原件到 files/（入库即存原件，此处用于补挂）</span>
   </div>
