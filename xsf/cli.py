@@ -197,6 +197,7 @@ def cmd_doctor(args):
     import os
     import socket
     import sqlite3
+    import time
     import urllib.request
 
     from .config import get_collections_dir, get_db_dir, find_orphan_collections
@@ -290,10 +291,10 @@ def cmd_doctor(args):
         print('\n提示: 孤儿目录可在 Web 书架页用同名新建书架修复 (自动补建 DB);'
               ' 投放孤儿修复后 folder_scan 下一周期即自动认领 uploads/ 文件')
 
-    # ── 原件一致性体检 (2026-10-28 原件统一模型) ──
+    # ── 原件一致性体检 (2026-10-31 单布局: 只认 files/<id>/) ──
     print('\n== 原件体检 ==')
     croot = get_collections_dir()
-    tot_orig = tot_virtual = tot_missing = 0
+    tot_orig = tot_virtual = tot_missing = tot_dirty = 0
     for c in known:
         dbp = db_dir / c / 'xsf.db'
         if not dbp.exists():
@@ -307,39 +308,62 @@ def cmd_doctor(args):
         except sqlite3.OperationalError:
             conn.close()
             continue
-        n_orig = n_virt = n_miss = 0
-        misses = []
+        n_orig = n_virt = n_miss = n_dirty = 0
+        misses, dirts = [], []
         for r in rows:
             if r['original_virtual']:
                 n_virt += 1
                 continue
-            lp = r['linked_pdf'] or ''
-            p = None
-            if lp:
-                p = (croot / c / lp) if lp.startswith('files/') \
-                    else (croot / c / 'uploads' / lp)
+            lp = (r['linked_pdf'] or '').strip()
+            if lp and not lp.startswith('files/'):
+                # 脏数据: 历史 uploads 裸文件名 (单布局已废), 不计入断链
+                n_dirty += 1
+                if len(dirts) < 3:
+                    dirts.append(f"#{r['id']} {lp}")
+                continue
+            p = (croot / c / lp) if lp else None
             if p and p.is_file():
                 n_orig += 1
-                continue
-            if (croot / c / 'uploads' / (r['filename'] or '')).is_file():
-                n_orig += 1
-                continue
-            n_miss += 1
-            if len(misses) < 5:
-                misses.append(f"#{r['id']} {r['filename']}")
+            else:
+                n_miss += 1
+                if len(misses) < 5:
+                    misses.append(f"#{r['id']} {r['filename']}")
         conn.close()
         tot_orig += n_orig
         tot_virtual += n_virt
         tot_missing += n_miss
+        tot_dirty += n_dirty
         line = f'  {c}: 原件 {n_orig}, 虚拟 {n_virt}'
+        if n_dirty:
+            line += f', !脏路径 {n_dirty} (如: {"; ".join(dirts)})'
         if n_miss:
             line += f', !断链 {n_miss} (如: {"; ".join(misses)})'
         print(line)
-    if tot_missing:
-        print(f'  ! 共 {tot_missing} 篇断链 — 跑 scripts/migrate_original_files.py '
-              '对账迁移; 确无原件的标 original_virtual=1')
+    if tot_missing or tot_dirty:
+        if tot_dirty:
+            print(f'  ! 共 {tot_dirty} 篇 linked_pdf 为历史 uploads 裸文件名 — '
+                  '运行 scripts/migrate_original_files.py 归一化, '
+                  '或确无原件的置 linked_pdf=NULL + original_virtual=1')
+        if tot_missing:
+            print(f'  ! 共 {tot_missing} 篇断链 — 跑 scripts/migrate_original_files.py '
+                  '对账迁移; 确无原件的标 original_virtual=1')
     else:
-        print(f'  合计: 原件 {tot_orig}, 虚拟 {tot_virtual}, 断链 0')
+        print(f'  合计: 原件 {tot_orig}, 虚拟 {tot_virtual}, 断链 0, 脏路径 0')
+
+    # ── uploads 暂存区残留 (2026-10-31: uploads 仅作投放暂存) ──
+    for c in known:
+        updir = croot / c / 'uploads'
+        if not updir.is_dir():
+            continue
+        leftovers = [f for f in updir.iterdir() if f.name != '@eaDir']
+        # folder_scan 周期内的新投放不算残留
+        stable = int(os.environ.get('XSF_SCAN_STABLE_SEC', '60'))
+        olds = [f for f in leftovers
+                if (time.time() - f.stat().st_mtime) > max(stable * 2, 300)]
+        if olds:
+            print(f'  ⚠ {c}/uploads 暂存区有 {len(olds)} 个陈旧文件 '
+                  f'(如: {olds[0].name}) — folder_scan 未认领的历史残留, '
+                  '确认后可清理')
 
 
 def _progress(msg):

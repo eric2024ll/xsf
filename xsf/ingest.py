@@ -955,8 +955,10 @@ def ingest_image(img_path: str | Path, collection: str,
 
 
 def remove_doc(doc_id: int, collection: str):
-    """删除文献（数据库 + PDF 文件）"""
-    from .config import get_upload_path
+    """删除文献（数据库 + 原件目录 files/<id>/, 单布局 2026-10-31）"""
+    import shutil
+
+    from .config import get_collections_dir
 
     filename = None
     conn = get_conn(collection)
@@ -980,7 +982,13 @@ def remove_doc(doc_id: int, collection: str):
     finally:
         conn.close()
 
+    # 原件目录整体清除 (id 键控, 无误伤); 目录不在不算错
+    orig_dir = get_collections_dir() / collection / 'files' / str(doc_id)
+    if orig_dir.is_dir():
+        shutil.rmtree(orig_dir, ignore_errors=True)
+    # 历史布局兜底: 旧数据原件可能仍滞留 uploads/<filename>
     if filename:
+        from .config import get_upload_path
         fp = get_upload_path(collection, filename)
         if fp.exists():
             fp.unlink()
