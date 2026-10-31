@@ -2150,7 +2150,8 @@ async def api_export_archive(collection: str, request: Request):
             clean.row_factory = sqlite3.Row
             # 文档元信息 (manifest + 均含 documents 表)
             doc_meta = clean.execute(
-                f"""SELECT id, cite_key, filename, page_count FROM documents
+                f"""SELECT id, cite_key, filename, page_count, linked_pdf
+                    FROM documents
                     WHERE id IN ({placeholders}) ORDER BY id""", ids,
             ).fetchall()
             # base_version = 导出时该文献全部修订数 (清理前取, 变更增量基准)
@@ -2187,6 +2188,33 @@ async def api_export_archive(collection: str, request: Request):
                     ids)
             clean.commit()
 
+            # 单布局收敛 (2026-10-31): 原件从 files/<id>/ 取; 归档仍为
+            # uploads/ 平铺 (石渠耦合面不变)。包内 DB 的 linked_pdf 归一化
+            # 为归档内实际文件名 (旧裸名语义, 包自洽); 无原件 → NULL+virtual
+            # (changeset 包本就无文件, 全部落 virtual)。
+            # 扩展名错配 (md 文献挂 pdf 原件等): 按 {id}-{原件名} 归档,
+            # 旧消费者配不上 (与 10-28 前一致), 我方导入按裸名优先配对。
+            from .config import resolve_original_path
+            arc_map = {}   # doc_id → (归档名 | None, 原件路径)
+            for r in doc_meta:
+                p = resolve_original_path(collection, r["linked_pdf"])
+                if p and p.is_file():
+                    same_ext = (p.suffix.lstrip('.').lower()
+                                == _file_ext(r["filename"] or ""))
+                    arc = (r["filename"] if same_ext
+                           else f"{r['id']}-{p.name}")
+                    arc_map[r["id"]] = (arc, p)
+                    clean.execute(
+                        "UPDATE documents SET linked_pdf = ? WHERE id = ?",
+                        (arc, r["id"]))
+                else:
+                    arc_map[r["id"]] = (None, None)
+                    clean.execute(
+                        "UPDATE documents SET linked_pdf = NULL, "
+                        "original_virtual = 1 WHERE id = ?",
+                        (r["id"],))
+            clean.commit()
+
             edits_count = clean.execute("SELECT COUNT(*) FROM revision_log"
                                         ).fetchone()[0]
             clean.close()
@@ -2196,7 +2224,6 @@ async def api_export_archive(collection: str, request: Request):
         # 2. 打包 .sqpkg (tar.gz)
         fd, tmp_tar = tempfile.mkstemp(suffix=".tar.gz")
         os.close(fd)
-        uploads_dir = get_upload_dir(collection)
         doc_count = len(doc_meta)
         with tarfile.open(tmp_tar, "w:gz") as tar:
             tar.add(tmp_db, arcname="export.db")
@@ -2227,9 +2254,9 @@ async def api_export_archive(collection: str, request: Request):
             tar.addfile(mi, io.BytesIO(manifest_bytes))
             if pkg_type == "doc":
                 for r in doc_meta:
-                    fp = uploads_dir / r["filename"]
-                    if fp.exists():
-                        tar.add(fp, arcname=f"uploads/{r['filename']}")
+                    arc, p = arc_map.get(r["id"], (None, None))
+                    if arc and p:
+                        tar.add(str(p), arcname=f"uploads/{arc}")
 
         os.unlink(tmp_db)
 
@@ -2281,6 +2308,9 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
       同 cite_key 文献在架 → 修订史条目挂到该文献名下 (basis 前缀「变更包·
       {collection}」溯源, in_pkg 置 0); 不在架 → 文献+附件一起导入。
     - 列白名单含 P1/P2 新列 (lang/tri_rows/suspect/gloss/trans/translit)。
+    - 单布局 (2026-10-31): 归档 uploads/ 平铺源文件导入即归一化落盘
+      files/<新id>/original.<ext> (attach_original), linked_pdf 不直拷;
+      归档内文件按裸名 linked_pdf 优先配对, 再回退 filename。
     """
     try:
         init_db(collection)
@@ -2315,7 +2345,6 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
             src_collection = manifest.get("collection", "未知书架")
 
             src_uploads = Path(tmp_dir) / "uploads"
-            dst_uploads = get_upload_dir(collection)
 
             # 2. 联动导入 (src schema 探测: v1 旧包缺新列/无 revision_log)
             src = sqlite3.connect(str(tmp_db_path))
@@ -2337,6 +2366,7 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
                 doc_rows = src.execute(
                     "SELECT * FROM documents"
                 ).fetchall()
+                pending_attach = []   # [(new_id, staged_path)] commit 后落盘
                 for doc in doc_rows:
                     doc = dict(doc)
                     cite_key = doc.get("cite_key")
@@ -2399,19 +2429,34 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
                              "renamed": filename}
                         )
 
-                    # 拷贝源文件
-                    src_fp = src_uploads / doc["filename"]
-                    dst_fp = dst_uploads / filename
-                    if src_fp.exists() and not dst_fp.exists():
-                        shutil.copy2(src_fp, dst_fp)
+                    # 源文件配对 (单布局 2026-10-31): 归档内文件按裸名
+                    # linked_pdf 优先 (含 {id}-原名 错配归档名), 再回退
+                    # filename; 命中则暂存, commit 后统一 attach 落盘
+                    # files/<new_id>/ (避免与导入事务抢 SQLite 写锁)。
+                    src_name = None
+                    lp_bare = (doc.get("linked_pdf") or "").strip()
+                    if (lp_bare and "/" not in lp_bare
+                            and (src_uploads / lp_bare).is_file()):
+                        src_name = lp_bare
+                    elif (src_uploads / doc["filename"]).is_file():
+                        src_name = doc["filename"]
+                    staged = None
+                    if src_name:
+                        staged = (Path(tmp_dir) / "staged"
+                                  / f"{old_id}{Path(src_name).suffix}")
+                        staged.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src_uploads / src_name, staged)
 
                     doc["filename"] = filename
+                    # 源库 linked_pdf 路径在新架无意义, 弃置由 attach 回写
+                    doc.pop("linked_pdf", None)
+                    doc["original_virtual"] = 1 if doc.get("original_virtual") else 0
                     cols = [
                         "cite_key", "title", "author", "filename",
                         "page_count", "doc_type", "is_primary",
                         "is_secondary", "is_reference", "source_tags",
-                        "bib_type", "bib_data", "linked_pdf",
-                        "lang", "tri_rows", "created_at",
+                        "bib_type", "bib_data",
+                        "lang", "tri_rows", "original_virtual", "created_at",
                     ]
                     placeholders = ",".join("?" * len(cols))
                     cur = dst.execute(
@@ -2420,6 +2465,8 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
                         [doc.get(c) for c in cols],
                     )
                     new_id = cur.lastrowid
+                    if staged:
+                        pending_attach.append((new_id, staged))
 
                     line_sel = ("page_num, block_num, line_num, text, "
                                 "bbox, block_label, page_w, page_h"
@@ -2475,6 +2522,19 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
                     imported += 1
 
                 dst.commit()
+                # 原件归一化落盘 (单布局): 暂存文件移入 files/<new_id>/
+                # 并回写 linked_pdf; 失败不回滚文档 (doctor 体检可见断链)
+                from .ingest import attach_original
+                attached = 0
+                for new_id, staged in pending_attach:
+                    try:
+                        attach_original(collection, new_id, staged, move=True)
+                        attached += 1
+                    except Exception as attach_err:
+                        skipped.append({
+                            "doc_id": new_id,
+                            "reason": f"原件落盘失败: {attach_err}",
+                        })
             finally:
                 src.close()
                 dst.close()
