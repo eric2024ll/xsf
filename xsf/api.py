@@ -4134,7 +4134,8 @@ def _epub_doc_src(collection: str, doc_id: int):
     conn = get_conn(collection)
     try:
         doc = conn.execute(
-            "SELECT filename, doc_type FROM documents WHERE id = ?", (doc_id,)
+            "SELECT filename, linked_pdf, doc_type FROM documents WHERE id = ?",
+            (doc_id,)
         ).fetchone()
     finally:
         conn.close()
@@ -4143,7 +4144,12 @@ def _epub_doc_src(collection: str, doc_id: int):
     if doc["doc_type"] != "epub":
         return None, JSONResponse(
             status_code=400, content={"error": "该文献不是 EPUB"})
-    src = get_upload_path(collection, doc["filename"])
+    # 原件统一模型 (2026-10-28): 原件在 files/<id>/ (linked_pdf),
+    # 旧格式 uploads/<filename> 兼容回退
+    from .config import resolve_original_path
+    src = resolve_original_path(collection, doc["linked_pdf"])
+    if not src or not src.exists():
+        src = get_upload_path(collection, doc["filename"])
     if not src.exists():
         return None, JSONResponse(
             status_code=404, content={"error": "EPUB 文件不存在"})
