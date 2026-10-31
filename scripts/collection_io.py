@@ -30,7 +30,12 @@ from pathlib import Path
 
 # 确保 xsf 包可 import
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from xsf.config import get_db_path, get_upload_dir  # noqa: E402
+from xsf.env import load_env  # noqa: E402
+load_env()  # XSF_COLLECTIONS_DIR 等来自 ~/xsf/.env (修复: 此前缺载,
+#            无环境变量时 collections 落回本地默认, 导出静默空包)
+from xsf.config import (  # noqa: E402
+    get_db_path, get_collections_dir, resolve_original_path,
+)
 
 
 # ── export ──────────────────────────────────────────────
@@ -41,25 +46,40 @@ def cmd_export(collection: str, output: str | None):
         print(f"错误: collection「{collection}」的数据库不存在: {db_path}", file=sys.stderr)
         sys.exit(1)
 
-    upload_dir = get_upload_dir(collection)
-
-    # 查 DB 获取文献数 + 源文件列表
+    # 查 DB 获取文献数 + 原件路径 (单布局 2026-10-31: files/<id>/)
     conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
     try:
         doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
         rows = conn.execute(
-            "SELECT DISTINCT filename FROM documents WHERE filename IS NOT NULL"
+            "SELECT id, filename, linked_pdf FROM documents"
         ).fetchall()
     finally:
         conn.close()
-    filenames = [r[0] for r in rows]
+
+    # 原件解析 + 归档名 (单布局 2026-10-31): 原件一律 files/<id>/;
+    # 扩展名一致按 filename 归档, 错配 (md 挂 pdf 原件等) 按
+    # {id}-{原件名}; 无原件 → NULL+virtual
+    def _ext_lower(name):
+        n = name or ""
+        return n.rsplit(".", 1)[-1].lower() if "." in n else ""
+
+    items = []   # (row, 归档名 | None, 原件路径)
+    for r in rows:
+        p = resolve_original_path(collection, r["linked_pdf"])
+        if p and p.is_file():
+            arc = (r["filename"] if _ext_lower(r["filename"]) == _ext_lower(p.name)
+                   else f"{r['id']}-{p.name}")
+            items.append((r, arc, p))
+        else:
+            items.append((r, None, None))
 
     # 用 SQLite backup API 导出一致性快照
     manifest = {
         "collection": collection,
         "exported_at": datetime.now().isoformat(timespec="seconds"),
         "doc_count": doc_count,
-        "filenames": filenames,
+        "filenames": [arc for _r, arc, _p in items if arc],
     }
 
     out = output or f"{collection}_{datetime.now():%Y%m%d}.tar.gz"
@@ -79,21 +99,37 @@ def cmd_export(collection: str, output: str | None):
             dst_conn.close()
             src_conn.close()
 
+        # 快照 DB 归一化: linked_pdf = 归档内实际文件名 (裸名, 包自洽)
+        norm = sqlite3.connect(str(snapshot))
+        try:
+            for r, arc, _p in items:
+                if arc:
+                    norm.execute(
+                        "UPDATE documents SET linked_pdf = ? WHERE id = ?",
+                        (arc, r["id"]))
+                else:
+                    norm.execute(
+                        "UPDATE documents SET linked_pdf = NULL, "
+                        "original_virtual = 1 WHERE id = ?",
+                        (r["id"],))
+            norm.commit()
+        finally:
+            norm.close()
+
         # manifest
         (tdp / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-        # 源文件
+        # 源文件: 原件归档为 uploads/ 平铺 (石渠兼容, 格式不变)
         files_tmp = tdp / "uploads"
         files_tmp.mkdir()
-        for fn in filenames:
-            src = upload_dir / fn
-            if src.exists():
-                shutil.copy2(src, files_tmp / fn)
+        for r, arc, p in items:
+            if arc and p:
+                shutil.copy2(p, files_tmp / arc)
                 found += 1
-            else:
-                missing.append(fn)
+            elif not arc:
+                missing.append(r["filename"])
 
         # 打包
         with tarfile.open(str(out_path), "w:gz") as tar:
@@ -165,30 +201,56 @@ def cmd_import(collection: str, archive: str, conflict: str,
             print("（--db-only，跳过源文件）")
             return
 
-        # 导入源文件
-        upload_dir = get_upload_dir(collection)
-
+        # 导入源文件 (单布局 2026-10-31): 归档 uploads/ 平铺文件按
+        # 裸名 linked_pdf / filename 配对恢复库文档 (整库回放, id 保留),
+        # 落盘 files/<id>/original.<ext> 并回写; 配不上的留在 uploads/
+        # 投放暂存, folder_scan 下一周期认领为新文献。
+        croot = get_collections_dir()
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
         src_files_dir = tdp / "uploads"
+        attached = unmatched = skipped_f = overwritten = 0
+        try:
+            files = sorted(src_files_dir.iterdir()) \
+                if src_files_dir.exists() else []
+            for f in files:
+                row = conn.execute(
+                    "SELECT id FROM documents "
+                    "WHERE linked_pdf = ? OR filename = ? "
+                    "ORDER BY (linked_pdf = ?) DESC LIMIT 1",
+                    (f.name, f.name, f.name)).fetchone()
+                if not row:
+                    unmatched += 1
+                    staging = croot / collection / "uploads"
+                    staging.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, staging / f.name)
+                    continue
+                did = row["id"]
+                dst = (croot / collection / "files" / str(did)
+                       / f"original{f.suffix.lower()}")
+                if dst.exists():
+                    if conflict != "overwrite":
+                        skipped_f += 1
+                        continue
+                    overwritten += 1
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dst)
+                conn.execute(
+                    "UPDATE documents SET linked_pdf = ?, original_virtual = 0 "
+                    "WHERE id = ?",
+                    (f"files/{did}/{dst.name}", did))
+                attached += 1
+            conn.commit()
+        finally:
+            conn.close()
+
         if not src_files_dir.exists():
             print("（归档中无 uploads 目录，跳过源文件）")
             return
-
-        copied = skipped = overwritten = 0
-        for f in sorted(src_files_dir.iterdir()):
-            dst = upload_dir / f.name
-            if dst.exists():
-                if conflict == "overwrite":
-                    shutil.copy2(f, dst)
-                    overwritten += 1
-                else:
-                    skipped += 1
-            else:
-                shutil.copy2(f, dst)
-                copied += 1
-
-        print(f"源文件: 新增 {copied}, 覆盖 {overwritten}, 跳过 {skipped}")
-        if skipped:
-            print("  （同名文件已跳过，用 --conflict overwrite 覆盖）")
+        print(f"源文件: 归位 {attached}, 覆盖 {overwritten}, "
+              f"跳过 {skipped_f}, 未配对入暂存 {unmatched}")
+        if skipped_f:
+            print("  （已有原件跳过，用 --conflict overwrite 覆盖）")
 
 
 # ── main ────────────────────────────────────────────────
