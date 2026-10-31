@@ -144,9 +144,8 @@
       <div class="field">
         <label>PDF 导入模式（图片始终 OCR）</label>
         <select id="upMode" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:5px;background:var(--card-bg);color:var(--text);font-size:0.9rem;">
-          <option value="auto" selected>自动检测（推荐）— 有文本层走原生提取，无则 OCR</option>
+          <option value="auto" selected>默认（推荐）— anydoc 原生提取；无文本层页留空；整篇不可转自动转 OCR</option>
           <option value="force_ocr">强制 OCR 扫描件 — 扫描件/表格件/需重新识别</option>
-          <option value="force_text">强制原生文本 — 数字 PDF 保留原生段落（anydoc）</option>
         </select>
       </div>
       <div class="field">

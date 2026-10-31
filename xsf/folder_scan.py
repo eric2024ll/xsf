@@ -30,7 +30,7 @@ from .config import (
 )
 from .db import get_conn
 from .ingest import (
-    ingest_pdf, ingest_markdown, get_original_file,
+    ingest_native_pdf, ingest_markdown, get_original_file,
 )
 from .reocr import (
     _reocr_get, _reocr_jobs, _reocr_lock, _run_reocr_doc, pop_job,
@@ -128,7 +128,28 @@ def _ingest_new(collection: str) -> tuple[list, list, list]:
 
         try:
             if f.suffix.lower() == '.pdf':
-                r = ingest_pdf(f, collection=collection)
+                # 2026-10-31 管线收敛: 强制 anydoc; 整篇不可转 → 建空文档
+                # (无行) 入自动 OCR 队列 (_pending_ocr 兜底)
+                try:
+                    r = ingest_native_pdf(f, collection=collection)
+                except Exception as e:
+                    logger.warning(
+                        'anydoc 不可转 %s: %s — 建空文档待自动 OCR 队列',
+                        f.name, e)
+                    doc = pymupdf.open(f)
+                    pages = len(doc)
+                    doc.close()
+                    conn = get_conn(collection)
+                    cur = conn.execute(
+                        # doc_type='born-digital' + 0 行 正是 _pending_ocr
+                        # 的入队条件 (doc_type NULL 会被 WHERE 判掉)
+                        "INSERT INTO documents (filename, page_count, doc_type) "
+                        "VALUES (?, ?, 'born-digital')",
+                        (f.name, pages))
+                    conn.commit()
+                    conn.close()
+                    r = {'doc_id': cur.lastrowid, 'pages': pages,
+                        'note': f'anydoc 不可转 ({e}), 待自动 OCR 队列'}
                 r['ext'] = 'pdf'
             else:
                 r = ingest_markdown(f, collection=collection)

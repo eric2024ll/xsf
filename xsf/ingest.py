@@ -96,94 +96,6 @@ def _source_flags(source_tags: str):
     )
 
 
-def ingest_pdf(pdf_path: str | Path, collection: str,
-               cite_key: str = None, title: str = None,
-               author: str = None,
-               source_tags: str = '["primary"]') -> dict:
-    """将 PDF 导入数据库，返回统计信息"""
-    pdf_path = Path(pdf_path)
-    doc = pymupdf.open(pdf_path)
-
-    # 从 PDF 元数据提取标题/作者（如果未手动指定）
-    meta = doc.metadata or {}
-    if not title:
-        title = meta.get('title') or None
-    if not author:
-        author = meta.get('author') or None
-
-    is_primary, is_secondary, is_reference = _source_flags(source_tags)
-    conn = get_conn(collection)
-    try:
-        cur = conn.execute(
-            '''INSERT INTO documents
-               (cite_key, title, author, filename, page_count,
-                is_primary, is_secondary, is_reference, source_tags)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            (cite_key, title, author,
-             pdf_path.name, len(doc),
-             is_primary, is_secondary, is_reference, source_tags)
-        )
-        doc_id = cur.lastrowid
-
-        total_lines = 0
-        total_blocks = 0
-
-        for page_num, page in enumerate(doc, 1):
-            page_dict = page.get_text('dict')
-            block_num = 0
-
-            for block in page_dict.get('blocks', []):
-                if block.get('type', 0) != 0:
-                    continue
-
-                block_num += 1
-                block_lines = []
-                line_num = 0
-
-                for line in block.get('lines', []):
-                    spans = line.get('spans', [])
-                    line_text = ''.join(
-                        span.get('text', '') for span in spans
-                    ).strip()
-                    if not line_text:
-                        continue
-
-                    line_num += 1
-                    block_lines.append(line_text)
-                    conn.execute(
-                        '''INSERT INTO lines
-                           (doc_id, page_num, block_num, line_num, text)
-                           VALUES (?, ?, ?, ?, ?)''',
-                        (doc_id, page_num, block_num, line_num, line_text)
-                    )
-                    total_lines += 1
-
-                if block_lines:
-                    block_text = '\n'.join(block_lines)
-                    conn.execute(
-                        '''INSERT INTO blocks_fts
-                           (doc_id, page_num, block_num, text)
-                           VALUES (?, ?, ?, ?)''',
-                        (doc_id, page_num, block_num,
-                         _tokenize(block_text))
-                    )
-                    total_blocks += 1
-
-        conn.commit()
-    finally:
-        page_count = len(doc)
-        conn.close()
-        doc.close()
-
-    return {
-        'doc_id': doc_id,
-        'pages': page_count,
-        'blocks': total_blocks,
-        'lines': total_lines,
-        'title': title,
-    }
-
-
 def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
                        cite_key: str = None, title: str = None,
                        author: str = None,
@@ -394,80 +306,35 @@ def _office_to_markdown(path: Path) -> str:
 _MD_PREFIX_RE = re.compile(r'^(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+)+')
 
 
-def probe_pdf_text_layer(pdf_path: str | Path, min_chars: int = 20) -> float:
-    """探测 PDF 文本层覆盖率: 抽样前 5 页 + 中段 3 页, 返回有文本层页占比。
-
-    born-digital PDF 与扫描件的物理判据是文本层字符量, 而非人肉勾选。
-    占比 >= 0.90 判定数字原生 (阈值用户裁定 2026-10-17, 保守取向:
-    混合件倾向走 OCR)。
-    """
-    doc = pymupdf.open(pdf_path)
-    try:
-        n = len(doc)
-        if n == 0:
-            return 0.0
-        idxs = set(range(min(n, 5)))
-        if n > 8:
-            mid = n // 2
-            idxs.update(i for i in (mid - 1, mid, mid + 1) if 0 <= i < n)
-        idxs = sorted(idxs)
-        hits = sum(
-            1 for i in idxs
-            if len(doc[i].get_text().strip()) >= min_chars
-        )
-        return hits / len(idxs)
-    finally:
-        doc.close()
-
-
-def ingest_native_pdf(pdf_path: str | Path, collection: str,
-                      cite_key: str = None, title: str = None,
-                      author: str = None,
-                      source_tags: str = '["primary"]') -> dict:
-    """数字原生 PDF 入库: 逐页拆分 -> anydoc 转 Markdown -> 按段落建块。
+def _native_extract_pages(pdf_path: str | Path, conn, doc_id: int):
+    """逐页 anydoc 抽取写 lines/blocks_fts (born-digital 文本层管线唯一实现).
 
     - anydoc 整篇输出无页界标记, 故按页拆转; 页归属 100% 保真,
       跨页段落按页硬切 (校对工作台按页工作, 页内完整可接受)
     - 每段落一个 block (单 line), 段内折行合并; 剥 md 标记前缀
-    - doc_type='pdf_native', 与 ingest_pdf (PyMuPDF 直提, 无段落感)
-      及 OCR 管线 (doc_type='ocr') 区分
-    - 已知限制: md 表格语法字符 (| 等) 原样入库, 表格件建议强制 OCR
+    - 单页 anydoc 无法转换 (无文本层: 封面/插图/空白页): 该页留空
+      (记入 empty_pages, 页图仍可看; 需要文本用校对台 reocr), 不中断整篇
+    - 事务 commit/rollback 由调用方负责
+
+    返回 (n_lines, n_blocks, empty_pages).
     """
     import tempfile
-    pdf_path = Path(pdf_path)
     src = pymupdf.open(pdf_path)
-    page_count = len(src)
-    meta = src.metadata or {}
-    if not title:
-        title = meta.get('title') or None
-    if not author:
-        author = meta.get('author') or None
-
-    is_primary, is_secondary, is_reference = _source_flags(source_tags)
-    conn = get_conn(collection)
     try:
-        cur = conn.execute(
-            '''INSERT INTO documents
-               (cite_key, title, author, filename, page_count, doc_type,
-                is_primary, is_secondary, is_reference, source_tags)
-               VALUES (?, ?, ?, ?, ?, 'pdf_native', ?, ?, ?, ?)''',
-            (cite_key, title, author, pdf_path.name, page_count,
-             is_primary, is_secondary, is_reference, source_tags)
-        )
-        doc_id = cur.lastrowid
-
-        total_lines = 0
-        total_blocks = 0
+        total_lines = total_blocks = 0
         empty_pages = []
         with tempfile.TemporaryDirectory(prefix='xsf_native_') as td:
-            for pno in range(page_count):
+            for pno in range(len(src)):
                 one = pymupdf.open()
                 one.insert_pdf(src, from_page=pno, to_page=pno)
                 tmp_pdf = Path(td) / f'p{pno + 1}.pdf'
                 one.save(tmp_pdf)
                 one.close()
-
-                md = _office_to_markdown(tmp_pdf)
+                try:
+                    md = _office_to_markdown(tmp_pdf)
+                except Exception:
+                    empty_pages.append(pno + 1)
+                    continue
                 block_num = 0
                 for para in md.split('\n\n'):
                     para = _MD_PREFIX_RE.sub('', para.strip()).strip()
@@ -480,22 +347,64 @@ def ingest_native_pdf(pdf_path: str | Path, collection: str,
                         '''INSERT INTO lines
                            (doc_id, page_num, block_num, line_num, text)
                            VALUES (?, ?, ?, ?, ?)''',
-                        (doc_id, pno + 1, block_num, 1, para)
-                    )
+                        (doc_id, pno + 1, block_num, 1, para))
                     conn.execute(
                         '''INSERT INTO blocks_fts
                            (doc_id, page_num, block_num, text)
                            VALUES (?, ?, ?, ?)''',
-                        (doc_id, pno + 1, block_num, _tokenize(para))
-                    )
+                        (doc_id, pno + 1, block_num, _tokenize(para)))
                     total_lines += 1
                     total_blocks += 1
                 if block_num == 0:
                     empty_pages.append(pno + 1)
-
-        conn.commit()
+        return total_lines, total_blocks, empty_pages
     finally:
         src.close()
+
+
+def ingest_native_pdf(pdf_path: str | Path, collection: str,
+                      cite_key: str = None, title: str = None,
+                      author: str = None,
+                      source_tags: str = '["primary"]') -> dict:
+    """数字原生 PDF 入库: 逐页 anydoc 转 Markdown, 按段落建块 (文本层 PDF 唯一管线).
+
+    - 2026-10-31 管线收敛: 文本层 PDF 一律走 anydoc (旧 PyMuPDF 直提管线退役);
+      无文本层的页留空 (页图仍可看), doc_type='pdf_native',
+      与 OCR 管线 (doc_type='ocr') 区分
+    - 整篇抽不出行 (全部页不可转): 抛错回滚, 调用方回退扫描件 OCR 管线
+    - 已知限制: md 表格语法字符 (| 等) 原样入库, 表格件建议强制 OCR
+    """
+    pdf_path = Path(pdf_path)
+    src = pymupdf.open(pdf_path)
+    page_count = len(src)
+    meta = src.metadata or {}
+    if not title:
+        title = meta.get('title') or None
+    if not author:
+        author = meta.get('author') or None
+    src.close()
+
+    is_primary, is_secondary, is_reference = _source_flags(source_tags)
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            '''INSERT INTO documents
+               (cite_key, title, author, filename, page_count, doc_type,
+                is_primary, is_secondary, is_reference, source_tags)
+               VALUES (?, ?, ?, ?, ?, 'pdf_native', ?, ?, ?, ?)''',
+            (cite_key, title, author, pdf_path.name, page_count,
+             is_primary, is_secondary, is_reference, source_tags))
+        doc_id = cur.lastrowid
+        total_lines, total_blocks, empty_pages = _native_extract_pages(
+            pdf_path, conn, doc_id)
+        if total_lines == 0:
+            raise RuntimeError(
+                '整篇无可转文本层 (全部页需 OCR), 请用扫描件 OCR 管线')
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
         conn.close()
 
     return {

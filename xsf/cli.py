@@ -9,7 +9,7 @@ from .config import (
 )
 from .db import init_db, get_conn
 from .ingest import (
-    ingest_pdf, ingest_scanned_pdf, ingest_markdown, remove_doc,
+    ingest_native_pdf, ingest_scanned_pdf, ingest_markdown, remove_doc,
 )
 from .search import search, get_block_lines, get_context
 
@@ -59,11 +59,6 @@ def cmd_add(args):
         tags = ['primary']
     source_tags = json.dumps(tags)
 
-    if getattr(args, 'provider', None):
-        if not args.ocr:
-            print('错误: --provider 仅在 --ocr 模式下有效', file=sys.stderr)
-            sys.exit(1)
-
     if is_md and args.ocr:
         print('错误: Markdown 不支持 --ocr（文本即原件）',
               file=sys.stderr)
@@ -90,14 +85,27 @@ def cmd_add(args):
                 provider_id=args.provider,
             )
         else:
-            result = ingest_pdf(
-                pdf_path,
-                collection=args.collection,
-                cite_key=args.cite_key,
-                title=args.title,
-                author=args.author,
-                source_tags=source_tags,
-            )
+            # 2026-10-31 管线收敛: 强制 anydoc 原生提取, 整篇不可转回退扫描件 OCR
+            try:
+                result = ingest_native_pdf(
+                    pdf_path,
+                    collection=args.collection,
+                    cite_key=args.cite_key,
+                    title=args.title,
+                    author=args.author,
+                    source_tags=source_tags,
+                )
+            except Exception as ne:
+                print(f'anydoc 不可转 ({ne}), 转扫描件 OCR', file=sys.stderr)
+                result = ingest_scanned_pdf(
+                    pdf_path,
+                    collection=args.collection,
+                    cite_key=args.cite_key,
+                    title=args.title,
+                    author=args.author,
+                    source_tags=source_tags,
+                    provider_id=args.provider,
+                )
     except Exception as e:
         if 'UNIQUE constraint' in str(e):
             print(f'跳过: {pdf_path.name} 已在书架 [{args.collection}] 中',

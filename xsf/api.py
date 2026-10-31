@@ -39,8 +39,8 @@ from .bib_utils import (
     BIB_TYPE_FIELDS, BIB_TYPE_LABELS, BIB_FIELD_LABELS,
 )
 from .ingest import (
-    ingest_pdf, ingest_scanned_pdf, ingest_markdown, ingest_image,
-    ingest_native_pdf, probe_pdf_text_layer,
+    ingest_scanned_pdf, ingest_markdown, ingest_image,
+    ingest_native_pdf,
     remove_doc, _tokenize,
 )
 from .reocr import (
@@ -1111,11 +1111,11 @@ async def api_add(
     """批量上传：支持 pdf / md / word / 图片（图片自动 OCR）。
 
     - pdf + ocr 三态 (2026-10-17 智能分流):
-      * 'auto' (默认): 探测文本层覆盖率 (前5页+中段3页抽样),
-        >= 0.90 走原生管线 ingest_native_pdf (逐页 anydoc, 段落建块),
-        否则走扫描件 OCR ingest_scanned_pdf
+      * 'auto' (默认): 强制 anydoc 原生提取 (ingest_native_pdf, 逐页 anydoc,
+        段落建块); 无文本层的页留空 (页图仍可看), 整篇抽不出行
+        (全部页不可转) → 自动回退扫描件 OCR
       * 'force_ocr' (旧值 'true' 兼容): 强制扫描件 OCR
-      * 'force_text': 强制原生文本提取 (纯图件会得到空页提示)
+      * 'force_text' (旧值兼容, 行为同 auto): 强制 anydoc 原生提取
     - md/markdown：按段落解析入库（doc_type='markdown'）
     - 图片（jpg/png/...）：包成单页 PDF 后强制 OCR（doc_type='ocr'）
     - epub/Word (.doc/.docx/.docm)：**通道已退役 (2026-10-31 格式收敛
@@ -1181,20 +1181,21 @@ async def api_add(
                     mode = str(ocr).strip().lower()
                     if mode in ('force_ocr', 'true'):   # 'true': 旧勾选值兼容
                         ingest_func = ingest_scanned_pdf
-                    elif mode == 'force_text':
-                        ingest_func = ingest_native_pdf
-                        note = '强制原生文本提取'
-                    else:                               # 'auto' 及其余值
-                        ratio = await asyncio.to_thread(
-                            probe_pdf_text_layer, dst)
-                        if ratio >= 0.90:
-                            ingest_func = ingest_native_pdf
-                            note = (f'检测到文本层（抽样 {ratio:.0%}），'
-                                    '走原生提取（anydoc 段落建块）')
-                        else:
-                            ingest_func = ingest_scanned_pdf
-                            note = (f'未检测到文本层（抽样 {ratio:.0%}），'
-                                    '走扫描件 OCR')
+                    else:   # 'auto' / 'force_text' (旧值) / 其余值:
+                        # 2026-10-31 管线收敛: 强制 anydoc 原生提取,
+                        # 无文本层的页留空, 整篇不可转自动回退扫描件 OCR
+                        def _native_then_ocr(path, **kw):
+                            try:
+                                res = ingest_native_pdf(path, **kw)
+                                res['note'] = ('原生提取 (anydoc 段落建块); '
+                                               '无文本层页留空')
+                                return res
+                            except Exception as e:
+                                res = ingest_scanned_pdf(path, **kw)
+                                res['note'] = (f'anydoc 不可转 ({e}), '
+                                               '已转扫描件 OCR')
+                                return res
+                        ingest_func = _native_then_ocr
                 elif ext in ('md', 'markdown'):
                     ingest_func = ingest_markdown
                 else:  # 图片：强制 OCR
@@ -1209,6 +1210,8 @@ async def api_add(
                     author=author or None,
                     source_tags=source_tags,
                 )
+                if note is None:
+                    note = r.get('note')
                 # 原件统一模型 (2026-10-28): 上传入库即把原件移入
                 # files/<id>/original.<ext> (移入式, uploads 不留双份)
                 from .ingest import attach_original
