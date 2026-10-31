@@ -5149,7 +5149,7 @@ def reocr_page(
         conn = get_conn(collection)
         try:
             doc = conn.execute(
-                "SELECT filename FROM documents WHERE id = ?",
+                "SELECT filename, linked_pdf FROM documents WHERE id = ?",
                 (doc_id,),
             ).fetchone()
         finally:
@@ -5157,7 +5157,12 @@ def reocr_page(
         if doc is None:
             return JSONResponse(status_code=404, content={"error": "文献不存在"})
 
-        pdf_path = get_upload_path(collection, doc["filename"])
+        # 原件统一模型 (2026-10-28): 原件在 files/<id>/ (linked_pdf),
+        # 旧格式 uploads/<filename> 兼容回退
+        from .config import resolve_original_path
+        pdf_path = resolve_original_path(collection, doc["linked_pdf"])
+        if not pdf_path or not pdf_path.exists():
+            pdf_path = get_upload_path(collection, doc["filename"])
         if not pdf_path.exists():
             return JSONResponse(
                 status_code=404,
@@ -5427,7 +5432,7 @@ def reocr_doc(collection: str, doc_id: int):
         conn = get_conn(collection)
         try:
             doc = conn.execute(
-                "SELECT filename FROM documents WHERE id = ?",
+                "SELECT filename, linked_pdf FROM documents WHERE id = ?",
                 (doc_id,),
             ).fetchone()
         finally:
@@ -5435,7 +5440,12 @@ def reocr_doc(collection: str, doc_id: int):
         if doc is None:
             return JSONResponse(status_code=404, content={"error": "文献不存在"})
 
-        pdf_path = get_upload_path(collection, doc["filename"])
+        # 原件统一模型 (2026-10-28): 原件在 files/<id>/ (linked_pdf),
+        # 旧格式 uploads/<filename> 兼容回退
+        from .config import resolve_original_path
+        pdf_path = resolve_original_path(collection, doc["linked_pdf"])
+        if not pdf_path or not pdf_path.exists():
+            pdf_path = get_upload_path(collection, doc["filename"])
         if not pdf_path.exists():
             return JSONResponse(
                 status_code=404, content={"error": f"源文件不存在: {doc['filename']}"}
@@ -5608,7 +5618,7 @@ def reocr_range(
         conn = get_conn(collection)
         try:
             doc = conn.execute(
-                "SELECT filename FROM documents WHERE id = ?",
+                "SELECT filename, linked_pdf FROM documents WHERE id = ?",
                 (doc_id,),
             ).fetchone()
         finally:
@@ -5616,7 +5626,12 @@ def reocr_range(
         if doc is None:
             return JSONResponse(status_code=404, content={"error": "文献不存在"})
 
-        pdf_path = get_upload_path(collection, doc["filename"])
+        # 原件统一模型 (2026-10-28): 原件在 files/<id>/ (linked_pdf),
+        # 旧格式 uploads/<filename> 兼容回退
+        from .config import resolve_original_path
+        pdf_path = resolve_original_path(collection, doc["linked_pdf"])
+        if not pdf_path or not pdf_path.exists():
+            pdf_path = get_upload_path(collection, doc["filename"])
         if not pdf_path.exists():
             return JSONResponse(
                 status_code=404,
