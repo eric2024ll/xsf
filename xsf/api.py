@@ -21,7 +21,7 @@ from typing import List
 import pymupdf
 from fastapi import FastAPI, UploadFile, File, Form, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
