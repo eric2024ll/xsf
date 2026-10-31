@@ -102,12 +102,10 @@ def render_page_png(collection, doc_id, page_num) -> bytes | None:
         conn.close()
     if doc is None:
         return None
+    # 原件统一模型: 单布局收敛 (2026-10-31), 只认 files/<id>/ (linked_pdf)
     from .config import resolve_original_path
     pdf_path = resolve_original_path(collection, doc["linked_pdf"])
     if not pdf_path or not pdf_path.exists():
-        from .config import get_upload_path
-        pdf_path = get_upload_path(collection, doc["filename"])
-    if not pdf_path.exists():
         return None
     src = pymupdf.open(pdf_path)
     try:

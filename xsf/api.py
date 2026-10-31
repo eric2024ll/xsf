@@ -4038,15 +4038,12 @@ async def proofread_page(
         # 按 150 DPI 渲染时图片自然尺寸
         render_width = None
         render_height = None
-        # 原件统一模型 (2026-10-28): 原件在 files/<id>/ (linked_pdf),
-        # 旧格式 uploads/<linked_pdf> 兼容; 再回退 filename (uploads 投放)
+        # 原件统一模型: 单布局收敛 (2026-10-31), 只认 files/<id>/ (linked_pdf)
         from .config import resolve_original_path
         pdf_path = resolve_original_path(
             collection,
             doc["linked_pdf"] if "linked_pdf" in doc.keys() else None)
-        if not pdf_path or not pdf_path.exists():
-            pdf_path = get_upload_path(collection, doc["filename"])
-        if pdf_path.exists():
+        if pdf_path and pdf_path.exists():
             try:
                 pdf_doc = pymupdf.open(pdf_path)
                 page_obj = pdf_doc[page_num - 1]
@@ -4144,13 +4141,10 @@ def _epub_doc_src(collection: str, doc_id: int):
     if doc["doc_type"] != "epub":
         return None, JSONResponse(
             status_code=400, content={"error": "该文献不是 EPUB"})
-    # 原件统一模型 (2026-10-28): 原件在 files/<id>/ (linked_pdf),
-    # 旧格式 uploads/<filename> 兼容回退
+    # 原件统一模型: 单布局收敛 (2026-10-31), 只认 files/<id>/ (linked_pdf)
     from .config import resolve_original_path
     src = resolve_original_path(collection, doc["linked_pdf"])
     if not src or not src.exists():
-        src = get_upload_path(collection, doc["filename"])
-    if not src.exists():
         return None, JSONResponse(
             status_code=404, content={"error": "EPUB 文件不存在"})
     return src, None
@@ -4260,11 +4254,10 @@ async def page_image(collection: str, doc_id: int, page_num: int):
         finally:
             conn.close()
 
+        # 原件统一模型: 单布局收敛 (2026-10-31), 只认 files/<id>/ (linked_pdf)
         from .config import resolve_original_path
         pdf_path = resolve_original_path(collection, doc["linked_pdf"])
         if not pdf_path or not pdf_path.exists():
-            pdf_path = get_upload_path(collection, doc["filename"])
-        if not pdf_path.exists():
             return JSONResponse(
                 status_code=404,
                 content={"error": "PDF 文件不存在"},
@@ -5163,13 +5156,10 @@ def reocr_page(
         if doc is None:
             return JSONResponse(status_code=404, content={"error": "文献不存在"})
 
-        # 原件统一模型 (2026-10-28): 原件在 files/<id>/ (linked_pdf),
-        # 旧格式 uploads/<filename> 兼容回退
+        # 原件统一模型: 单布局收敛 (2026-10-31), 只认 files/<id>/ (linked_pdf)
         from .config import resolve_original_path
         pdf_path = resolve_original_path(collection, doc["linked_pdf"])
         if not pdf_path or not pdf_path.exists():
-            pdf_path = get_upload_path(collection, doc["filename"])
-        if not pdf_path.exists():
             return JSONResponse(
                 status_code=404,
                 content={"error": f"源文件不存在: {doc['filename']}"},
@@ -5446,13 +5436,10 @@ def reocr_doc(collection: str, doc_id: int):
         if doc is None:
             return JSONResponse(status_code=404, content={"error": "文献不存在"})
 
-        # 原件统一模型 (2026-10-28): 原件在 files/<id>/ (linked_pdf),
-        # 旧格式 uploads/<filename> 兼容回退
+        # 原件统一模型: 单布局收敛 (2026-10-31), 只认 files/<id>/ (linked_pdf)
         from .config import resolve_original_path
         pdf_path = resolve_original_path(collection, doc["linked_pdf"])
         if not pdf_path or not pdf_path.exists():
-            pdf_path = get_upload_path(collection, doc["filename"])
-        if not pdf_path.exists():
             return JSONResponse(
                 status_code=404, content={"error": f"源文件不存在: {doc['filename']}"}
             )
@@ -5632,13 +5619,10 @@ def reocr_range(
         if doc is None:
             return JSONResponse(status_code=404, content={"error": "文献不存在"})
 
-        # 原件统一模型 (2026-10-28): 原件在 files/<id>/ (linked_pdf),
-        # 旧格式 uploads/<filename> 兼容回退
+        # 原件统一模型: 单布局收敛 (2026-10-31), 只认 files/<id>/ (linked_pdf)
         from .config import resolve_original_path
         pdf_path = resolve_original_path(collection, doc["linked_pdf"])
         if not pdf_path or not pdf_path.exists():
-            pdf_path = get_upload_path(collection, doc["filename"])
-        if not pdf_path.exists():
             return JSONResponse(
                 status_code=404,
                 content={"error": f"源文件不存在: {doc['filename']}"},

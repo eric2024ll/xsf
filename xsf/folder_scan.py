@@ -25,11 +25,14 @@ from pathlib import Path
 import pymupdf
 
 from .config import (
-    get_collections_dir, get_upload_path, list_collections,
+    get_collections_dir, list_collections,
     find_orphan_collections,
 )
 from .db import get_conn
-from .ingest import ingest_pdf, ingest_markdown, ingest_office, _OFFICE_EXTS
+from .ingest import (
+    ingest_pdf, ingest_markdown, ingest_office, _OFFICE_EXTS,
+    get_original_file,
+)
 from .reocr import (
     _reocr_get, _reocr_jobs, _reocr_lock, _run_reocr_doc, pop_job,
     register_job,
@@ -317,14 +320,15 @@ def _ocr_worker() -> None:
         try:
             row = _query(
                 collection,
-                'SELECT filename FROM documents WHERE id = ?', (doc_id,))
+                'SELECT id FROM documents WHERE id = ?', (doc_id,))
             if not row:
                 _ocr_attempts.pop((collection, doc_id), None)
                 continue
-            pdf_path = get_upload_path(collection, row[0]['filename'])
-            if not pdf_path.exists():
-                logger.warning("自动 OCR 跳过 coll=%s doc=%s: 源文件缺失 %s",
-                               collection, doc_id, row[0]['filename'])
+            pdf_path = get_original_file(collection, doc_id)
+            if not pdf_path:
+                logger.warning("自动 OCR 跳过 coll=%s doc=%s: 无原件 "
+                               "(单布局 files/<id>/, 2026-10-31)",
+                               collection, doc_id)
                 continue
             src = pymupdf.open(pdf_path)
             total_pages = len(src)

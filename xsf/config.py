@@ -119,7 +119,12 @@ def get_upload_dir(collection: str) -> Path:
 
 
 def get_upload_path(collection: str, filename: str) -> Path:
-    """某书架内一份源文件的完整路径（纯拼接，不创建目录）。"""
+    """书架投放暂存区内一份文件的完整路径（纯拼接，不创建目录）。
+
+    2026-10-31 单布局收敛: 仅供 uploads/ 投放暂存 (folder_scan) 与
+    语料包归档格式 (collection_io) 使用; **运行时读原件一律走
+    resolve_original_path / get_original_file, 禁用本函数回退**。
+    """
     return get_collections_dir() / collection / 'uploads' / filename
 
 
@@ -137,16 +142,16 @@ def get_original_dir(collection: str, doc_id: int) -> Path:
 def resolve_original_path(collection: str, linked_pdf: str | None) -> Path | None:
     """解析 linked_pdf 字段 → 原件绝对路径（纯拼接，不检查存在性）。
 
-    - 新格式: files/<id>/original.<ext>（相对书架目录）
-    - 旧格式: 纯文件名（历史 .snap-N.pdf / uploads 投放名, 兼容读取）
-    - 空 → None
+    2026-10-31 单布局收敛: 只认 `files/<id>/original.<ext>`（相对书架目录）
+    这一种表达; 其他取值（空 / 历史 uploads 裸文件名）一律 None。
+    旧 uploads 布局的读取只存在于导入边 (collection_io / migrate 脚本)。
     """
     if not linked_pdf:
         return None
     v = linked_pdf.strip()
-    if v.startswith('files/'):
-        return get_collections_dir() / collection / v
-    return get_upload_path(collection, v)
+    if not v.startswith('files/'):
+        return None
+    return get_collections_dir() / collection / v
 
 
 def get_ocr_config_path() -> Path:
