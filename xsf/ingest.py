@@ -326,10 +326,12 @@ def _native_extract_pages(pdf_path: str | Path, conn, doc_id: int):
         with tempfile.TemporaryDirectory(prefix='xsf_native_') as td:
             for pno in range(len(src)):
                 one = pymupdf.open()
-                one.insert_pdf(src, from_page=pno, to_page=pno)
-                tmp_pdf = Path(td) / f'p{pno + 1}.pdf'
-                one.save(tmp_pdf)
-                one.close()
+                try:
+                    one.insert_pdf(src, from_page=pno, to_page=pno)
+                    tmp_pdf = Path(td) / f'p{pno + 1}.pdf'
+                    one.save(tmp_pdf)
+                finally:
+                    one.close()
                 try:
                     md = _office_to_markdown(tmp_pdf)
                 except Exception:

@@ -1190,6 +1190,10 @@ async def api_add(
                                 res['note'] = ('原生提取 (anydoc 段落建块); '
                                                '无文本层页留空')
                                 return res
+                            except (sqlite3.Error, OSError):
+                                # 环境故障 (锁/磁盘满/IO): 换管线救不了,
+                                # 不回退 OCR, 直接抛给调用方
+                                raise
                             except Exception as e:
                                 res = ingest_scanned_pdf(path, **kw)
                                 res['note'] = (f'anydoc 不可转 ({e}), '

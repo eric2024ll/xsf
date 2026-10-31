@@ -51,7 +51,10 @@ def main():
     ap.add_argument('--dry-run', action='store_true',
                     help='只盘点可转清单, 不动库')
     ap.add_argument('--ids',
-                    help='只转指定 doc_id, 逗号分隔 (默认全部 born-digital)')
+                    help='只转指定 doc_id, 逗号分隔 (不限 doc_type; '
+                         '默认全部 born-digital)')
+    ap.add_argument('--force', action='store_true',
+                    help='越过安全门 (有 trans/gloss/修订史拒转; 会抹对译劳动)')
     args = ap.parse_args()
     wanted = ({int(x) for x in args.ids.split(',')} if args.ids else None)
 
@@ -62,11 +65,16 @@ def main():
     for dbp in sorted(get_db_dir().glob('*/xsf.db')):
         col = dbp.parent.name
         conn = get_conn(col)
-        rows = conn.execute(
-            "SELECT id, title, page_count FROM documents "
-            "WHERE doc_type='born-digital' ORDER BY id").fetchall()
         if wanted is not None:
-            rows = [r for r in rows if r['id'] in wanted]
+            ph = ','.join('?' * len(wanted))
+            rows = conn.execute(
+                f"SELECT id, title, page_count FROM documents "
+                f"WHERE id IN ({ph}) ORDER BY id",
+                sorted(wanted)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, title, page_count FROM documents "
+                "WHERE doc_type='born-digital' ORDER BY id").fetchall()
         if not rows:
             conn.close()
             continue
@@ -81,8 +89,16 @@ def main():
                 failed.append((col, did, '原件缺失'))
                 continue
 
+            gate = bool(tg or rev) and not args.force
+            if gate and not args.dry_run:
+                print(f"[{col}#{did}] {t} — 安全门拦截: trans/gloss={tg} "
+                      f"rev={rev} (--force 越过)")
+                failed.append((col, did, '安全门'))
+                continue
+
             if args.dry_run:
-                print(f"[{col}#{did}] {t} — 可转 pages={r['page_count']} "
+                mark = ' [安全门, 需 --force]' if gate else ''
+                print(f"[{col}#{did}] {t}{mark} — 可转 pages={r['page_count']} "
                       f"旧行={old} trans/gloss={tg} rev={rev} mentions={men}")
                 tot['docs'] += 1
                 tot['pages'] += r['page_count'] or 0

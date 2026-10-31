@@ -27,6 +27,7 @@ def cmd_init(args):
 
 
 def cmd_add(args):
+    import sqlite3  # noqa: F401  (OCR 回退的环境故障判别用)
     err = validate_collection_name(args.collection)
     if err:
         print(f'错误: 书架名不合法: {err}', file=sys.stderr)
@@ -58,6 +59,10 @@ def cmd_add(args):
     if not tags:
         tags = ['primary']
     source_tags = json.dumps(tags)
+
+    if getattr(args, 'provider', None) and not args.ocr and not is_md:
+        print('提示: --provider 仅在原生提取失败回退 OCR 时生效',
+              file=sys.stderr)
 
     if is_md and args.ocr:
         print('错误: Markdown 不支持 --ocr（文本即原件）',
@@ -95,6 +100,10 @@ def cmd_add(args):
                     author=args.author,
                     source_tags=source_tags,
                 )
+            except (sqlite3.Error, OSError) as e:
+                # 环境故障 (锁/磁盘满/IO): 换管线救不了, 不回退直接失败
+                print(f'环境故障, 未回退 OCR: {e}', file=sys.stderr)
+                sys.exit(1)
             except Exception as ne:
                 print(f'anydoc 不可转 ({ne}), 转扫描件 OCR', file=sys.stderr)
                 result = ingest_scanned_pdf(
