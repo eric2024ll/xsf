@@ -27,7 +27,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import (
-    get_collections_dir, get_upload_dir, get_upload_path,
+    get_collections_dir, get_upload_dir,
     list_collections, get_db_path, validate_collection_name,
 )
 from .db import init_db, get_conn
@@ -1308,8 +1308,11 @@ async def api_update_doc(collection: str, doc_id: int,
     - bib_data: JSON 对象字符串（biblatex 字段）
     - lang: 语种（zh=中文单行制; 其他=非中文行制, 如 eng/mnc/ja, 2026-10-17 P2）
     - tri_rows: 行制显式覆盖（1=单行/3=三行/4=四行; 日/俄类语种默认四行）
-    - linked_pdf: 关联 PDF 文件名（置于 uploads/ 下）
+    - linked_pdf: 原件相对路径（files/ 前缀, 限本书架内; 置空=解除关联）
     - unlink_pdf: true 表示解除关联（与 linked_pdf 互斥; 空串等同未提供）
+
+    2026-10-31 单布局收敛: linked_pdf 不再接受裸文件名（旧 uploads 语义）;
+    补挂/更换原件请走 POST .../doc/{id}/link-pdf（自动存入 files/<id>/）。
     """
     try:
         if (source_tags is None and bib_type is None and bib_data is None
@@ -1324,7 +1327,7 @@ async def api_update_doc(collection: str, doc_id: int,
         params = []
         result_extra = {}
 
-        # ── linked_pdf (关联 PDF 可写; 仅接受 uploads/ 内文件名) ──
+        # ── linked_pdf (原件路径可写; 单布局: 仅本书架 files/ 前缀) ──
         if linked_pdf and unlink_pdf:
             return JSONResponse(
                 status_code=400,
@@ -1336,22 +1339,35 @@ async def api_update_doc(collection: str, doc_id: int,
             result_extra["linked_pdf"] = None
         elif linked_pdf is not None:
             lp = linked_pdf.strip()
-            if lp:
-                safe = os.path.basename(lp.replace("\\", "/"))
-                if safe != lp or lp in (".", "..") or ".." in lp:
+            if not lp:
+                updates.append("linked_pdf = ?")
+                params.append(None)
+                result_extra["linked_pdf"] = None
+            elif (not lp.startswith("files/") or "\\" in lp
+                    or ".." in lp or "/../" in f"/{lp}/"):
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "linked_pdf 只接受本书架 files/ 前缀的"
+                                      "原件路径 (如 files/12/original.pdf);"
+                                      "补挂原件请用 link-pdf 端点"},
+                )
+            else:
+                files_root = (get_collections_dir() / collection / "files").resolve()
+                lp_path = (get_collections_dir() / collection / lp).resolve()
+                if files_root not in lp_path.parents:
                     return JSONResponse(
                         status_code=400,
-                        content={"error": "linked_pdf 只能是 uploads 内的文件名"},
+                        content={"error": "linked_pdf 越出书架 files/ 目录"},
                     )
-                lp_val = safe
-            else:
-                lp_val = None
-            updates.append("linked_pdf = ?")
-            params.append(lp_val)
-            result_extra["linked_pdf"] = lp_val
-            if lp_val:
-                result_extra["linked_pdf_exists"] = (
-                    get_upload_path(collection, lp_val).exists())
+                if not lp_path.is_file():
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": f"原件不存在: {lp}"},
+                    )
+                updates.append("linked_pdf = ?")
+                params.append(lp)
+                result_extra["linked_pdf"] = lp
+                result_extra["linked_pdf_exists"] = True
 
         # ── lang (P2 两制转录) ──
         if lang is not None:
