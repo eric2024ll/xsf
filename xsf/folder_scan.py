@@ -30,8 +30,7 @@ from .config import (
 )
 from .db import get_conn
 from .ingest import (
-    ingest_pdf, ingest_markdown, ingest_office, _OFFICE_EXTS,
-    get_original_file,
+    ingest_pdf, ingest_markdown, get_original_file,
 )
 from .reocr import (
     _reocr_get, _reocr_jobs, _reocr_lock, _run_reocr_doc, pop_job,
@@ -40,7 +39,8 @@ from .reocr import (
 
 logger = logging.getLogger("xsf.scan")
 
-_SCAN_EXTS = {'.pdf', '.md', '.markdown'} | _OFFICE_EXTS
+# 2026-10-31 格式收敛: 投放只认 pdf/md (epub/Word 通道退役, 外部转 PDF)
+_SCAN_EXTS = {'.pdf', '.md', '.markdown'}
 _IGNORE_SUFFIXES = ('.tmp', '.part', '.partial', '.crdownload', '.swp')
 MAX_OCR_ATTEMPTS = 3
 _DUP_REPORT_WINDOW = 3600   # mtime 距今小于此值的重复文件才报「跳过重复」(秒)
@@ -130,9 +130,6 @@ def _ingest_new(collection: str) -> tuple[list, list, list]:
             if f.suffix.lower() == '.pdf':
                 r = ingest_pdf(f, collection=collection)
                 r['ext'] = 'pdf'
-            elif f.suffix.lower() in _OFFICE_EXTS:
-                r = ingest_office(f, collection=collection)
-                r['ext'] = 'office'
             else:
                 r = ingest_markdown(f, collection=collection)
                 r['ext'] = 'md'

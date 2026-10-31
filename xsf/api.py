@@ -40,8 +40,8 @@ from .bib_utils import (
 )
 from .ingest import (
     ingest_pdf, ingest_scanned_pdf, ingest_markdown, ingest_image,
-    ingest_office, ingest_native_pdf, ingest_epub, probe_pdf_text_layer,
-    _OFFICE_EXTS, _epub_spine_files, remove_doc, _tokenize,
+    ingest_native_pdf, probe_pdf_text_layer,
+    _epub_spine_files, remove_doc, _tokenize,
 )
 from .reocr import (
     _reocr_lock, _reocr_jobs, _reocr_get, _reocr_set,
@@ -1064,8 +1064,9 @@ async def api_context(collection: str, doc_id: int, page: int,
 # ── 上传 ──────────────────────────────────────────────
 
 _SUPPORTED_IMG_EXT = {'jpg', 'jpeg', 'png', 'webp', 'bmp', 'tiff', 'tif', 'gif'}
-_OFFICE_EXT = {e.lstrip('.') for e in _OFFICE_EXTS}
-_SUPPORTED_EXT = {'pdf', 'md', 'markdown'} | _SUPPORTED_IMG_EXT | _OFFICE_EXT
+# 2026-10-31 格式收敛 (用户裁定「PDF 为主 + md 文本例外」):
+# epub/Word 上传通道退役, 外部转 PDF 后上传; 图片保留直传 (自动包单页 PDF)
+_SUPPORTED_EXT = {'pdf', 'md', 'markdown'} | _SUPPORTED_IMG_EXT
 
 
 def _file_ext(filename: str) -> str:
@@ -1116,9 +1117,10 @@ async def api_add(
       * 'force_ocr' (旧值 'true' 兼容): 强制扫描件 OCR
       * 'force_text': 强制原生文本提取 (纯图件会得到空页提示)
     - md/markdown：按段落解析入库（doc_type='markdown'）
-    - epub：spine 分页入库（每章 1 页，doc_type='epub'，校对台分章对照）
-    - doc/docx/docm：anydoc 转 Markdown 入库（doc_type='office'）
     - 图片（jpg/png/...）：包成单页 PDF 后强制 OCR（doc_type='ocr'）
+    - epub/Word (.doc/.docx/.docm)：**通道已退役 (2026-10-31 格式收敛
+      「PDF 为主 + md 文本例外」)**——外部转 PDF 后上传 (epub: Calibre
+      ebook-convert; Word: soffice --headless --convert-to pdf)
     - source_tags: JSON 数组字符串，如 '["primary","档案"]'
     返回 {status, results, skipped, errors}：
       - skipped: filename 已在本架的重复文件（不算错误）
@@ -1137,9 +1139,15 @@ async def api_add(
             ext = _file_ext(fname)
 
             if ext not in _SUPPORTED_EXT:
+                hint = ''
+                if ext in {'epub', 'doc', 'docx', 'docm'}:
+                    hint = ('；epub/Word 通道已退役——外部转 PDF 后上传 '
+                            '(epub: Calibre ebook-convert; Word: '
+                            'soffice --headless --convert-to pdf)')
                 errors.append({
                     "filename": fname,
-                    "error": f"不支持的类型 .{ext or '?'}（支持 pdf/md/word/图片）",
+                    "error": f"不支持的类型 .{ext or '?'}"
+                             f"（支持 pdf/md/图片）{hint}",
                 })
                 continue
 
@@ -1189,10 +1197,6 @@ async def api_add(
                                     '走扫描件 OCR')
                 elif ext in ('md', 'markdown'):
                     ingest_func = ingest_markdown
-                elif ext == 'epub':
-                    ingest_func = ingest_epub
-                elif ext in _OFFICE_EXT:
-                    ingest_func = ingest_office
                 else:  # 图片：强制 OCR
                     ingest_func = ingest_image
 

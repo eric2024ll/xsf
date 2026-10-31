@@ -9,7 +9,7 @@ from .config import (
 )
 from .db import init_db, get_conn
 from .ingest import (
-    ingest_pdf, ingest_scanned_pdf, ingest_office, _OFFICE_EXTS, remove_doc,
+    ingest_pdf, ingest_scanned_pdf, ingest_markdown, remove_doc,
 )
 from .search import search, get_block_lines, get_context
 
@@ -36,11 +36,15 @@ def cmd_add(args):
         print(f'错误: 文件不存在: {pdf_path}', file=sys.stderr)
         sys.exit(1)
     suffix = pdf_path.suffix.lower()
-    if suffix != '.pdf' and suffix not in _OFFICE_EXTS:
-        print(f'错误: 仅支持 PDF 或 Word (.doc/.docx/.docm) 文件',
-              file=sys.stderr)
+    if suffix not in ('.pdf', '.md', '.markdown'):
+        hint = ''
+        if suffix in ('.epub', '.doc', '.docx', '.docm'):
+            hint = ('；epub/Word 通道已退役 (2026-10-31 格式收敛), '
+                    '外部转 PDF 后入库: epub 用 Calibre ebook-convert, '
+                    'Word 用 soffice --headless --convert-to pdf')
+        print(f'错误: 仅支持 PDF 或 Markdown 文件{hint}', file=sys.stderr)
         sys.exit(1)
-    is_office = suffix in _OFFICE_EXTS
+    is_md = suffix in ('.md', '.markdown')
 
     init_db(args.collection)
 
@@ -60,14 +64,14 @@ def cmd_add(args):
             print('错误: --provider 仅在 --ocr 模式下有效', file=sys.stderr)
             sys.exit(1)
 
-    if is_office and args.ocr:
-        print('错误: Word 文档不支持 --ocr（anydoc 直接提取文本）',
+    if is_md and args.ocr:
+        print('错误: Markdown 不支持 --ocr（文本即原件）',
               file=sys.stderr)
         sys.exit(1)
 
     try:
-        if is_office:
-            result = ingest_office(
+        if is_md:
+            result = ingest_markdown(
                 pdf_path,
                 collection=args.collection,
                 cite_key=args.cite_key,

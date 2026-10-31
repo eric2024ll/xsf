@@ -349,9 +349,6 @@ def ingest_markdown(md_path: str | Path, collection: str,
     }
 
 
-_OFFICE_EXTS = {'.doc', '.docx', '.docm', '.epub'}
-
-
 def _epub_spine_files(zip_path: str | Path) -> list[str]:
     """EPUB spine 顺序的 XHTML 文件列表（解析失败回退文件名排序）。"""
     import zipfile
@@ -851,54 +848,6 @@ def ingest_native_pdf(pdf_path: str | Path, collection: str,
         'mode': 'native (anydoc)',
         'empty_pages': empty_pages,
     }
-
-
-def ingest_office(office_path: str | Path, collection: str,
-                  cite_key: str = None, title: str = None,
-                  author: str = None,
-                  source_tags: str = '["primary"]') -> dict:
-    """Word/EPUB 文档（.doc/.docx/.docm/.epub）入库。anydoc 转 Markdown 后复用
-    ingest_markdown 的行/块管线（ingest_image 同款「转格式再复用」手法）。
-
-    doc_type='office'，page_count=1（无页概念），filename 记原文件名。
-    原文件照常存 uploads/；转换文本只进 DB 不落盘（2026-09-29 决策）。
-    """
-    import os
-    import tempfile
-
-    office_path = Path(office_path)
-    md_text = _office_to_markdown(office_path)
-
-    fd, tmp_md = tempfile.mkstemp(suffix='.md')
-    os.close(fd)
-    Path(tmp_md).write_text(md_text, encoding='utf-8')
-
-    try:
-        result = ingest_markdown(
-            tmp_md,
-            collection=collection,
-            cite_key=cite_key,
-            title=title or office_path.stem,
-            author=author,
-            source_tags=source_tags,
-        )
-        doc_id = result['doc_id']
-        conn = get_conn(collection)
-        try:
-            conn.execute(
-                "UPDATE documents SET filename = ?, doc_type = 'office' "
-                "WHERE id = ?",
-                (office_path.name, doc_id),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        result['filename'] = office_path.name
-        result['doc_type'] = 'office'
-    finally:
-        os.unlink(tmp_md)
-
-    return result
 
 
 def ingest_image(img_path: str | Path, collection: str,
