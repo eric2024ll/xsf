@@ -3,7 +3,7 @@
 
 个人史料文献检索与校对平台
 
-把散落在各处的 PDF / Word 变成可检索、可定位、可校对的文本池: 丢进书架,
+把散落在各处的 PDF / Markdown 变成可检索、可定位、可校对的文本池: 丢进书架,
 自动入库、自动 OCR、全文检索、图文对照校对; 并把文献中的实体按人工监督来源
 编译为实体库与知识地图。以 Web『小書房』为主入口, CLI / MCP / Windows
 便携版随行。数据完全留在本机, 不依赖任何云服务。
@@ -34,7 +34,7 @@
 - Git (源码安装)
 - 运行依赖: PyMuPDF(页渲染/裁图)、anydoc(文本提取)、jieba、requests、fastapi、uvicorn、jinja2、
   python-multipart、pypinyin、opencc-python-reimplemented
-- 可选 extras: [mcp](MCP server)、[office](Word 导入)、[desktop](托盘 GUI)、
+- 可选 extras: [mcp](MCP server)、[office](anydoc PDF 文本提取)、[desktop](托盘 GUI)、
   [build](PyInstaller 打包)
 
 
@@ -45,7 +45,7 @@ python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -e .                     # Web + CLI
 pip install -e ".[mcp]"              # 需要 MCP 时
-pip install -e ".[office]"           # 需要导入 Word 文档时
+pip install -e ".[office]"           # 建议装: PDF 逐页段落化提取 (缺失时退 OCR)
 --------------------------------------------------------------
 不想装环境可直接用【Windows 便携版】(见下)。
 

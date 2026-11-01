@@ -27,13 +27,14 @@ jobs:
       - name: PyInstaller 打包
         run: pyinstaller packaging/xsf.spec --noconfirm
 
-      - name: 便携版冒烟 (frozen office 链路)
+      - name: 便携版冒烟 (frozen 入库→检索链路)
         shell: pwsh
         run: |
-          python packaging/make_smoke_docx.py smoke.docx
-          dist/xsf-portable/xsf.exe add smoke.docx -c _ci_smoke
+          # 2026-10-31 格式收敛: epub/Word 通道退役, 只收 PDF/Markdown; 冒烟改用 md
+          Set-Content -Encoding utf8 -Path smoke.md -Value "# 冒烟`n`n小書房便携版 frozen 冒烟测试段落。"
+          dist/xsf-portable/xsf.exe add smoke.md -c _ci_smoke
           $out = dist/xsf-portable/xsf.exe search "冒烟" -c _ci_smoke | Out-String
-          if ($out -notmatch '条结果') { throw "frozen office 链路未命中: $out" }
+          if ($out -notmatch '条结果') { throw "frozen 入库检索链路未命中: $out" }
 
       - name: 便携版 doctor 自检 (frozen 可跑性)
         shell: pwsh

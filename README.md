@@ -280,7 +280,7 @@ journalctl -u xsf -f        # 实时日志
 
 ### 依赖
 
-运行：PyMuPDF（页渲染/裁图）、anydoc（PDF/EPUB/Office 文本提取）、jieba（分词）、requests（OCR client）、fastapi + uvicorn + jinja2 + python-multipart（Web）、pypinyin（排序）、opencc-python-reimplemented（繁简归一）。
+运行：PyMuPDF（页渲染/裁图）、anydoc（PDF 文本提取）、jieba（分词）、requests（OCR client）、fastapi + uvicorn + jinja2 + python-multipart（Web）、pypinyin（排序）、opencc-python-reimplemented（繁简归一）。
 可选：`[mcp]`（MCP server）、`[desktop]`（托盘 GUI）、`[build]`（PyInstaller 打包）。
 
 ### 改动后验证
