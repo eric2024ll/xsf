@@ -459,7 +459,10 @@ def cmd_autofill(args):
         sys.exit(3)
     try:
         r = G.autofill_doc(args.collection, args.doc_id, targets=args.targets,
-                           provider_id=args.provider, progress=_progress)
+                           provider_id=args.provider, progress=_progress,
+                           only_missing=args.only_missing,
+                           batch_blocks=args.batch_blocks,
+                           batch_chars=args.batch_chars)
     except LLMNotConfigured as e:
         print(f'错误: 未配置 LLM provider: {e}', file=sys.stderr)
         sys.exit(3)
@@ -556,6 +559,12 @@ def main():
     p_af.add_argument('--targets', default='gloss,trans',
                       help='逗号分隔: translit/gloss/trans')
     p_af.add_argument('--provider', help='LLM provider id')
+    p_af.add_argument('--only-missing', action='store_true', dest='only_missing',
+                      help='查缺补漏: 只翻译缺字段的行, 已有值不动')
+    p_af.add_argument('--batch-blocks', type=int, default=4, dest='batch_blocks',
+                      help='每批最大块数 (默认 4)')
+    p_af.add_argument('--batch-chars', type=int, default=800, dest='batch_chars',
+                      help='每批最大原文字符数 (默认 800)')
 
     args = parser.parse_args()
 

@@ -41,12 +41,18 @@ AUTOFILL_SYSTEM_PROMPT = """\
 
 硬性要求: 数组中每个对象对应输入的一个文本块, 顺序一致、一个不漏; \
 被要求的字段每块都必须给出 (实在无法确定也给出最佳猜测), 不得留空、\
-不得省略对象、不得合并相邻块。"""
+不得省略对象、不得合并相邻块、不得把一个文本块拆成多条输出 \
+(块再长也是一个对象, 输出截断也不许拆)。"""
 
 
 def chat(messages: list[dict], provider_id: str = None,
          max_tokens: int = None, timeout: float = 180.0) -> tuple[str, str]:
-    """调用 LLM (OpenAI 兼容)。返回 (content, model_name)。"""
+    """调用 LLM (OpenAI 兼容)。返回 (content, model_name)。
+
+    provider 配置可选 chat_extra (dict): 逐字段合并进请求 body
+    (如 zhipau GLM 系列 {"thinking": {"type": "disabled"}} 关思考提速
+    确定性转换任务; OpenAI 兼容网关一般忽略不认识的多余字段)。
+    """
     try:
         cfg = get_llm_provider_cfg(provider_id)
     except RuntimeError as e:
@@ -64,6 +70,8 @@ def chat(messages: list[dict], provider_id: str = None,
     }
     if max_tokens:
         body['max_tokens'] = max_tokens
+    if isinstance(cfg.get('chat_extra'), dict):
+        body.update(cfg['chat_extra'])
     resp = requests.post(url, json=body, headers=headers, timeout=timeout)
     if resp.status_code != 200:
         # 透传服务端错误详情 (模型格式限制/鉴权/参数等诊断关键)
@@ -154,6 +162,61 @@ def _autofill_batch(batch: list[dict], src_lang: str, targets: list[str],
     return rows, model
 
 
+_SENT_SPLIT_RE = re.compile(r'(?<=[。．.!?！？；;])\s*')
+
+
+def _split_long_blocks(blocks: list[dict], max_chars: int = 350
+                       ) -> tuple[list[dict], list[int]]:
+    """超长块按句切分为子块 (LLM 对长段落块倾向拆句输出 → 数量不齐批废).
+
+    返回 (flat, index_map): flat 为子块列表, index_map[i] 为该子块归属的
+    原块下标。短块原样透传。
+    """
+    flat: list[dict] = []
+    index_map: list[int] = []
+    for i, b in enumerate(blocks):
+        t = (b.get('text', '') or '')
+        if len(t) <= max_chars:
+            flat.append(b)
+            index_map.append(i)
+            continue
+        parts, cur = [], ''
+        for sent in _SENT_SPLIT_RE.split(t):
+            if cur and len(cur) + len(sent) > max_chars:
+                parts.append(cur)
+                cur = sent
+            else:
+                cur += sent
+        if cur:
+            parts.append(cur)
+        if len(parts) > 1 and len(parts[-1]) < 80:
+            parts[-2] += parts[-1]
+            parts.pop()
+        for p in parts:
+            flat.append({'text': p})
+            index_map.append(i)
+    return flat, index_map
+
+
+def _merge_results(results: list[dict], index_map: list[int],
+                   n_blocks: int, targets: list[str]) -> list[dict]:
+    """子块结果按原块回拼: translit/gloss 空格连, trans 直连 (句读自带)."""
+    out: list[dict] = [{} for _ in range(n_blocks)]
+    for r, i in zip(results, index_map):
+        if not r:
+            continue
+        for t in targets:
+            v = str(r.get(t, '') or '').strip()
+            if not v:
+                continue
+            if out[i].get(t):
+                out[i][t] = (out[i][t] + ' ' + v) if t != 'trans' \
+                    else (out[i][t] + v)
+            else:
+                out[i][t] = v
+    return out
+
+
 def autofill_rows(blocks: list[dict], src_lang: str,
                   targets: list[str], provider_id: str = None,
                   batch_blocks: int = 4, batch_chars: int = 800,
@@ -166,6 +229,7 @@ def autofill_rows(blocks: list[dict], src_lang: str,
 
     长文本整页一次请求易丢项 (gloss 缺失/数量不齐), 故按批生成:
     每批 ≤ batch_blocks 块且累计原文 ≤ batch_chars 字符 (先到为准);
+    超长单块 (>350 字符) 先按句切分为子块分批, 结果回拼 (2026-11-01);
     单批失败自动重试 1 次, 再失败该批置空行 (不炸整页, 可重按补缺)。
     """
     if not blocks:
@@ -174,10 +238,12 @@ def autofill_rows(blocks: list[dict], src_lang: str,
     if not targets:
         raise ValueError('targets 至少含 translit/gloss/trans 之一')
 
+    flat, index_map = _split_long_blocks(blocks)
+
     batches: list[list[dict]] = []
     cur: list[dict] = []
     cur_chars = 0
-    for b in blocks:
+    for b in flat:
         t_len = len(b.get('text', '') or '')
         if cur and (len(cur) >= batch_blocks or cur_chars + t_len > batch_chars):
             batches.append(cur)
@@ -187,7 +253,7 @@ def autofill_rows(blocks: list[dict], src_lang: str,
     if cur:
         batches.append(cur)
 
-    results: list[dict] = []
+    flat_results: list[dict] = []
     model = ''
     failed_batches = 0
     for batch in batches:
@@ -195,17 +261,19 @@ def autofill_rows(blocks: list[dict], src_lang: str,
         for _attempt in range(2):  # 失败重试 1 次
             try:
                 got = _autofill_batch(batch, src_lang, targets, provider_id)
+            except LLMNotConfigured:
+                raise  # 配置类错误: 立即炸, 不静默置空行
             except Exception:
                 got = None
             if got:
                 break
         if got:
-            results.extend(got[0])
+            flat_results.extend(got[0])
             model = got[1]
         else:
-            results.extend([{} for _ in batch])
+            flat_results.extend([{} for _ in batch])
             failed_batches += 1
     if failed_batches:
         # 部分批次失败: 空行占位, 前端再按一次只补缺 (值不变跳过)
         pass
-    return results, model
+    return _merge_results(flat_results, index_map, len(blocks), targets), model

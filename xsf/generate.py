@@ -323,8 +323,13 @@ def gen_entitygraph_core(collection, doc_ids=None, provider_id=None, progress=No
 
 def autofill_page(collection, doc_id, page_num, targets=None,
                   provider_id=None, progress=None,
-                  batch_blocks: int = 4, batch_chars: int = 800):
-    """AI 填充某页多行制 draft 层 (translit/gloss/trans 子集)。"""
+                  batch_blocks: int = 4, batch_chars: int = 800,
+                  only_missing: bool = False):
+    """AI 填充某页多行制 draft 层 (translit/gloss/trans 子集)。
+
+    only_missing=True (查缺补漏模式): 只把 targets 中有空字段的行发给
+    LLM, 回写时只填原本为空的字段 — 已有值 (人工修订或先前草稿) 不动。
+    """
     progress = progress or _noop
     A = _api()
     targets = targets or ["gloss", "trans"]
@@ -354,6 +359,11 @@ def autofill_page(collection, doc_id, page_num, targets=None,
         conn.close()
     if not rows:
         raise ValueError("该页无文本块")
+    if only_missing:
+        rows = [r for r in rows
+                if any(not (r[t] or "").strip() for t in targets)]
+        if not rows:
+            return {"filled": 0, "model": "", "empty": 0}  # 全满页, 跳过
     blocks = [{"text": r["text"]} for r in rows]
     src_lang = doc["lang"] or "zh"
     progress(f"请求 LLM 填充 (targets={targets}, {len(blocks)} 块)…")
@@ -378,6 +388,8 @@ def autofill_page(collection, doc_id, page_num, targets=None,
                 if key not in draft:
                     continue
                 old_v = r[key] or ""
+                if only_missing and old_v.strip():
+                    continue  # 查缺补漏: 已有值 (含人工修订) 不覆盖
                 new_v = draft[key]
                 if new_v == old_v:
                     continue
@@ -427,25 +439,51 @@ def autofill_page(collection, doc_id, page_num, targets=None,
 
 def autofill_doc(collection, doc_id, targets=None, provider_id=None,
                  progress=None,
-                 batch_blocks: int = 4, batch_chars: int = 800):
-    """对整个文献的每页跑 autofill (页级循环)。"""
+                 batch_blocks: int = 4, batch_chars: int = 800,
+                 only_missing: bool = False):
+    """对整个文献的每页跑 autofill (页级循环)。
+
+    only_missing=True 时只翻译缺字段的行 (已有值不动, 查缺补漏模式)。
+    """
     progress = progress or _noop
     if provider_id is None:
         provider_id = get_default_llm_provider_id()
+    A = _api()
     conn = get_conn(collection)
     try:
-        pages = [r["page_num"] for r in conn.execute(
-            "SELECT DISTINCT page_num FROM lines WHERE doc_id = ? "
-            "ORDER BY page_num", (doc_id,)).fetchall()]
+        if only_missing:
+            targets = targets or ["gloss", "trans"]
+            if isinstance(targets, str):
+                targets = [t.strip() for t in targets.split(",") if t.strip()]
+            doc = conn.execute(
+                "SELECT id, lang, tri_rows FROM documents WHERE id = ?",
+                (doc_id,)).fetchone()
+            if doc is None:
+                raise ValueError("文献不存在")
+            if A._tri_rows_for(doc) == 3:
+                targets = [t for t in targets if t != "translit"]
+            where = " OR ".join(
+                f"({t} IS NULL OR {t} = '')" for t in targets)
+            pages = [r["page_num"] for r in conn.execute(
+                f"SELECT DISTINCT page_num FROM lines "
+                f"WHERE doc_id = ? AND ({where}) ORDER BY page_num",
+                (doc_id,)).fetchall()]
+        else:
+            pages = [r["page_num"] for r in conn.execute(
+                "SELECT DISTINCT page_num FROM lines WHERE doc_id = ? "
+                "ORDER BY page_num", (doc_id,)).fetchall()]
     finally:
         conn.close()
     if not pages:
+        if only_missing:
+            return {"filled": 0, "empty": 0}   # 无缺行, 提前收工
         raise ValueError("文献无文本块")
     total = {"filled": 0, "empty": 0}
     for i, pg in enumerate(pages):
         progress(f"页 {pg} ({i + 1}/{len(pages)})")
         r = autofill_page(collection, doc_id, pg, targets, provider_id,
-                          batch_blocks=batch_blocks, batch_chars=batch_chars)
+                          batch_blocks=batch_blocks, batch_chars=batch_chars,
+                          only_missing=only_missing)
         total["filled"] += r["filled"]
         total["empty"] += r["empty"]
     return total
