@@ -82,7 +82,7 @@ table.eg-tbl th { color: var(--text-muted); font-weight: 500; }
       <span class="ai-badge" title="本页为 LLM 从文献编译生成的登记簿, 可再生; 事实源是文献, 引用前请核对原文">AI 编译</span>
       <span id="egCounts"></span>
       <span id="egStale"></span>
-      <button class="mini-btn" id="egGenBtn" onclick="egGenerate()">编译实体图</button>
+      <button class="mini-btn" id="egGenBtn" onclick="egGenerate()" title="仅消费人工监督来源: 实体依据卡 / bib 关键词 / 文献自带索引与关键词段">编译实体图（依据卡）</button>
       <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 文献列表</a>
     </div>
   </div>
@@ -122,7 +122,7 @@ table.eg-tbl th { color: var(--text-muted); font-weight: 500; }
 
   <div id="egEmpty" class="empty-state" style="display:none;">
     <p>尚未编译实体图。</p>
-    <p class="hint">点右上「编译实体图」从文献抽取实体（需配置 llm_chat provider）。</p>
+    <p class="hint">点右上「编译实体图」按实体依据卡等人工来源编译（不再自动扫描正文）。无产出的文献先在卡片区添加「实体依据」（粘贴索引/关键词文本，AI 解析后人工核改）。</p>
   </div>
 
   <div class="eg-layout" id="egLayout">

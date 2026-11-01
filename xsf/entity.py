@@ -24,8 +24,7 @@ from .db import get_conn
 from .llm import chat, _extract_json_array
 
 
-# 并发度 (编译提速: 抽取批 / CBDB 查询), 可用环境变量覆盖
-_EXTRACT_WORKERS = int(os.environ.get('XSF_EXTRACT_WORKERS', '8'))
+# 并发度 (CBDB 查询), 可用环境变量覆盖
 _CBDB_WORKERS = int(os.environ.get('XSF_CBDB_WORKERS', '6'))
 _CBDB_CACHE = {}
 
@@ -142,13 +141,6 @@ def _cbdb_props(hit):
 
 
 # ── 抽取 ──
-ENTITY_SYSTEM = (
-    "你是史料实体抽取助手。给定文献的若干文本块, 每块有编号。"
-    "抽取每块中的人名、地名、机构、物产、职官等具名实体。\n"
-    "仅输出 JSON 数组, 每元素形如 {\"i\": 块编号, \"surface\": \"实体原文写法\", "
-    "\"category\": \"人名/地名/机构/物产/职官 之一\"}。\n"
-    "surface 必须是原文出现的写法 (可含异写/字号)。不要解释, 不要臆造。"
-)
 
 _PAPER_TYPES = {'@article', '@inproceedings', '@phdthesis', '@mastersthesis',
                 '@techreport', '@unpublished', '@manuscript'}
@@ -307,34 +299,13 @@ SEED_SYSTEM = (
 
 
 def extract_seeds(conn, doc_id, provider_id=None, source=None):
-    """模型提取实体依据 (关键词/索引) → {'keywords':[...], 'index':[...], 'model':...}。
-    source 给定 (粘贴/导入的文本) 时以其为准解析; 否则从文献块中识别,
-    输入优先含「索引/关键词」的块, 再补前若干块。"""
-    if source and source.strip():
-        text = source.strip()[:12000]
-    else:
-        blocks = conn.execute(
-            "SELECT page_num, block_num, text FROM blocks_fts "
-            "WHERE doc_id = ? ORDER BY page_num, block_num", (doc_id,)).fetchall()
-        picked, seen = [], set()
-        for b in blocks:
-            if not (b['text'] or '').strip():
-                continue
-            if re.search(r'索引|關鍵詞|关键词|关键字|index|key\s*words?',
-                         b['text'], re.I):
-                k = (b['page_num'], b['block_num'])
-                if k not in seen:
-                    seen.add(k); picked.append(b)
-        for b in blocks:
-            if len(picked) >= 40:
-                break
-            k = (b['page_num'], b['block_num'])
-            if (b['text'] or '').strip() and k not in seen:
-                seen.add(k); picked.append(b)
-        if not picked:
-            return {'keywords': [], 'index': [], 'model': None}
-        text = "\n".join(f"[p{b['page_num']}b{b['block_num']}] {b['text']}"
-                         for b in picked[:40])
+    """模型解析实体依据 (关键词/索引) → {'keywords':[...], 'index':[...], 'model':...}。
+
+    管口收敛 (2026-10-31 用户裁定, 实体只接受人工监督下的抽取):
+    source (用户粘贴/导入的文本) 必给——AI 只作解析器, 不再自己扫正文找料。"""
+    if not (source and source.strip()):
+        return {'keywords': [], 'index': [], 'model': None}
+    text = source.strip()[:12000]
     content, model = chat(
         [{"role": "system", "content": SEED_SYSTEM},
          {"role": "user", "content": "文献文本:\n" + text}],
@@ -357,92 +328,19 @@ def extract_seeds(conn, doc_id, provider_id=None, source=None):
     return {'keywords': kw[:200], 'index': idx[:500], 'model': model}
 
 
-def _batches(blocks, max_blocks=8, max_chars=1400):
-    cur, n = [], 0
-    for b in blocks:
-        t = b['text'] or ''
-        if cur and (len(cur) >= max_blocks or n + len(t) > max_chars):
-            yield cur
-            cur, n = [], 0
-        cur.append(b)
-        n += len(t)
-    if cur:
-        yield cur
-
-
 def extract_mentions(conn, doc_id, provider_id=None):
-    """按文献抽取提及 → [{'surface','category','page_num','block_num'}]。
-    来源优先级: 论文关键词 / 图书索引 (权威种子, 强制入图) > 正文抽取。"""
+    """收集实体提及种子 → [{'surface','category','page_num','block_num'}]。
+
+    管口收敛 (2026-10-31 用户裁定): 只接受人工监督下的来源——
+      ① 实体依据卡 (人工粘贴/编辑, doc_cards kind='entity_source')
+      ② bib 关键词 (作者输入的元数据)
+      ③ 文献自带索引段/关键词段的确定性解析 (正则, 非 LLM)
+    LLM 正文自由抽取已删除; provider_id 仅保留签名兼容, 不再使用。"""
+    del provider_id
     drow = conn.execute("SELECT bib_type FROM documents WHERE id = ?",
                         (doc_id,)).fetchone()
     kind = _doc_kind(drow['bib_type'] if drow else None)
-    seeds = _authoritative_seeds(conn, doc_id, kind)
-
-    blocks = conn.execute(
-        "SELECT page_num, block_num, text FROM blocks_fts "
-        "WHERE doc_id = ? ORDER BY page_num, block_num", (doc_id,)).fetchall()
-    # 低价值块跳过 (页码/页眉等过短块), 省调用
-    blocks = [b for b in blocks if len((b['text'] or '').strip()) >= 6]
-    system = ENTITY_SYSTEM
-    if kind == 'paper':
-        system += "\n本文献是期刊论文, 正文关键词段落中的词语优先作为实体。"
-    elif kind == 'book':
-        system += "\n本文献是图书, 若含索引段, 索引条目优先作为实体。"
-    if seeds:
-        label = '关键词' if kind == 'paper' else ('索引' if kind == 'book' else '权威来源')
-        system += ("\n文献自带%s (必须全部纳入抽取结果): %s"
-                   % (label, '、'.join(s['surface'] for s in seeds)))
-    out = []
-
-    def _one(batch):
-        idx = []
-        lines = []
-        for i, b in enumerate(batch):
-            idx.append((i, b['page_num'], b['block_num']))
-            lines.append(f"[{i}] {b['text']}")
-        user = "文本块:\n" + "\n".join(lines)
-        try:
-            content, _ = chat(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}], provider_id=provider_id)
-        except Exception:
-            return []
-        res = []
-        for item in _extract_json_array(content or ''):
-            if not isinstance(item, dict):
-                continue
-            surface = (item.get('surface') or '').strip()
-            if not surface:
-                continue
-            pn = bn = None
-            try:
-                j = int(item.get('i'))
-                for k, pg, bk in idx:
-                    if k == j:
-                        pn, bn = pg, bk
-                        break
-            except (TypeError, ValueError):
-                pass
-            res.append({'surface': surface,
-                        'category': (item.get('category') or '').strip() or None,
-                        'page_num': pn, 'block_num': bn})
-        return res
-
-    batches = list(_batches(blocks))
-    if batches:
-        with ThreadPoolExecutor(max_workers=_EXTRACT_WORKERS) as ex:
-            for res in ex.map(_one, batches):
-                out.extend(res)
-    have = {re.sub(r'\s+', '', m['surface'] or '') for m in out}
-    for s in seeds:
-        n = re.sub(r'\s+', '', s['surface'] or '')
-        if n and n not in have:
-            out.append({'surface': s['surface'], 'category': s['category'],
-                        'page_num': s['page_num'], 'block_num': s['block_num']})
-            have.add(n)
-    return out
-
-
+    return _authoritative_seeds(conn, doc_id, kind)
 # ── 归一 ──
 def _norm(s):
     return re.sub(r'\s+', '', s or '')

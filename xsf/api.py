@@ -3416,6 +3416,11 @@ async def entity_source_extract(collection: str, doc_id: int,
     doc = _get_card_doc(collection, doc_id)
     if doc is None:
         return JSONResponse(status_code=404, content={"error": "文献不存在"})
+    if not (source and source.strip()):
+        return JSONResponse(
+            status_code=422,
+            content={"error": "缺少 source: 请粘贴/导入索引或关键词文本 "
+                              "(AI 只作解析器, 不再自动扫描正文)"})
     try:
         get_llm_provider_cfg(None)
     except RuntimeError as e:
@@ -3432,7 +3437,11 @@ async def entity_source_extract(collection: str, doc_id: int,
 
 @app.post("/collections/{collection}/entitygraph/generate")
 async def entitygraph_generate(collection: str, doc_id: int = Form(None)):
-    """编译实体图 (全量; doc_id 给定时仅重建该文献的提及)."""
+    """编译实体图 (全量; doc_id 给定时仅重建该文献的提及).
+
+    管口收敛 (2026-10-31): 仅消费人工监督来源 (实体依据卡/bib 关键词/
+    文献自带索引/关键词的确定性解析), 不再 LLM 扫正文。无依据来源的
+    文献编译后提及为空——先在卡片区添加实体依据卡。"""
     from .config import get_llm_provider_cfg
     from .generate import gen_entitygraph_core
     if collection not in list_collections():

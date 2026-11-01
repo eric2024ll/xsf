@@ -543,7 +543,7 @@ def main():
     g_wiki = gensub.add_parser('wiki', help='编译知识地图 (书架级)')
     g_wiki.add_argument('-c', '--collection', required=True, help='书架名')
     g_wiki.add_argument('--provider', help='LLM provider id')
-    g_ent = gensub.add_parser('entities', help='编译实体图谱 (书架级/单文献)')
+    g_ent = gensub.add_parser('entities', help='编译实体图谱 (仅依据人工来源: 依据卡/bib关键词/文献自带索引, 无 LLM 正文抽取)')
     g_ent.add_argument('-c', '--collection', required=True, help='书架名')
     g_ent.add_argument('--doc', type=int, dest='doc_id',
                        help='仅重建该文献 (省略则全书架)')
