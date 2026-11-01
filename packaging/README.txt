@@ -4,8 +4,8 @@
 个人史料文献检索与校对平台
 
 把散落在各处的 PDF / Word 变成可检索、可定位、可校对的文本池: 丢进书架,
-自动入库、自动 OCR、全文检索、图文对照校对; 并把文献中的概念、人物、关系
-编译为实体图谱与知识地图。以 Web『小書房』为主入口, CLI / MCP / Windows
+自动入库、自动 OCR、全文检索、图文对照校对; 并把文献中的实体按人工监督来源
+编译为实体库与知识地图。以 Web『小書房』为主入口, CLI / MCP / Windows
 便携版随行。数据完全留在本机, 不依赖任何云服务。
 
 本文件讲「装起来」; 各功能怎么用见同目录的《使用说明.txt》。
@@ -13,7 +13,7 @@
 
 【核心功能】
 - 多书架管理: 按研究主题分 collection, 可单架搜索也可跨架搜索
-- 双通道解析: born-digital PDF 用 PyMuPDF 秒级提取立即可见; 扫描件走 OCR 队列回填
+- PDF 管线: born-digital PDF 逐页段落化秒级入库立即可见; 零文本/扫描件自动回退 OCR 队列
 - 文件夹投放自动入库: PDF/MD 丢进 {书架}/uploads/, 后台自动扫描入库 + 排 OCR
 - 全文检索: FTS5 + jieba 分词, 繁简归一; 结果按文档分组, 文档内分页 + load-more
 - OCR 校对工作台: 图文对照、块粒度编辑、栏系统(横排/竖右起/竖左起)、页面级断点续跑、
@@ -21,7 +21,8 @@
 - 智能校对: 双通道分歧点校对——第二引擎自动对齐比对, 或人工录入整篇文本(自动页映射),
   产出「实质异文/异体字对/页码」分类的分歧表并定位到原文行
 - 卡片资产: 每文献的元数据、目录树、摘要, 人工调整 + AI 辅助生成
-- 实体图谱: 书架级本体层——实体归一、提及锚点(跳原文页)、属性、共现关系; 可导出 JSON
+- 实体库: 书架级实体集合——依据卡编译(只接受人工监督来源, 不扫描正文)、归一三级
+  (精确/LLM/NIL, 宁分不误合)、提及证据(带上下文, 跳原文页)、别名/巡查; 可导出 JSON
 - 知识地图 (Wiki): 由文献编译的概念页, 双链互引, 可一键重编
 - 多语种文本层: 中文单行 / 非中文三行 / 原语四行(见《使用说明.txt》)
 - 导出: .bib / .md / 归档 tar.gz; 归档可整体备份与迁移
@@ -31,7 +32,7 @@
 【环境要求】
 - Python 3.11+
 - Git (源码安装)
-- 运行依赖: PyMuPDF、jieba、requests、fastapi、uvicorn、jinja2、
+- 运行依赖: PyMuPDF(页渲染/裁图)、anydoc(文本提取)、jieba、requests、fastapi、uvicorn、jinja2、
   python-multipart、pypinyin、opencc-python-reimplemented
 - 可选 extras: [mcp](MCP server)、[office](Word 导入)、[desktop](托盘 GUI)、
   [build](PyInstaller 打包)
@@ -59,10 +60,9 @@ pip install -e ".[office]"           # 需要导入 Word 文档时
 ├── db/                     数据库(本地磁盘, 不放网络盘)
 │   └── {书架}/xsf.db       每个 collection 独立 SQLite + FTS5
 ├── collections/            书架目录
-│   └── {书架}/uploads/     源文件按书架分目录
-├── ocr-config.json         OCR / LLM provider 配置 (权限 600)
-├── mounts.json             外部权威挂载配置 (见下)
-└── entity-additions...     实体图谱等运行数据
+│   ├── {书架}/uploads/     投放目录 (认领后原件移入 files/<id>/)
+│   └── {书架}/files/<id>/  原件统一布局 (original.<ext>)
+└── ocr-config.json         OCR / LLM provider 配置 (权限 600)
 
 DB 内只存 filename(不含绝对路径); 源文件与 db 对称分书架存放, 跨书架同名不冲突。
 --------------------------------------------------------------
@@ -94,12 +94,6 @@ uvicorn xsf.api:app --port 8090           # 起 Web 服务
 - 自训练管线: contrib/ 提供模板(本地模型缓存、GPU 独占、GPU→CPU 回退), PP_DEVICE 可覆盖
 
 
-【外部权威挂载】
-实体归一可对接外部权威库(如 CBDB 历史人物、CHGIS 历史地名)。挂载是**显式**的:
-由用户决定是否挂载、挂在哪里; 未挂载即自动降级为纯 LLM 归一。
-- 配置存 <XSF_DATA>/mounts.json, 在「实体图谱」页展开「外部权威挂载」填写:
-    启用勾选 + 脚本路径(可为脚本或其所在目录) + 运行命令(默认 python3)
-- 机制通用, 后续可接 CHGIS / Wikidata 等同类外部库
 
 
 【部署 (systemd 常驻, Linux)】
@@ -173,14 +167,14 @@ pip install -e ".[mcp]" 后可用 xsf-mcp, 把检索/上下文/元数据暴露�
 【Agent skill (只读检索)】
 本便携版自带 skill (zip 内 skills/xsf/)。安装: 把 skills/xsf 复制到你的 agent
 技能目录 (如 ~/.agents/skills/xsf, Windows 为 %USERPROFILE%\.agents\skills\xsf),
-agent 会自动加载。skill 覆盖书架/全文检索/上下文核对/实体图谱/统计 (只读),
+agent 会自动加载。skill 覆盖书架/全文检索/上下文核对/实体库/统计 (只读),
 供 AI 引文核对与史料定位; 用法见 使用说明.txt【Agent 协作 (skill · 只读检索)】。
 
 【CLI 生成】
-卡片资产 / 实体图谱 / 知识地图 / 多语种自动填充等 LLM 操作可直接在命令行跑,
+卡片资产 / 实体库 / 知识地图 / 多语种自动填充等 LLM 操作可直接在命令行跑,
 无需打开 Web(需先配 llm_chat provider, 见上【OCR / LLM provider 配置】):
   xsf gen cards    -c <书架> --doc <ID> [--targets toc,entities,summary,meta]
-  xsf gen entities -c <书架> [--doc <ID>]
+  xsf gen entities -c <书架> [--doc <ID>]   编译实体库(仅依据人工来源: 依据卡/bib 关键词/文献自带索引)
   xsf gen wiki     -c <书架>
   xsf autofill     -c <书架> --doc <ID> [--targets gloss,trans]
 命令细节见 使用说明.txt【CLI 命令参考】 / 【Agent 协作 (skill · 只读检索)】。
@@ -208,8 +202,6 @@ XSF_SCAN_STABLE_SEC   60                   文件稳定阈值秒(mtime 距今小
 XSF_SCAN_OCR          1                    PDF 自动 OCR, 0 仅标记不自动跑
 XSF_HOST / XSF_PORT   127.0.0.1 / 8090     Web 绑定地址与端口(便携版端口占用自动顺延)
 XSF_BASE_URL          http://localhost:8090  MCP 适配器连接的服务地址
-XSF_EXTRACT_WORKERS   8                    实体抽取并发线程数
-XSF_CBDB_WORKERS      8                    CBDB 查询并发数
 XSF_ENV               —                    显式指定 .env 路径(便携版)
 
 

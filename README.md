@@ -9,9 +9,10 @@
 ## 功能
 
 - **多书架管理**：按研究主题分 collection，可单架搜索也可跨架搜索，Web 上创建/重命名/删除。
-- **双通道解析**：born-digital PDF 用 PyMuPDF 秒级提取立即可见；扫描件走 OCR 队列回填。PDF 上传一律排 OCR 队列（`XSF_SCAN_OCR=0` 可关），确保检索层始终有全文。
+- **PDF 管线**：born-digital PDF 逐页段落化秒级入库立即可见；零文本/扫描件自动回退 OCR 队列回填（`XSF_SCAN_OCR=0` 可关自动 OCR）。
 - **文件夹投放自动入库**：把 PDF/MD 丢进 `{书架}/uploads/`（SMB/NFS/rsync 均可），后台线程自动扫描入库 + 排 OCR 队列，见下文专节。
 - **中文全文检索**：FTS5 + jieba 分词，短语匹配；搜索结果**按文档分组**，文档内分页 + load-more，跨文档通读不割裂。
+- **实体库**：实体依据卡（粘贴索引/关键词 → AI 解析 → 人工核改）编译书架级实体，归一三级（精确→LLM→NIL，宁分不误合）；文献实体卡带提及上下文（锚点反查，页码跳校对台）；多语种文献支持三/四行 AI 翻译（词对照/译文进检索）。
 - **OCR 校对工作台**：图文对照页，块粒度编辑；**栏系统**定义页面阅读区域（横排/竖右起/竖左起）后按栏重组、手工分栏重 OCR；页级断点续跑（done/error 状态）；疑点标记 `suspect`；失败页码明示；文献列表带 OCR 页状态徽标。
 - **智能校对**：OCR 候选云双通道分歧点校对——第二引擎自动对齐比对，或粘贴/上传整篇人工录入文本（自动页映射），逐点产出「实质异文 / 异体字对 / 页码」分类的分歧表，定位到原文行；分歧点自动写入疑点标记。
 - **批量元数据**：批量 设为/添加/移除 来源标签（原始史料/研究文献/工具书 + 自定义）；自动书目匹配（match-bib）；批量改元数据（batch-patch）；导出 .bib / .md / 归档。
@@ -93,6 +94,8 @@ xsf stats
 
 - **书架页** `/`：全库统计 + 书架列表 + 最近文献
 - **搜索页** `/search`：跨书架分组搜索
+- **实体库** `/collections/{c}/entities/view`：书架实体集合（依据卡编译、提及证据、别名、巡查）
+- **知识地图** `/collections/{c}/wiki/view`：概念页双链互引
 - **文献列表** `/collections/{c}/docs/list`：筛选、OCR 页状态徽标、扫描角标、批量标签
 - **上传页** `/collections/{c}/upload`：单传/批量，OCR 复选（默认勾选）
 - **预览** `/collections/{c}/doc/{id}/preview`：纯文本页/块/行
@@ -129,7 +132,7 @@ xsf stats
 
 把 PDF/MD 直接丢进 `{书架}/uploads/`，后台线程每 `XSF_SCAN_INTERVAL` 秒轮询 diff，新文件自动入库：
 
-- PDF 先走秒级解析（文献列表立即可见），**再一律入 OCR 队列**（worker 单线程串行，与手动「重新 OCR」共用同一任务机制，校对页可看进度）。`XSF_SCAN_OCR=0` 可关自动 OCR（仅标记待 OCR）。幂等：已 OCR（doc_type='ocr'）不再重跑。
+- PDF 先走秒级解析（文献列表立即可见）；已有文本层的不再排 OCR，零文本/扫描件自动入 OCR 队列（worker 单线程串行，与手动「重新 OCR」共用同一任务机制，校对页可看进度）。`XSF_SCAN_OCR=0` 可关自动 OCR（仅标记待 OCR）。
 - 文件写入未满 `XSF_SCAN_STABLE_SEC` 秒视为仍在传输，下轮再收。
 - **查重**：filename 已在本架 DB 的重复投放自动跳过（角标「重复N」可见，只报最近 1 小时投放的）；新入库文件若与其它书架同名，角标 tooltip 提醒（跨书架共存是设计行为，仅提醒不阻断）。
 - `collections/` 根目录与 `_orphan/` 不扫描——文件必须放进书架子目录才会被认领。
@@ -145,11 +148,12 @@ xsf stats
 │   ├── 书架A/xsf.db                #   每个 collection 独立 SQLite + FTS5
 │   └── 书架B/xsf.db
 ├── collections/                    # 书架目录
-│   ├── 书架A/uploads/              #   源文件按书架分目录
-│   │   ├── 云南茶业考.pdf
-│   │   └── 茶马古道.md
+│   ├── 书架A/uploads/              #   投放目录（扫描认领后原件移入 files/<id>/）
+│   ├── 书架A/files/
+│   │   ├── 12/original.pdf         #   原件统一布局：files/<文献id>/original.<ext>
+│   │   └── 13/original.md
 │   └── _orphan/                    #   迁移时无 DB 引用的遗留文件
-└── ocr-config.json                 # OCR provider 配置 (权限 600)
+└── ocr-config.json                 # OCR / LLM provider 配置 (权限 600)
 ```
 
 - DB 内只存 `filename`（不含绝对路径），迁移时无需修改 DB 内容。
@@ -174,9 +178,9 @@ xsf stats
 
 | 表/存储 | 作用 |
 |---------|------|
-| `documents` | 元数据：cite_key、标题、作者、页数、doc_type、来源标签、书目字段（bib_type/bib_data）、linked_pdf |
+| `documents` | 元数据：cite_key、标题、作者、页数、doc_type、来源标签、书目字段（bib_type/bib_data）、lang/tri_rows（行制）、original_virtual（无原件文献）、linked_pdf |
 | `lines` | 文本层：每页每块每行原文 + bbox 坐标 + block_label + 页面宽高 + suspect 疑点标记——检索定位与校对编辑的基本数据 |
-| `blocks_fts` | FTS5 虚拟表，jieba 分词后的块级文本，快速命中页与段 |
+| `blocks_fts` | FTS5 虚拟表，trigram 分词（CJK 段先 jieba 切词），块级原文+译文，快速命中页与段 |
 | `ocr_page_state` | 页级断点：每页 done/error 状态与错误信息，重跑跳过已完成页 |
 | `page_regions` | 栏定义：页面阅读区域 bbox（150dpi 坐标空间）+ 方向（h 横排 / v_rtl 竖右起 / v_ltr 竖左起）+ 阅读顺序 |
 
@@ -276,7 +280,7 @@ journalctl -u xsf -f        # 实时日志
 
 ### 依赖
 
-运行：PyMuPDF（PDF 提取）、jieba（分词）、requests（OCR client）、fastapi + uvicorn + jinja2 + python-multipart（Web）、pypinyin（排序）、opencc-python-reimplemented（繁简归一）。
+运行：PyMuPDF（页渲染/裁图）、anydoc（PDF/EPUB/Office 文本提取）、jieba（分词）、requests（OCR client）、fastapi + uvicorn + jinja2 + python-multipart（Web）、pypinyin（排序）、opencc-python-reimplemented（繁简归一）。
 可选：`[mcp]`（MCP server）、`[desktop]`（托盘 GUI）、`[build]`（PyInstaller 打包）。
 
 ### 改动后验证
