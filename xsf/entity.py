@@ -567,27 +567,57 @@ def set_constraint(conn, entity_id, era=None, scope=None,
 
 
 def ingest_doc(conn, doc_id, provider_id=None):
-    """单文献: 抽取 → 归一 → 替换该 doc 提及 (局部重建)。返回提及数。"""
-    mentions = extract_mentions(conn, doc_id, provider_id)
+    """单文献: 种子收集 → 归一 → 替换该 doc 提及 (局部重建)。返回提及数。
+
+    提及锚点 (2026-10-31): 种子多无锚点, 在正文行中**确定性反查** surface
+    命中块并展开 (每块一条, 上限 20; ≥2 字才反查; 归一空白后子串匹配),
+    未命中写一条无锚点保底提及。"""
+    seeds = extract_mentions(conn, doc_id, provider_id)
     surfaces_cat, seen = [], set()
-    for m in mentions:
+    for m in seeds:
         k = _norm(m['surface'])
         if k and k not in seen:
             seen.add(k)
             surfaces_cat.append({'surface': m['surface'],
                                  'category': m.get('category')})
     resolved = resolve_surfaces(conn, surfaces_cat, provider_id)
+    # 正文行 → 块文本 (归一空白), 供锚点反查
+    block_txt = {}
+    for r in conn.execute(
+            "SELECT page_num, block_num, text FROM lines "
+            "WHERE doc_id = ? ORDER BY page_num, line_num", (doc_id,)):
+        k = (r['page_num'], r['block_num'])
+        block_txt.setdefault(k, []).append(r['text'] or '')
+    block_norm = {k: re.sub(r'\s+', '', ''.join(v))
+                  for k, v in block_txt.items()}
     conn.execute("DELETE FROM entity_mentions WHERE doc_id = ?", (doc_id,))
     n = 0
-    for m in mentions:
+    for m in seeds:
         eid = resolved.get(m['surface'])
         if not eid:
             continue
-        conn.execute(
-            "INSERT OR IGNORE INTO entity_mentions"
-            "(entity_id, doc_id, page_num, block_num, surface) VALUES(?,?,?,?,?)",
-            (eid, doc_id, m.get('page_num'), m.get('block_num'), m['surface']))
-        n += 1
+        s_key = _norm(m['surface'])
+        hits = []
+        if not m.get('block_num') and len(s_key) >= 2:
+            for k, t in block_norm.items():
+                if s_key in t:
+                    hits.append(k)
+                    if len(hits) >= 20:
+                        break
+        if hits:
+            for pg, bn in hits:
+                conn.execute(
+                    "INSERT INTO entity_mentions"
+                    "(entity_id, doc_id, page_num, block_num, surface) "
+                    "VALUES(?,?,?,?,?)", (eid, doc_id, pg, bn, m['surface']))
+                n += 1
+        else:
+            conn.execute(
+                "INSERT INTO entity_mentions"
+                "(entity_id, doc_id, page_num, block_num, surface) "
+                "VALUES(?,?,?,?,?)", (eid, doc_id, m.get('page_num'),
+                                      m.get('block_num'), m['surface']))
+            n += 1
     conn.commit()
     return n
 

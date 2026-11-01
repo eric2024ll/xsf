@@ -408,7 +408,7 @@ def _require_collection(name):
 
 
 def cmd_gen(args):
-    """LLM 生成: 卡片候选 (cards) / 知识地图 (wiki) / 实体图谱 (entities)."""
+    """LLM 生成: 卡片候选 (cards) / 知识地图 (wiki) / 实体库 (entities)."""
     from . import generate as G
     from .llm import LLMNotConfigured
     act = getattr(args, 'gen_action', None)
@@ -525,7 +525,7 @@ def main():
     sub.add_parser('stats', help='统计信息')
     sub.add_parser('doctor', help='环境自检: 数据目录/书架一致性/孤儿目录/多实例')
 
-    p_gen = sub.add_parser('gen', help='LLM 生成: 卡片候选/知识地图/实体图谱')
+    p_gen = sub.add_parser('gen', help='LLM 生成: 卡片候选/知识地图/实体库')
     gensub = p_gen.add_subparsers(dest='gen_action')
     g_cards = gensub.add_parser('cards',
                                 help='生成卡片候选 (目录/摘要/元数据/实体)')
@@ -543,7 +543,7 @@ def main():
     g_wiki = gensub.add_parser('wiki', help='编译知识地图 (书架级)')
     g_wiki.add_argument('-c', '--collection', required=True, help='书架名')
     g_wiki.add_argument('--provider', help='LLM provider id')
-    g_ent = gensub.add_parser('entities', help='编译实体图谱 (仅依据人工来源: 依据卡/bib关键词/文献自带索引, 无 LLM 正文抽取)')
+    g_ent = gensub.add_parser('entities', help='编译实体库 (仅依据人工来源: 依据卡/bib关键词/文献自带索引, 无 LLM 正文抽取)')
     g_ent.add_argument('-c', '--collection', required=True, help='书架名')
     g_ent.add_argument('--doc', type=int, dest='doc_id',
                        help='仅重建该文献 (省略则全书架)')

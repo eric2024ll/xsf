@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="/favicon.ico">
-<title>实体图谱 — {{ collection }} · 小書房</title>
+<title>实体库 — {{ collection }} · 小書房</title>
 <link rel="stylesheet" href="/static/app.css?v={{ static_v }}">
 <style>
 .wrap { max-width: 1220px; margin: 0 auto; padding: 20px; }
@@ -77,12 +77,12 @@ table.eg-tbl th { color: var(--text-muted); font-weight: 500; }
 {% include "_nav.html" %}
 <div class="wrap">
   <div class="page-head">
-    <h1>实体图谱 <span class="coll-name">{{ collection }}</span></h1>
+    <h1>实体库 <span class="coll-name">{{ collection }}</span></h1>
     <div class="eg-meta">
       <span class="ai-badge" title="本页为 LLM 从文献编译生成的登记簿, 可再生; 事实源是文献, 引用前请核对原文">AI 编译</span>
       <span id="egCounts"></span>
       <span id="egStale"></span>
-      <button class="mini-btn" id="egGenBtn" onclick="egGenerate()" title="仅消费人工监督来源: 实体依据卡 / bib 关键词 / 文献自带索引与关键词段">编译实体图（依据卡）</button>
+      <button class="mini-btn" id="egGenBtn" onclick="egGenerate()" title="仅消费人工监督来源: 实体依据卡 / bib 关键词 / 文献自带索引与关键词段">编译实体库（依据卡）</button>
       <a class="back-link" href="/collections/{{ collection | urlencode }}/docs/list">← 文献列表</a>
     </div>
   </div>
@@ -249,7 +249,7 @@ async function egShow(id){
 
   // 共现邻居
   if((e.neighbors||[]).length){
-    h.push('<div class="eg-sec"><h3>共现邻居 (同文献同页)</h3>'+(e.neighbors||[]).map(function(n){
+    h.push('<div class="eg-sec"><h3>共现线索（同文献同页；启发式，非关系）</h3>'+(e.neighbors||[]).map(function(n){
       return '<span class="chip clickable" onclick="egShow('+n.id+')">'+esc(n.canonical)+' ·'+n.co+'</span>';
     }).join('')+'</div>');
   }
@@ -441,7 +441,7 @@ async function egGenerate(){
       if(jd.status==='error'){ alert('编译失败：'+(jd.error||'')); break; }
     }
   } finally {
-    btn.disabled = false; btn.textContent = '编译实体图';
+    btn.disabled = false; btn.textContent = '编译实体库';
     await egStatus(); await egLoad();
   }
 }

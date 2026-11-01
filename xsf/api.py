@@ -4059,6 +4059,19 @@ async def proofread_page(
                         (doc_id,)).fetchall()]
                 except sqlite3.OperationalError:
                     doc_entities = []
+                # 实体卡上下文: 按 (page,block) 聚行文本, 截 120 字 (2026-10-31)
+                if doc_entities:
+                    _blocks = {}
+                    for _r in conn.execute(
+                            "SELECT page_num, block_num, line_num, text "
+                            "FROM lines WHERE doc_id = ? ORDER BY line_num",
+                            (doc_id,)):
+                        _k = (_r["page_num"], _r["block_num"])
+                        _blocks.setdefault(_k, []).append(_r["text"] or '')
+                    for _e in doc_entities:
+                        _txt = ' '.join(''.join(_blocks.get(
+                            (_e["page_num"], _e["block_num"]), [])).split())
+                        _e["excerpt"] = (_txt[:120] + '…') if len(_txt) > 120 else _txt
                 cards_map = {}
                 for cr in card_rows:
                     try:

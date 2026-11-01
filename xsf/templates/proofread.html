@@ -1041,7 +1041,7 @@ mark {
     <div class="tp-pane" data-pane="entity">
       <div class="cg-head" style="margin-top:6px;">
         <span class="cg-title">本文献提及</span>
-        <span class="cg-hint">实体图由 LLM 从文献编译（可再生）· 详情/合并/补录在「实体图谱」页</span>
+        <span class="cg-hint">实体条目按人工监督来源编译（依据卡 / bib 关键词 / 文献自带索引，不扫描正文）· 详情/合并/补录在「实体库」页</span>
       </div>
       {% set _seed = cards_map.get('entity_source', {'content': {}}) %}
       {% set _sc = _seed.content if _seed.content is mapping else {} %}
@@ -1049,7 +1049,7 @@ mark {
       {% set seed_idx = _sc.get('index') or [] %}
       <details class="seed-box" style="margin:6px 0 10px;">
         <summary style="cursor:pointer;font-size:0.86rem;color:var(--text-muted);">
-          实体依据（关键词 / 索引）<span id="seedHint">{% if seed_kws or seed_idx %}已设置（作为实体编译依据）{% else %}未设置：将自动识别文献自带关键词/索引{% endif %}</span>
+          实体依据（关键词 / 索引）<span id="seedHint">{% if seed_kws or seed_idx %}已设置（作为实体编译依据）{% else %}未设置：编译时仍会用文献自带关键词/索引段（确定性解析，非 AI）{% endif %}</span>
         </summary>
         <div style="padding:8px 0;">
           <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">粘贴索引 / 关键词文本（AI 解析；也可直接手填下方）</div>
@@ -1063,7 +1063,6 @@ mark {
           <div style="font-size:0.8rem;color:var(--text-muted);margin:6px 0 4px;">索引条目（每行「条目|页码」，页码可省，可手动增删）</div>
           <textarea id="seedIdx" rows="4" style="width:100%;box-sizing:border-box;" placeholder="例：曾国藩|12">{% set ns = namespace(lines=[]) %}{% for it in seed_idx %}{% set _ = ns.lines.append((it.get('term') or '') ~ ('|' ~ it.get('page_num') if it.get('page_num') is not none else '')) %}{% endfor %}{{ ns.lines | join('\n') }}</textarea>
           <div class="card-actions" style="margin-top:6px;">
-            <button onclick="aiExtractSeeds()">从正文提取</button>
             <button class="btn-primary" onclick="saveSeeds()">保存依据</button>
             <button onclick="clearSeeds()">清空（回自动识别）</button>
           </div>
@@ -1071,19 +1070,20 @@ mark {
       </details>
         {% if doc_entities %}
         <table class="toc-table" id="entityTable"><tbody id="entityBody">
-          <tr><th>实体</th><th>类别</th><th>页</th><th></th></tr>
+          <tr><th>实体</th><th>类别</th><th>页</th><th>上下文</th><th></th></tr>
           {% for e in doc_entities %}
           <tr data-mention="{{ e.id }}"><td>{{ e.canonical }}</td><td>{{ e.category or '—' }}</td>
               <td>{% if e.page_num is not none %}<a href="#" onclick="goPage({{ e.page_num }});return false;">p{{ e.page_num }}</a>{% else %}—{% endif %}</td>
+              <td class="em-ctx" style="color:var(--text-muted);font-size:0.78rem;max-width:26em;">{{ e.excerpt or '—' }}</td>
               <td><button onclick="invalidateMention({{ e.id }}, this)" title="标为错误（编译层纠错回流阀）">错了</button></td></tr>
           {% endfor %}
         </tbody></table>
         {% else %}
-        <div class="empty-hint" id="entityEmpty">本篇暂无实体提及——点「重编本篇实体」或到文献列表页点「实体图谱」编译。</div>
+        <div class="empty-hint" id="entityEmpty">本篇暂无实体提及——点「重编本篇实体」或到文献列表页点「实体库」编译。</div>
         {% endif %}
         <div class="card-actions">
           <button class="btn-primary" onclick="recompileDocEntities()">重编本篇实体</button>
-          <a class="btn" href="/collections/{{ collection | urlencode }}/entities/view">实体图谱 →</a>
+          <a class="btn" href="/collections/{{ collection | urlencode }}/entities/view">实体库 →</a>
         </div>
     </div>
     <div class="tp-pane" data-pane="search">
@@ -2489,7 +2489,6 @@ async function postCard(url, data) {
 async function saveCard(kind) {
   let content = {};
   if (kind === 'toc') content = { tree: window.__tocTree || [] };
-  else if (kind === 'entity') content = window.__entityContent || { items: [] };
   const d = await postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
     { kind, content: JSON.stringify(content), status: 'draft' });
   if (d.ok) showToast('已保存');
@@ -2505,8 +2504,7 @@ async function toggleStatus(kind, cur) {
   if (!res.ok) { showToast('失败: ' + (res.error || '')); return; }
   showToast(next === 'reviewed' ? '已 reviewed（进检索路）' : '已退回 draft');
   if (kind === 'toc') window.__tocStatus = next;
-  if (kind === 'entity') window.__entityStatus = next;
-  const pane = document.querySelector('.tp-pane[data-pane="' + (kind === 'entity' ? 'entity' : (kind === 'summary' ? 'meta' : kind)) + '"]');
+  const pane = document.querySelector('.tp-pane[data-pane="' + (kind === 'summary' ? 'meta' : kind) + '"]');
   if (pane) {
     const badge = pane.querySelector('.cg-hint .badge');
     if (badge) { badge.textContent = next; badge.className = 'badge ' + next; }
@@ -2688,61 +2686,6 @@ function addTocNode() {
   document.getElementById('tnPage').value = '';
   renderTocTree();
 }
-function __entityPersist() {
-  postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
-    { kind: 'entity', content: JSON.stringify(window.__entityContent), status: window.__entityStatus })
-    .then(d => { if (!d.ok) showToast('实体卡自动落库失败: ' + (d.error || '')); });
-}
-function delEntityItem(idx, btn) {
-  if (!window.__entityContent) return;
-  const it = window.__entityContent.items[idx];
-  if (!it) return;
-  if (!confirm('删除实体「' + it.label + '？')) return;
-  window.__entityContent.items.splice(idx, 1);
-  __entityPersist();
-  const tr = btn.closest('tr');
-  if (tr) {
-    const body = tr.parentElement;
-    tr.remove();
-    [...body.querySelectorAll('tr')].forEach((r, i) => {   // 重排行号
-      if (i === 0) return;
-      r.dataset.eidx = i - 1;
-      const b = r.querySelector('td:last-child button');
-      if (b) b.setAttribute('onclick', 'delEntityItem(' + (i - 1) + ', this)');
-    });
-    if (body.children.length <= 1) {
-      document.getElementById('entityTable').style.display = 'none';
-      const em = document.getElementById('entityEmpty'); if (em) em.style.display = '';
-    }
-  }
-  showToast('已删除（已落库）');
-}
-
-function addEntityItem() {
-  const label = document.getElementById('enLabel').value.trim();
-  if (!label) { showToast('实体名必填'); return; }
-  const cat = document.getElementById('enCat').value.trim();
-  if (window.__entityContent && window.__entityContent.items.some(
-      it => (it.label || '').trim() === label)) {
-    showToast('实体已存在: ' + label + '（自动合并重复——未添加）');
-    document.getElementById('enLabel').value = '';
-    return;
-  }
-  if (!window.__entityContent) {
-    window.__entityContent = { items: [] };
-    {% if entity.content.get('items') %}
-    window.__entityContent.items = {{ entity.content.get('items') | tojson }};
-    {% endif %}
-  }
-  window.__entityContent.items.push({ label, category: cat || null, from: '手工' });
-  document.getElementById('enLabel').value = '';
-  document.getElementById('enCat').value = '';
-  // 即落库 (2026-10-18: 与目录树同语义, 防刷新丢失)
-  postCard(`/collections/${encodeURIComponent(collection)}/doc/${docId}/cards/save`,
-    { kind: 'entity', content: JSON.stringify(window.__entityContent), status: window.__entityStatus })
-    .then(d => showToast(d.ok ? '已添加并落库 — 当前 ' + window.__entityContent.items.length + ' 条'
-                              : '落库失败: ' + (d.error || '')));
-}
 // ── 实体依据 (关键词/索引, 作为实体编译依据) ──
 function _seedCardBody() {
   const kw = (document.getElementById('seedKw').value || '').split('\n')
@@ -2780,9 +2723,6 @@ async function _seedExtract(fd, btn, label) {
   } catch (e) { showToast('解析失败: ' + e); }
   finally { if (btn) { btn.disabled = false; btn.textContent = label; } }
 }
-async function aiExtractSeeds() {
-  return _seedExtract(new FormData(), event && event.target, '从正文提取');
-}
 async function genSeedImport() {
   const src = (document.getElementById('seedSourceTa').value || '').trim();
   if (!src) { showToast('请先粘贴索引/关键词文本或选择文件'); return; }
@@ -2800,7 +2740,7 @@ async function saveSeeds() {
     if (!r.ok || !d.ok) { showToast('保存失败: ' + (d.error || r.status)); return; }
     const hint = document.getElementById('seedHint');
     if (hint) hint.textContent = (b.kw.length || b.idx.length)
-      ? '已设置（作为实体编译依据）' : '未设置：将自动识别文献自带关键词/索引';
+      ? '已设置（作为实体编译依据）' : '未设置：编译时仍会用文献自带关键词/索引段（确定性解析，非 AI）';
     showToast((b.kw.length || b.idx.length) ? '实体依据已保存' : '已清空，回自动识别', 4000);
   } catch (e) { showToast('保存失败: ' + e); }
 }
@@ -2947,25 +2887,15 @@ async function reviewCand(id, action) {
       renderTocTree();
       showToast('已采纳并入目录树（已落库）');
     } else if (ctype === 'entity') {
-      if (window.__entityContent) {
-        if (window.__entityContent.items.some(it => (it.label || '').trim() === (lab || '').trim())) {
-          showToast('已在卡中: ' + lab + '（合并重复, 候选移除）');
-        } else {
-          window.__entityContent.items.push({ label: lab, category: cat, from: 'candidate#' + id });
-        }
+      // 管口收敛 (2026-10-31): 实体候选采纳 = 并入依据卡关键词草稿, 人工保存后重编译生效
+      const kwTa = document.getElementById('seedKw');
+      if (kwTa) {
+        const cur = (kwTa.value || '').split('\n').map(x => x.trim()).filter(Boolean);
+        if (!cur.some(x => x === (lab || '').trim())) cur.push((lab || '').trim());
+        kwTa.value = cur.join('\n');
       }
-      const body = document.getElementById('entityBody');
-      if (body) {
-        const tb = document.getElementById('entityTable'); if (tb) tb.style.display = '';
-        const em = document.getElementById('entityEmpty'); if (em) em.style.display = 'none';
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${__escT(lab)}</td><td>${cat ? __escT(cat) : '—'}</td>` +
-          `<td class="conf">candidate#${id}</td>` +
-          `<td><button onclick="delEntityItem(${body.children.length - 1}, this)">删</button></td>`;
-        tr.dataset.eidx = body.children.length - 1;
-        body.appendChild(tr);
-      }
-      showToast('已采纳并入实体索引（已落库）');
+      showToast('已并入实体依据卡草稿——点「保存依据」落库后重编译生效');
+      return;
     } else showToast('已采纳');
   } else showToast('已驳回');
 }
