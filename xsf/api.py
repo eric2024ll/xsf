@@ -1623,30 +1623,32 @@ async def api_docs(collection: str, limit: int = 50):
 @app.get("/collections/{collection}/docs/list")
 async def docs_list_page(request: Request, collection: str):
     """文献列表独立页面。"""
-    collections = list_collections()
-    if collection not in collections:
-        return RedirectResponse(url="/")
-    tags = set()
-    conn = get_conn(collection)
-    try:
-        rows = conn.execute(
-            "SELECT DISTINCT value FROM documents, "
-            "json_each(documents.source_tags)"
-        ).fetchall()
-        for r in rows:
-            tags.add(r[0])
-    except Exception:
-        pass
-    finally:
-        conn.close()
-    return templates.TemplateResponse(
-        request,
-        "docs_list.html",
-        _nav_ctx("docs", collection,
-                 source_tags=sorted(tags),
-                 bib_type_labels=BIB_TYPE_LABELS,
-                 scan_status=get_scan_status(collection)),
-    )
+    def _work(request=request, collection=collection):
+        collections = list_collections()
+        if collection not in collections:
+            return RedirectResponse(url="/")
+        tags = set()
+        conn = get_conn(collection)
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT value FROM documents, "
+                "json_each(documents.source_tags)"
+            ).fetchall()
+            for r in rows:
+                tags.add(r[0])
+        except Exception:
+            pass
+        finally:
+            conn.close()
+        return templates.TemplateResponse(
+            request,
+            "docs_list.html",
+            _nav_ctx("docs", collection,
+                     source_tags=sorted(tags),
+                     bib_type_labels=BIB_TYPE_LABELS,
+                     scan_status=get_scan_status(collection)),
+        )
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/collections/{collection}/upload")
@@ -1719,100 +1721,102 @@ async def api_docs_query(
     year: str = None,
 ):
     """分页、排序、筛选文献列表（JSON）。"""
-    try:
-        conn = get_conn(collection)
+    def _work(collection=collection, request=request, page=page, limit=limit, sort=sort, order=order, tag=tag, author=author, bib_type=bib_type, title=title, year=year):
         try:
-            conditions = ["1=1"]
-            params = []
+            conn = get_conn(collection)
+            try:
+                conditions = ["1=1"]
+                params = []
 
-            if tag:
-                conditions.append(
-                    "EXISTS(SELECT 1 FROM json_each(d.source_tags) "
-                    "WHERE value = ?)"
-                )
-                params.append(tag)
-            if author:
-                conditions.append("d.author LIKE ?")
-                params.append(f"%{author}%")
-            if bib_type:
-                conditions.append("d.bib_type = ?")
-                params.append(bib_type)
-            if title:
-                conditions.append("d.title LIKE ?")
-                params.append(f"%{title}%")
-            if year:
-                conditions.append(
-                    "substr(COALESCE(json_extract(d.bib_data, '$.date'), "
-                    "json_extract(d.bib_data, '$.year')), 1, 4) = ?"
-                )
-                params.append(year)
+                if tag:
+                    conditions.append(
+                        "EXISTS(SELECT 1 FROM json_each(d.source_tags) "
+                        "WHERE value = ?)"
+                    )
+                    params.append(tag)
+                if author:
+                    conditions.append("d.author LIKE ?")
+                    params.append(f"%{author}%")
+                if bib_type:
+                    conditions.append("d.bib_type = ?")
+                    params.append(bib_type)
+                if title:
+                    conditions.append("d.title LIKE ?")
+                    params.append(f"%{title}%")
+                if year:
+                    conditions.append(
+                        "substr(COALESCE(json_extract(d.bib_data, '$.date'), "
+                        "json_extract(d.bib_data, '$.year')), 1, 4) = ?"
+                    )
+                    params.append(year)
 
-            where = " AND ".join(conditions)
+                where = " AND ".join(conditions)
 
-            valid_sorts = {"created_at", "title", "author", "cite_key",
-                           "page_count"}
-            sort_col = sort if sort in valid_sorts else "created_at"
-            order_dir = "DESC" if order.upper() == "DESC" else "ASC"
+                valid_sorts = {"created_at", "title", "author", "cite_key",
+                               "page_count"}
+                sort_col = sort if sort in valid_sorts else "created_at"
+                order_dir = "DESC" if order.upper() == "DESC" else "ASC"
 
-            offset = (page - 1) * limit
-            if offset < 0:
-                offset = 0
-            if limit < 1:
-                limit = 20
+                offset = (page - 1) * limit
+                if offset < 0:
+                    offset = 0
+                if limit < 1:
+                    limit = 20
 
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM documents d WHERE {where}", params
-            ).fetchone()[0]
+                total = conn.execute(
+                    f"SELECT COUNT(*) FROM documents d WHERE {where}", params
+                ).fetchone()[0]
 
-            sql = f"""SELECT d.id, d.cite_key, d.title, d.author,
-                             d.filename, d.page_count, d.doc_type,
-                             d.source_tags, d.bib_type, d.bib_data,
-                             d.created_at
-                      FROM documents d
-                      WHERE {where}
-                      ORDER BY d.{sort_col} {order_dir}
-                      LIMIT ? OFFSET ?"""
-            rows = conn.execute(sql, params + [limit, offset]).fetchall()
+                sql = f"""SELECT d.id, d.cite_key, d.title, d.author,
+                                 d.filename, d.page_count, d.doc_type,
+                                 d.source_tags, d.bib_type, d.bib_data,
+                                 d.created_at
+                          FROM documents d
+                          WHERE {where}
+                          ORDER BY d.{sort_col} {order_dir}
+                          LIMIT ? OFFSET ?"""
+                rows = conn.execute(sql, params + [limit, offset]).fetchall()
 
-            # OCR 页状态聚合 (表可能未迁移, 防御)
-            state_map = {}
-            doc_ids = [r["id"] for r in rows]
-            if doc_ids:
-                try:
-                    ph = ",".join("?" * len(doc_ids))
-                    for sr in conn.execute(
-                            f"SELECT doc_id, "
-                            f"SUM(status='done') AS dn, "
-                            f"SUM(status='error') AS en, "
-                            f"GROUP_CONCAT(CASE WHEN status='error' "
-                            f"THEN page_num END) AS ep "
-                            f"FROM ocr_page_state WHERE doc_id IN ({ph}) "
-                            f"GROUP BY doc_id", doc_ids):
-                        errs = sorted(
-                            int(x) for x in (sr["ep"] or "").split(",") if x)
-                        state_map[sr["doc_id"]] = {
-                            "done": sr["dn"] or 0, "error": sr["en"] or 0,
-                            "errors": errs}
-                except sqlite3.OperationalError:
-                    pass
-        finally:
-            conn.close()
+                # OCR 页状态聚合 (表可能未迁移, 防御)
+                state_map = {}
+                doc_ids = [r["id"] for r in rows]
+                if doc_ids:
+                    try:
+                        ph = ",".join("?" * len(doc_ids))
+                        for sr in conn.execute(
+                                f"SELECT doc_id, "
+                                f"SUM(status='done') AS dn, "
+                                f"SUM(status='error') AS en, "
+                                f"GROUP_CONCAT(CASE WHEN status='error' "
+                                f"THEN page_num END) AS ep "
+                                f"FROM ocr_page_state WHERE doc_id IN ({ph}) "
+                                f"GROUP BY doc_id", doc_ids):
+                            errs = sorted(
+                                int(x) for x in (sr["ep"] or "").split(",") if x)
+                            state_map[sr["doc_id"]] = {
+                                "done": sr["dn"] or 0, "error": sr["en"] or 0,
+                                "errors": errs}
+                    except sqlite3.OperationalError:
+                        pass
+            finally:
+                conn.close()
 
-        docs = []
-        for r in rows:
-            d = dict(r)
-            d["ocr_state"] = state_map.get(d["id"])
-            docs.append(d)
+            docs = []
+            for r in rows:
+                d = dict(r)
+                d["ocr_state"] = state_map.get(d["id"])
+                docs.append(d)
 
-        return {
-            "total": total,
-            "page": page,
-            "limit": limit,
-            "pages": (total + limit - 1) // limit if limit > 0 else 0,
-            "docs": docs,
-        }
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+            return {
+                "total": total,
+                "page": page,
+                "limit": limit,
+                "pages": (total + limit - 1) // limit if limit > 0 else 0,
+                "docs": docs,
+            }
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
+    return await asyncio.to_thread(_work)
 
 
 @app.post("/collections/{collection}/docs/export-bib")
@@ -2752,31 +2756,33 @@ def _migrate_legacy_summary(conn, doc_id: int):
 @app.get("/collections/{collection}/doc/{doc_id}/cards")
 async def api_cards(collection: str, doc_id: int):
     """三卡 + 候选队列数据."""
-    doc = _get_card_doc(collection, doc_id)
-    if doc is None:
-        return JSONResponse(status_code=404, content={"error": "文献不存在"})
-    conn = get_conn(collection)
-    try:
-        _migrate_legacy_meta(conn, doc_id)
-        _migrate_legacy_summary(conn, doc_id)
-        cards = conn.execute(
-            "SELECT id, kind, content, status, updated_at FROM doc_cards "
-            "WHERE doc_id = ?", (doc_id,)).fetchall()
-        cands = conn.execute(
-            "SELECT id, ctype, label, category, confidence, page_num, "
-            "block_num, status, created_at FROM card_candidates "
-            "WHERE doc_id = ? ORDER BY status, ctype, id", (doc_id,)).fetchall()
-        return {
-            "doc": dict(doc),
-            "cards": [
-                {"id": c["id"], "kind": c["kind"],
-                 "content": json.loads(c["content"] or "{}"),
-                 "status": c["status"], "updated_at": c["updated_at"]}
-                for c in cards],
-            "candidates": [dict(c) for c in cands],
-        }
-    finally:
-        conn.close()
+    def _work(collection=collection, doc_id=doc_id):
+        doc = _get_card_doc(collection, doc_id)
+        if doc is None:
+            return JSONResponse(status_code=404, content={"error": "文献不存在"})
+        conn = get_conn(collection)
+        try:
+            _migrate_legacy_meta(conn, doc_id)
+            _migrate_legacy_summary(conn, doc_id)
+            cards = conn.execute(
+                "SELECT id, kind, content, status, updated_at FROM doc_cards "
+                "WHERE doc_id = ?", (doc_id,)).fetchall()
+            cands = conn.execute(
+                "SELECT id, ctype, label, category, confidence, page_num, "
+                "block_num, status, created_at FROM card_candidates "
+                "WHERE doc_id = ? ORDER BY status, ctype, id", (doc_id,)).fetchall()
+            return {
+                "doc": dict(doc),
+                "cards": [
+                    {"id": c["id"], "kind": c["kind"],
+                     "content": json.loads(c["content"] or "{}"),
+                     "status": c["status"], "updated_at": c["updated_at"]}
+                    for c in cards],
+                "candidates": [dict(c) for c in cands],
+            }
+        finally:
+            conn.close()
+    return await asyncio.to_thread(_work)
 
 
 @app.post("/collections/{collection}/doc/{doc_id}/cards/save")
@@ -2784,38 +2790,40 @@ async def api_card_save(collection: str, doc_id: int,
                         kind: str = Form(...), content: str = Form(...),
                         status: str = Form('draft')):
     """保存/更新单卡 (每 doc 每 kind 一张, upsert)."""
-    if kind not in ('meta', 'toc', 'summary', 'entity', 'entity_source'):
-        return JSONResponse(status_code=400,
-                            content={"error": "kind 只支持 meta/toc/summary/entity/entity_source"})
-    if status not in ('draft', 'reviewed'):
-        return JSONResponse(status_code=400,
-                            content={"error": "status 只支持 draft/reviewed"})
-    try:
-        json.loads(content)
-    except ValueError:
-        return JSONResponse(status_code=400, content={"error": "content 需 JSON"})
-    doc = _get_card_doc(collection, doc_id)
-    if doc is None:
-        return JSONResponse(status_code=404, content={"error": "文献不存在"})
-    conn = get_conn(collection)
-    try:
-        conn.execute(
-            """INSERT INTO doc_cards (doc_id, kind, content, status, updated_at)
-               VALUES (?, ?, ?, ?, datetime('now'))
-               ON CONFLICT(doc_id, kind) DO UPDATE SET
-                 content = excluded.content,
-                 status = excluded.status,
-                 updated_at = datetime('now')""",
-            (doc_id, kind, content, status))
-        row = conn.execute(
-            "SELECT id FROM doc_cards WHERE doc_id = ? AND kind = ?",
-            (doc_id, kind)).fetchone()
-        if row:
-            _card_fts_sync(conn, row["id"])
-        conn.commit()
-        return {"ok": True}
-    finally:
-        conn.close()
+    def _work(collection=collection, doc_id=doc_id, kind=kind, content=content, status=status):
+        if kind not in ('meta', 'toc', 'summary', 'entity', 'entity_source'):
+            return JSONResponse(status_code=400,
+                                content={"error": "kind 只支持 meta/toc/summary/entity/entity_source"})
+        if status not in ('draft', 'reviewed'):
+            return JSONResponse(status_code=400,
+                                content={"error": "status 只支持 draft/reviewed"})
+        try:
+            json.loads(content)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": "content 需 JSON"})
+        doc = _get_card_doc(collection, doc_id)
+        if doc is None:
+            return JSONResponse(status_code=404, content={"error": "文献不存在"})
+        conn = get_conn(collection)
+        try:
+            conn.execute(
+                """INSERT INTO doc_cards (doc_id, kind, content, status, updated_at)
+                   VALUES (?, ?, ?, ?, datetime('now'))
+                   ON CONFLICT(doc_id, kind) DO UPDATE SET
+                     content = excluded.content,
+                     status = excluded.status,
+                     updated_at = datetime('now')""",
+                (doc_id, kind, content, status))
+            row = conn.execute(
+                "SELECT id FROM doc_cards WHERE doc_id = ? AND kind = ?",
+                (doc_id, kind)).fetchone()
+            if row:
+                _card_fts_sync(conn, row["id"])
+            conn.commit()
+            return {"ok": True}
+        finally:
+            conn.close()
+    return await asyncio.to_thread(_work)
 
 
 @app.post("/collections/{collection}/cards/{card_id}/status")
@@ -3979,237 +3987,239 @@ async def proofread_page(
     line: int = None,
 ):
     """图文对照 OCR 校对页。"""
-    try:
-        conn = get_conn(collection)
+    def _work(request=request, collection=collection, doc_id=doc_id, page=page, keyword=keyword, block=block, line=line):
         try:
-            doc = conn.execute(
-                """SELECT id, title, author, filename, page_count, doc_type,
-                          source_tags, bib_type, bib_data, cite_key, linked_pdf,
-                          lang, tri_rows, page_map
-                   FROM documents WHERE id = ?""",
-                (doc_id,),
-            ).fetchone()
-            if doc is None:
-                return templates.TemplateResponse(
-                    request,
-                    "proofread.html",
-                    _nav_ctx("", collection, error=f"文献 id={doc_id} 不存在"),
-                    status_code=404,
-                )
-
-            page_count = doc["page_count"] or 1
-
-            # md 文档关联了原件 PDF 时，翻页范围跟随 PDF
-            # (2026-10-28 原件统一模型: linked_pdf = files/<id>/ 原件路径,
-            #  旧格式 uploads 文件名兼容读取)
-            linked_pdf = doc["linked_pdf"] if "linked_pdf" in doc.keys() else None
-            if linked_pdf:
-                from .config import resolve_original_path
-                lp_path = resolve_original_path(collection, linked_pdf)
-                if lp_path and lp_path.exists():
-                    try:
-                        lp_doc = pymupdf.open(lp_path)
-                        page_count = max(page_count, len(lp_doc))
-                        lp_doc.close()
-                    except Exception:
-                        pass
-
-            page_num = max(1, min(page, page_count))
-
-            # 卡片组 (2026-10-17 整合裁定): 校对页文本侧内嵌四卡+候选队列
+            conn = get_conn(collection)
             try:
-                _migrate_legacy_meta(conn, doc_id)
-                _migrate_legacy_summary(conn, doc_id)
-                card_rows = conn.execute(
-                    "SELECT kind, content, status FROM doc_cards "
-                    "WHERE doc_id = ?", (doc_id,)).fetchall()
-                cand_rows = conn.execute(
-                    "SELECT id, ctype, label, category, confidence, "
-                    "page_num, status FROM card_candidates "
-                    "WHERE doc_id = ? ORDER BY status, ctype, id",
-                    (doc_id,)).fetchall()
-            except sqlite3.OperationalError:
-                card_rows, cand_rows = [], []
-            # P8: 本文献提及 (实体 tab 数据源, 替代旧 per-doc 实体卡)
-            try:
-                doc_entities = [dict(r) for r in conn.execute(
-                    "SELECT m.id, m.surface, m.page_num, m.block_num, m.valid, "
-                    "e.id AS entity_id, e.canonical, e.category, e.ext_ids "
-                    "FROM entity_mentions m JOIN entities e ON e.id = m.entity_id "
-                    "WHERE m.doc_id = ? AND m.valid = 1 "
-                    "ORDER BY m.page_num, m.block_num, e.canonical",
-                    (doc_id,)).fetchall()]
-            except sqlite3.OperationalError:
-                doc_entities = []
-            cards_map = {}
-            for cr in card_rows:
+                doc = conn.execute(
+                    """SELECT id, title, author, filename, page_count, doc_type,
+                              source_tags, bib_type, bib_data, cite_key, linked_pdf,
+                              lang, tri_rows, page_map
+                       FROM documents WHERE id = ?""",
+                    (doc_id,),
+                ).fetchone()
+                if doc is None:
+                    return templates.TemplateResponse(
+                        request,
+                        "proofread.html",
+                        _nav_ctx("", collection, error=f"文献 id={doc_id} 不存在"),
+                        status_code=404,
+                    )
+
+                page_count = doc["page_count"] or 1
+
+                # md 文档关联了原件 PDF 时，翻页范围跟随 PDF
+                # (2026-10-28 原件统一模型: linked_pdf = files/<id>/ 原件路径,
+                #  旧格式 uploads 文件名兼容读取)
+                linked_pdf = doc["linked_pdf"] if "linked_pdf" in doc.keys() else None
+                if linked_pdf:
+                    from .config import resolve_original_path
+                    lp_path = resolve_original_path(collection, linked_pdf)
+                    if lp_path and lp_path.exists():
+                        try:
+                            lp_doc = pymupdf.open(lp_path)
+                            page_count = max(page_count, len(lp_doc))
+                            lp_doc.close()
+                        except Exception:
+                            pass
+
+                page_num = max(1, min(page, page_count))
+
+                # 卡片组 (2026-10-17 整合裁定): 校对页文本侧内嵌四卡+候选队列
                 try:
-                    cards_map[cr["kind"]] = {
-                        "content": json.loads(cr["content"] or "{}"),
-                        "status": cr["status"]}
-                except ValueError:
-                    cards_map[cr["kind"]] = {"content": {}, "status": cr["status"]}
+                    _migrate_legacy_meta(conn, doc_id)
+                    _migrate_legacy_summary(conn, doc_id)
+                    card_rows = conn.execute(
+                        "SELECT kind, content, status FROM doc_cards "
+                        "WHERE doc_id = ?", (doc_id,)).fetchall()
+                    cand_rows = conn.execute(
+                        "SELECT id, ctype, label, category, confidence, "
+                        "page_num, status FROM card_candidates "
+                        "WHERE doc_id = ? ORDER BY status, ctype, id",
+                        (doc_id,)).fetchall()
+                except sqlite3.OperationalError:
+                    card_rows, cand_rows = [], []
+                # P8: 本文献提及 (实体 tab 数据源, 替代旧 per-doc 实体卡)
+                try:
+                    doc_entities = [dict(r) for r in conn.execute(
+                        "SELECT m.id, m.surface, m.page_num, m.block_num, m.valid, "
+                        "e.id AS entity_id, e.canonical, e.category, e.ext_ids "
+                        "FROM entity_mentions m JOIN entities e ON e.id = m.entity_id "
+                        "WHERE m.doc_id = ? AND m.valid = 1 "
+                        "ORDER BY m.page_num, m.block_num, e.canonical",
+                        (doc_id,)).fetchall()]
+                except sqlite3.OperationalError:
+                    doc_entities = []
+                cards_map = {}
+                for cr in card_rows:
+                    try:
+                        cards_map[cr["kind"]] = {
+                            "content": json.loads(cr["content"] or "{}"),
+                            "status": cr["status"]}
+                    except ValueError:
+                        cards_map[cr["kind"]] = {"content": {}, "status": cr["status"]}
 
-            rows = conn.execute(
-                """SELECT id, page_num, block_num, line_num, text,
-                          bbox, block_label, page_w, page_h, suspect,
-                          translit, gloss, trans, draft_flags
-                   FROM lines
-                   WHERE doc_id = ? AND page_num = ?
-                   ORDER BY block_num, line_num""",
-                (doc_id, page_num),
-            ).fetchall()
-        finally:
-            conn.close()
+                rows = conn.execute(
+                    """SELECT id, page_num, block_num, line_num, text,
+                              bbox, block_label, page_w, page_h, suspect,
+                              translit, gloss, trans, draft_flags
+                       FROM lines
+                       WHERE doc_id = ? AND page_num = ?
+                       ORDER BY block_num, line_num""",
+                    (doc_id, page_num),
+                ).fetchall()
+            finally:
+                conn.close()
 
-        # 按 block 分组
-        blocks_map = {}
-        for r in rows:
-            bn = r["block_num"]
-            if bn not in blocks_map:
-                block_bbox = None
+            # 按 block 分组
+            blocks_map = {}
+            for r in rows:
+                bn = r["block_num"]
+                if bn not in blocks_map:
+                    block_bbox = None
+                    if r["bbox"]:
+                        try:
+                            block_bbox = json.loads(r["bbox"])
+                        except (json.JSONDecodeError, ValueError):
+                            block_bbox = None
+                    blocks_map[bn] = {
+                        "block_num": bn,
+                        "block_label": r["block_label"],
+                        "bbox": block_bbox,
+                        "lines": [],
+                    }
+                line_bbox = None
                 if r["bbox"]:
                     try:
-                        block_bbox = json.loads(r["bbox"])
+                        line_bbox = json.loads(r["bbox"])
                     except (json.JSONDecodeError, ValueError):
-                        block_bbox = None
-                blocks_map[bn] = {
-                    "block_num": bn,
-                    "block_label": r["block_label"],
-                    "bbox": block_bbox,
-                    "lines": [],
-                }
-            line_bbox = None
-            if r["bbox"]:
+                        line_bbox = None
                 try:
-                    line_bbox = json.loads(r["bbox"])
+                    _df = json.loads(r["draft_flags"]) if r["draft_flags"] else {}
                 except (json.JSONDecodeError, ValueError):
-                    line_bbox = None
-            try:
-                _df = json.loads(r["draft_flags"]) if r["draft_flags"] else {}
-            except (json.JSONDecodeError, ValueError):
-                _df = {}
-            blocks_map[bn]["lines"].append({
-                "id": r["id"],
-                "line_num": r["line_num"],
-                "text": r["text"],
-                "suspect": r["suspect"],
-                "bbox": line_bbox,
-                "translit": r["translit"],
-                "gloss": r["gloss"],
-                "trans": r["trans"],
-                "draft_flags": _df,
-            })
-        blocks = [blocks_map[bn] for bn in sorted(blocks_map)]
+                    _df = {}
+                blocks_map[bn]["lines"].append({
+                    "id": r["id"],
+                    "line_num": r["line_num"],
+                    "text": r["text"],
+                    "suspect": r["suspect"],
+                    "bbox": line_bbox,
+                    "translit": r["translit"],
+                    "gloss": r["gloss"],
+                    "trans": r["trans"],
+                    "draft_flags": _df,
+                })
+            blocks = [blocks_map[bn] for bn in sorted(blocks_map)]
 
-        # OCR 原始页面尺寸: 优先用 DB 存储的 OCR 返回宽高
-        orig_width = 0
-        orig_height = 0
-        for r in rows:
-            if r["page_w"] and r["page_w"] > orig_width:
-                orig_width = r["page_w"]
-            if r["page_h"] and r["page_h"] > orig_height:
-                orig_height = r["page_h"]
-        # fallback: 旧数据无 page_w/page_h，用 max bbox 近似
-        if not orig_width or not orig_height:
-            for b in blocks:
-                for ln in b["lines"]:
-                    bb = ln.get("bbox")
+            # OCR 原始页面尺寸: 优先用 DB 存储的 OCR 返回宽高
+            orig_width = 0
+            orig_height = 0
+            for r in rows:
+                if r["page_w"] and r["page_w"] > orig_width:
+                    orig_width = r["page_w"]
+                if r["page_h"] and r["page_h"] > orig_height:
+                    orig_height = r["page_h"]
+            # fallback: 旧数据无 page_w/page_h，用 max bbox 近似
+            if not orig_width or not orig_height:
+                for b in blocks:
+                    for ln in b["lines"]:
+                        bb = ln.get("bbox")
+                        if bb and len(bb) >= 4:
+                            orig_width = max(orig_width, bb[2])
+                            orig_height = max(orig_height, bb[3])
+                    bb = b.get("bbox")
                     if bb and len(bb) >= 4:
                         orig_width = max(orig_width, bb[2])
                         orig_height = max(orig_height, bb[3])
-                bb = b.get("bbox")
-                if bb and len(bb) >= 4:
-                    orig_width = max(orig_width, bb[2])
-                    orig_height = max(orig_height, bb[3])
 
-        # 按 150 DPI 渲染时图片自然尺寸
-        render_width = None
-        render_height = None
-        # 原件统一模型: 单布局收敛 (2026-10-31), 只认 files/<id>/ (linked_pdf)
-        from .config import resolve_original_path
-        pdf_path = resolve_original_path(
-            collection,
-            doc["linked_pdf"] if "linked_pdf" in doc.keys() else None)
-        if pdf_path and pdf_path.exists():
+            # 按 150 DPI 渲染时图片自然尺寸
+            render_width = None
+            render_height = None
+            # 原件统一模型: 单布局收敛 (2026-10-31), 只认 files/<id>/ (linked_pdf)
+            from .config import resolve_original_path
+            pdf_path = resolve_original_path(
+                collection,
+                doc["linked_pdf"] if "linked_pdf" in doc.keys() else None)
+            if pdf_path and pdf_path.exists():
+                try:
+                    pdf_doc = pymupdf.open(pdf_path)
+                    page_obj = pdf_doc[page_num - 1]
+                    rect = page_obj.rect
+                    dpi = 150
+                    render_width = rect.width * dpi / 72.0
+                    render_height = rect.height * dpi / 72.0
+                    pdf_doc.close()
+                except Exception:
+                    pass
+
+            # 兜底: 无 OCR 数据的页 (空白/封皮/OCR 失败) 用渲染尺寸当原始尺寸,
+            # 否则前端 orig_width=0 时缩放静默失效; scale=1 自洽
+            if not orig_width and render_width:
+                orig_width = int(render_width)
+                orig_height = int(render_height or orig_height)
+
+            # 图片到原始 OCR 坐标系的缩放；前端再乘 clientWidth/naturalWidth
+            scale = 1.0
+            if render_width and orig_width:
+                scale = render_width / orig_width
+
+            # 解析 source_tags 供模板显示
             try:
-                pdf_doc = pymupdf.open(pdf_path)
-                page_obj = pdf_doc[page_num - 1]
-                rect = page_obj.rect
-                dpi = 150
-                render_width = rect.width * dpi / 72.0
-                render_height = rect.height * dpi / 72.0
-                pdf_doc.close()
-            except Exception:
-                pass
-
-        # 兜底: 无 OCR 数据的页 (空白/封皮/OCR 失败) 用渲染尺寸当原始尺寸,
-        # 否则前端 orig_width=0 时缩放静默失效; scale=1 自洽
-        if not orig_width and render_width:
-            orig_width = int(render_width)
-            orig_height = int(render_height or orig_height)
-
-        # 图片到原始 OCR 坐标系的缩放；前端再乘 clientWidth/naturalWidth
-        scale = 1.0
-        if render_width and orig_width:
-            scale = render_width / orig_width
-
-        # 解析 source_tags 供模板显示
-        try:
-            source_tags = json.loads(doc["source_tags"] or '["primary"]')
-            if not isinstance(source_tags, list):
+                source_tags = json.loads(doc["source_tags"] or '["primary"]')
+                if not isinstance(source_tags, list):
+                    source_tags = ["primary"]
+            except (json.JSONDecodeError, TypeError):
                 source_tags = ["primary"]
-        except (json.JSONDecodeError, TypeError):
-            source_tags = ["primary"]
 
-        # 解析 bib 元数据供模板显示
-        bib_data = parse_bib_data(doc["bib_data"]) or {}
-        bib_type = doc["bib_type"] or ""
+            # 解析 bib 元数据供模板显示
+            bib_data = parse_bib_data(doc["bib_data"]) or {}
+            bib_type = doc["bib_type"] or ""
 
-        return templates.TemplateResponse(
-            request,
-            "proofread.html",
-            _nav_ctx("", collection,
-                doc=dict(doc),
-                page_num=page_num,
-                page_count=page_count,
-                blocks=blocks,
-                keyword=keyword or "",
-                target_block=block,
-                target_line=line,
-                scale=scale,
-                render_width=render_width,
-                render_height=render_height,
-                orig_width=orig_width,
-                orig_height=orig_height,
-                highlight=_highlight_keyword,
-                source_tags=source_tags,
-                bib_type=bib_type,
-                bib_data=bib_data,
-                cards_map=cards_map,
-                doc_entities=doc_entities,
-                candidates=[dict(cr) for cr in cand_rows],
-                bib_type_labels=BIB_TYPE_LABELS,
-                bib_field_labels=BIB_FIELD_LABELS,
-                bib_type_fields=BIB_TYPE_FIELDS,
-                linked_pdf=linked_pdf,
-                doc_lang=(doc["lang"] or "zh") if "lang" in doc.keys() else "zh",
-                page_map=(lambda raw: {
-                    "groups": _pm_groups(raw),
-                    "default": _pm_default(raw),
-                    "total": sum(len(g["anchors"]) for g in _pm_groups(raw)),
-                })(json.loads(doc["page_map"])) if (
-                    "page_map" in doc.keys() and doc["page_map"]) else None,
-                doc_rows=_tri_rows_for(doc),
-            ),
-        )
-    except Exception as e:
-        return templates.TemplateResponse(
-            request,
-            "proofread.html",
-            _nav_ctx("", collection, error=str(e)),
-            status_code=500,
-        )
+            return templates.TemplateResponse(
+                request,
+                "proofread.html",
+                _nav_ctx("", collection,
+                    doc=dict(doc),
+                    page_num=page_num,
+                    page_count=page_count,
+                    blocks=blocks,
+                    keyword=keyword or "",
+                    target_block=block,
+                    target_line=line,
+                    scale=scale,
+                    render_width=render_width,
+                    render_height=render_height,
+                    orig_width=orig_width,
+                    orig_height=orig_height,
+                    highlight=_highlight_keyword,
+                    source_tags=source_tags,
+                    bib_type=bib_type,
+                    bib_data=bib_data,
+                    cards_map=cards_map,
+                    doc_entities=doc_entities,
+                    candidates=[dict(cr) for cr in cand_rows],
+                    bib_type_labels=BIB_TYPE_LABELS,
+                    bib_field_labels=BIB_FIELD_LABELS,
+                    bib_type_fields=BIB_TYPE_FIELDS,
+                    linked_pdf=linked_pdf,
+                    doc_lang=(doc["lang"] or "zh") if "lang" in doc.keys() else "zh",
+                    page_map=(lambda raw: {
+                        "groups": _pm_groups(raw),
+                        "default": _pm_default(raw),
+                        "total": sum(len(g["anchors"]) for g in _pm_groups(raw)),
+                    })(json.loads(doc["page_map"])) if (
+                        "page_map" in doc.keys() and doc["page_map"]) else None,
+                    doc_rows=_tri_rows_for(doc),
+                ),
+            )
+        except Exception as e:
+            return templates.TemplateResponse(
+                request,
+                "proofread.html",
+                _nav_ctx("", collection, error=str(e)),
+                status_code=500,
+            )
+    return await asyncio.to_thread(_work)
 
 
 # ── 页面图片 ────────────────────────────────────────────
@@ -4217,49 +4227,51 @@ async def proofread_page(
 @app.get("/collections/{collection}/doc/{doc_id}/page/{page_num}/image")
 async def page_image(collection: str, doc_id: int, page_num: int):
     """渲染 PDF 单页为 PNG（page_num 从 1 开始）。"""
-    try:
-        conn = get_conn(collection)
+    def _work(collection=collection, doc_id=doc_id, page_num=page_num):
         try:
-            doc = conn.execute(
-                "SELECT filename, linked_pdf FROM documents WHERE id = ?",
-                (doc_id,),
-            ).fetchone()
-            if doc is None:
+            conn = get_conn(collection)
+            try:
+                doc = conn.execute(
+                    "SELECT filename, linked_pdf FROM documents WHERE id = ?",
+                    (doc_id,),
+                ).fetchone()
+                if doc is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"error": "文献不存在"},
+                    )
+                filename = doc["linked_pdf"] or doc["filename"]
+            finally:
+                conn.close()
+
+            # 原件统一模型: 单布局收敛 (2026-10-31), 只认 files/<id>/ (linked_pdf)
+            from .config import resolve_original_path
+            pdf_path = resolve_original_path(collection, doc["linked_pdf"])
+            if not pdf_path or not pdf_path.exists():
                 return JSONResponse(
                     status_code=404,
-                    content={"error": "文献不存在"},
+                    content={"error": "PDF 文件不存在"},
                 )
-            filename = doc["linked_pdf"] or doc["filename"]
-        finally:
-            conn.close()
 
-        # 原件统一模型: 单布局收敛 (2026-10-31), 只认 files/<id>/ (linked_pdf)
-        from .config import resolve_original_path
-        pdf_path = resolve_original_path(collection, doc["linked_pdf"])
-        if not pdf_path or not pdf_path.exists():
-            return JSONResponse(
-                status_code=404,
-                content={"error": "PDF 文件不存在"},
-            )
-
-        pdf_doc = pymupdf.open(pdf_path)
-        try:
-            if page_num < 1 or page_num > len(pdf_doc):
-                return JSONResponse(
-                    status_code=404,
-                    content={"error": "页码超出范围"},
+            pdf_doc = pymupdf.open(pdf_path)
+            try:
+                if page_num < 1 or page_num > len(pdf_doc):
+                    return JSONResponse(
+                        status_code=404,
+                        content={"error": "页码超出范围"},
+                    )
+                page_obj = pdf_doc[page_num - 1]
+                pix = page_obj.get_pixmap(dpi=150)
+                img_bytes = pix.tobytes("png")
+                return StreamingResponse(
+                    io.BytesIO(img_bytes),
+                    media_type="image/png",
                 )
-            page_obj = pdf_doc[page_num - 1]
-            pix = page_obj.get_pixmap(dpi=150)
-            img_bytes = pix.tobytes("png")
-            return StreamingResponse(
-                io.BytesIO(img_bytes),
-                media_type="image/png",
-            )
-        finally:
-            pdf_doc.close()
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+            finally:
+                pdf_doc.close()
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
+    return await asyncio.to_thread(_work)
 
 
 # ── 保存行编辑 ──────────────────────────────────────────
@@ -5679,60 +5691,62 @@ async def reocr_cancel(collection: str, doc_id: int):
 @app.get("/collections/{collection}/doc/{doc_id}/hits")
 async def doc_hits(collection: str, doc_id: int, keyword: str, limit: int = 300):
     """返回某文档中匹配关键词的所有 page/block/first_line_id + 高亮摘要。"""
-    try:
-        from .search import _fts_plan, _fts_where, _entity_expansions
-
-        if limit < 1:
-            limit = 300
-
-        conn = get_conn(collection)
+    def _work(collection=collection, doc_id=doc_id, keyword=keyword, limit=limit):
         try:
-            match_expr, like_terms = _fts_plan(
-                keyword, _entity_expansions(conn, keyword))
-            if not match_expr and not like_terms:
-                return {"keyword": keyword, "hits": [], "total": 0,
-                        "truncated": False}
-            fts_where, fts_params = _fts_where(match_expr, like_terms)
-            rows = conn.execute(
-                f"""SELECT f.page_num, f.block_num, MIN(l.id) as line_id, l.text as text
-                   FROM blocks_fts f
-                   JOIN lines l ON l.doc_id = f.doc_id
-                               AND l.page_num = f.page_num
-                               AND l.block_num = f.block_num
-                   WHERE f.doc_id = ? AND {fts_where}
-                   GROUP BY f.page_num, f.block_num
-                   ORDER BY f.page_num, f.block_num""",
-                [doc_id] + fts_params,
-            ).fetchall()
-        finally:
-            conn.close()
+            from .search import _fts_plan, _fts_where, _entity_expansions
 
-        total = len(rows)
-        truncated = total > limit
-        hits = []
-        for r in rows[:limit]:
-            text = (r["text"] or "").strip()
-            if len(text) > 80:
-                idx = max((text.lower().find(v.lower()) for v in {keyword}
-                           if text.lower().find(v.lower()) >= 0), default=-1)
-                if idx >= 0:
-                    start = max(0, idx - 30)
-                    text = ("…" if start > 0 else "") + text[start:start + 80] + "…"
-                else:
-                    text = text[:80] + "…"
-            hits.append({
-                "page_num": r["page_num"],
-                "block_num": r["block_num"],
-                "line_id": r["line_id"],
-                "snippet": _highlight_keyword(text, keyword),
-            })
+            if limit < 1:
+                limit = 300
 
-        return {
-            "keyword": keyword,
-            "hits": hits,
-            "total": total,
-            "truncated": truncated,
-        }
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+            conn = get_conn(collection)
+            try:
+                match_expr, like_terms = _fts_plan(
+                    keyword, _entity_expansions(conn, keyword))
+                if not match_expr and not like_terms:
+                    return {"keyword": keyword, "hits": [], "total": 0,
+                            "truncated": False}
+                fts_where, fts_params = _fts_where(match_expr, like_terms)
+                rows = conn.execute(
+                    f"""SELECT f.page_num, f.block_num, MIN(l.id) as line_id, l.text as text
+                       FROM blocks_fts f
+                       JOIN lines l ON l.doc_id = f.doc_id
+                                   AND l.page_num = f.page_num
+                                   AND l.block_num = f.block_num
+                       WHERE f.doc_id = ? AND {fts_where}
+                       GROUP BY f.page_num, f.block_num
+                       ORDER BY f.page_num, f.block_num""",
+                    [doc_id] + fts_params,
+                ).fetchall()
+            finally:
+                conn.close()
+
+            total = len(rows)
+            truncated = total > limit
+            hits = []
+            for r in rows[:limit]:
+                text = (r["text"] or "").strip()
+                if len(text) > 80:
+                    idx = max((text.lower().find(v.lower()) for v in {keyword}
+                               if text.lower().find(v.lower()) >= 0), default=-1)
+                    if idx >= 0:
+                        start = max(0, idx - 30)
+                        text = ("…" if start > 0 else "") + text[start:start + 80] + "…"
+                    else:
+                        text = text[:80] + "…"
+                hits.append({
+                    "page_num": r["page_num"],
+                    "block_num": r["block_num"],
+                    "line_id": r["line_id"],
+                    "snippet": _highlight_keyword(text, keyword),
+                })
+
+            return {
+                "keyword": keyword,
+                "hits": hits,
+                "total": total,
+                "truncated": truncated,
+            }
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
+    return await asyncio.to_thread(_work)
 
