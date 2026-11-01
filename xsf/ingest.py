@@ -305,6 +305,68 @@ def _office_to_markdown(path: Path) -> str:
 
 _MD_PREFIX_RE = re.compile(r'^(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+)+')
 
+# ── anydoc 词首拆分修复 (2026-11-01) ──
+# CyberLeninka 类 PDF (子集字体, 大写字母右侧留白偏大) 下, anydoc 的切词阈值
+# 会把词首大写字母当词边界切出去: 'А нализ' / 'Р ис. 1' / 'С анкт-Петербург'。
+# 以同页 PyMuPDF 词表为 oracle 确定性回接, 三类形态:
+#   ① 首大写 + 空格 + 词  合并形在该页出现过 → 回接
+#   ② 首大写 + 空格 + 连字符复合词 (С анкт-Петербург) → 该复合词在 PDF 某行内
+#      整体出现过才回接
+#   ③ 复合词内的空格 (Санкт- Петербург) → 同上
+# ②③ 以「行内整体出现」为依据, 跨行软连字符 (attri- butes) 不会被误合成
+# 'attri-butes'; ① 另要求两段不是该页合法相邻词, 保护 'В статье' 等虚词。
+_SPLIT_SPACE_RE = re.compile(r'(?<![\w])([А-ЯЁA-Z]) ([а-яёa-z]{2,})')
+_SPLIT_HYPHEN_WORD_RE = re.compile(
+    r'(?<![\w])([А-ЯЁA-Z]) ([А-Яа-яЁёA-Za-z]+-[А-Яа-яЁёA-Za-z]+)')
+_SPLIT_HYPHEN_RE = re.compile(r'(\w+)- (\w+)')
+_WORD_TRIM = '.,;:!?()[]«»"\'\u2013\u2014'
+
+
+def page_word_oracle(page):
+    """页面 oracle: (词集合, 相邻词二元组集合, 行内连字符复合词集合)。"""
+    words, bigrams, hyphenated, prev = set(), set(), set(), None
+    for w in page.get_text('words'):
+        core = w[4].strip().strip(_WORD_TRIM)
+        if not core:
+            continue
+        words.add(core)
+        if prev is not None:
+            bigrams.add((prev, core))
+        prev = core
+    for line in page.get_text().splitlines():
+        for tok in re.findall(r'\w+-\w+', line):
+            hyphenated.add(tok)
+            # 复合词各段并入词表: 'Н овиков-Д аурский' 两段都要能回接
+            for part in tok.split('-'):
+                if len(part) >= 2:
+                    words.add(part)
+    return words, bigrams, hyphenated
+
+
+def repair_split_words(text: str, words: set, bigrams: set,
+                       hyphenated: set = frozenset()) -> str:
+    """回接 anydoc 误拆的词首大写字母与行内连字符复合词 (判定依据见上)。"""
+    if not words or not text:
+        return text
+
+    def _join(m):
+        merged = m.group(1) + m.group(2)
+        if merged in words and (m.group(1), m.group(2)) not in bigrams:
+            return merged
+        return m.group(0)
+
+    def _join_hyph(m):
+        merged = f'{m.group(1)}-{m.group(2)}'
+        return merged if merged in hyphenated else m.group(0)
+
+    # 顺序: 先补复合词内空格 (Санкт- Петербург) → 再回接词首大写 (С анкт-Петербург),
+    # 否则第二条规则看到的不是完整复合词
+    text = _SPLIT_HYPHEN_RE.sub(_join_hyph, text)
+    text = _SPLIT_HYPHEN_WORD_RE.sub(
+        lambda m: m.group(1) + m.group(2)
+        if (m.group(1) + m.group(2)) in hyphenated else m.group(0), text)
+    return _SPLIT_SPACE_RE.sub(_join, text)
+
 
 def _native_extract_pages(pdf_path: str | Path, conn, doc_id: int):
     """逐页 anydoc 抽取写 lines/blocks_fts (born-digital 文本层管线唯一实现).
@@ -337,11 +399,14 @@ def _native_extract_pages(pdf_path: str | Path, conn, doc_id: int):
                 except Exception:
                     empty_pages.append(pno + 1)
                     continue
+                words, bigrams, hyphenated = page_word_oracle(src[pno])
                 block_num = 0
                 for para in md.split('\n\n'):
                     para = _MD_PREFIX_RE.sub('', para.strip()).strip()
                     para = ' '.join(para.split('\n')).strip()
                     para = para.replace('**', '').replace('`', '')
+                    para = repair_split_words(para, words, bigrams,
+                                              hyphenated)
                     if not para:
                         continue
                     block_num += 1
