@@ -81,7 +81,14 @@ def ocr_file(path, url, api_key=None, model=None, timeout=HTTP_TIMEOUT):
     busy_attempts = 0
     for attempt in range(MAX_RETRIES):
         try:
-            with open(path, "rb") as f:
+            try:
+                f = open(path, "rb")
+            except FileNotFoundError as e:
+                # 源文件在重试间隔被移走 (并发流程/手工清理): 快速失败,
+                # 不再重试也不吐裸 ENOENT
+                raise RuntimeError(
+                    f"源文件已不存在 (疑被并发流程移走): {path}") from e
+            with f:
                 r = requests.post(url, headers=headers, data=form,
                                   files={"file": f}, timeout=timeout)
             if r.status_code == 503:

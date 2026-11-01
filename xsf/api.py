@@ -1129,7 +1129,9 @@ async def api_add(
     """
     try:
         init_db(collection)
-        upload_dir = get_upload_dir(collection)
+        # 确保 uploads/ 存在 (仅作 folder_scan 投放目录; add 暂存已改走
+        # 系统临时目录, 不再与看护线程共用, 见下文落盘处注释)
+        get_upload_dir(collection)
 
         results = []
         skipped = []
@@ -1168,8 +1170,12 @@ async def api_add(
                 })
                 continue
 
-            # 落盘
-            dst = upload_dir / fname
+            # 落盘 (暂存于系统临时目录; 2026-11-01 修复: 原先落在 uploads/
+            # 会被 folder_scan 看护线程当「投放」认领——同步 anydoc 提取是
+            # 分钟级操作, 文件 mtime 稳过 60s 后被移入 files/<id>/, add 流程
+            # 回退 OCR 再 open uploads 原路径即 ENOENT)
+            staging_dir = Path(tempfile.mkdtemp(prefix='xsf_add_'))
+            dst = staging_dir / fname
             content = await file.read()
             with open(dst, "wb") as f:
                 f.write(content)
@@ -1217,7 +1223,7 @@ async def api_add(
                 if note is None:
                     note = r.get('note')
                 # 原件统一模型 (2026-10-28): 上传入库即把原件移入
-                # files/<id>/original.<ext> (移入式, uploads 不留双份)
+                # files/<id>/original.<ext> (移入式; 自暂存目录跨盘 move)
                 from .ingest import attach_original
                 await asyncio.to_thread(
                     attach_original, collection, r['doc_id'], dst, True)
@@ -1232,6 +1238,15 @@ async def api_add(
                 results.append(entry)
             except Exception as e:
                 errors.append({"filename": fname, "error": str(e)})
+            finally:
+                # 暂存清理: 成功路径原件已被 attach_original 移走;
+                # 失败路径删除残留, 避免临时目录积压
+                try:
+                    if dst.exists():
+                        dst.unlink()
+                    staging_dir.rmdir()
+                except OSError:
+                    pass
 
         return {
             "status": "ok",
