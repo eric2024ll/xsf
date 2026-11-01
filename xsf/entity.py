@@ -4,140 +4,19 @@
 entities / entity_mentions。事实源是文献 (资产层); 本模块产物**可再生**,
 不入修订史、不进语料包。
 
-归一四级 (宁分不误合——同名误合比拆分危险):
+归一三级 (宁分不误合——同名误合比拆分危险; CBDB 外部挂载 2026-10-31 删):
   ① 精确   canonical / aliases 命中
-  ② CBDB   人名, 命中 PID → ext_ids 确定性挂靠 + 属性继承
-  ③ LLM    书架内上下文归一 (批量, 低置信即放弃)
-  ④ NIL    新建实体
+  ② LLM    书架内上下文归一 (批量, 低置信即放弃)
+  ③ NIL    新建实体
 
 设计: 小书房/design/完善路线图 P8。
 """
 import json
-import os
 import re
 import sqlite3
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
-
-from .config import get_mount
 from .db import get_conn
 from .llm import chat, _extract_json_array
-
-
-# 并发度 (CBDB 查询), 可用环境变量覆盖
-_CBDB_WORKERS = int(os.environ.get('XSF_CBDB_WORKERS', '6'))
-_CBDB_CACHE = {}
-
-
-# ── CBDB resolver: **显式挂载** (用户决定是否挂载并告知位置) ──
-# 未挂载 → 该能力降级, 实体归一退化为纯 LLM。不自动探测路径。
-def _cbdb_py():
-    """返回挂载的 cbdb 入口脚本绝对路径; 未挂载/无效 → None。"""
-    m = get_mount('cbdb')
-    if not m:
-        return None
-    p = (m.get('path') or '').strip()
-    if not p:
-        return None
-    if os.path.isdir(p):
-        p = os.path.join(p, 'cbdb.py')
-    return p if os.path.isfile(p) else None
-
-
-def _cbdb_cmd():
-    m = get_mount('cbdb') or {}
-    return (m.get('cmd') or 'python3').strip() or 'python3'
-
-
-def mount_status():
-    """给 UI 用: 各外部挂载的可用状态。"""
-    from .config import read_mounts
-    out = {}
-    for name, m in (read_mounts().get('mounts') or {}).items():
-        if not isinstance(m, dict):
-            continue
-        p = (m.get('path') or '').strip()
-        exists = bool(p) and os.path.exists(p)
-        out[name] = {'enabled': bool(m.get('enabled')),
-                     'path': p,
-                     'cmd': m.get('cmd') or 'python3',
-                     'path_exists': exists,
-                     'available': bool(m.get('enabled')) and exists}
-    return out
-
-
-def cbdb_find(name, timeout=8):
-    """CBDB 查人物 → {pid,name,dynasty,birth,death} 或 None。
-
-    未挂载 / 未找到 / 多义 (>1 条同名) 一律返回 None (宁分不误合)。
-    进程内缓存 (含未命中), 避免同名词重复起子进程。
-    """
-    if name in _CBDB_CACHE:
-        return _CBDB_CACHE[name]
-    py = _cbdb_py()
-    if not py:
-        _CBDB_CACHE[name] = None
-        return None
-    try:
-        r = subprocess.run([_cbdb_cmd(), py, 'find', name],
-                           capture_output=True, text=True, timeout=timeout)
-    except Exception:
-        _CBDB_CACHE[name] = None
-        return None
-    out = r.stdout or ''
-    m = re.search(r'找到\s*(\d+)\s*条', out)
-    if not m or int(m.group(1)) != 1:
-        _CBDB_CACHE[name] = None
-        return None
-    mm = re.search(r'PID\s+(\d+)\s+(\S+)\s+(\S+)\s*\(([^)]*)\)', out)
-    if not mm:
-        _CBDB_CACHE[name] = None
-        return None
-    pid, cn, dy, yrs = mm.group(1), mm.group(2), mm.group(3), mm.group(4)
-    by = dth = None
-    ym = re.match(r'(\d+|\?)-(\d+|\?)', yrs.strip())
-    if ym:
-        by = int(ym.group(1)) if ym.group(1).isdigit() else None
-        dth = int(ym.group(2)) if ym.group(2).isdigit() else None
-    hit = {'pid': int(pid), 'name': cn,
-           'dynasty': None if dy == '?' else dy,
-           'birth': by, 'death': dth}
-    _CBDB_CACHE[name] = hit
-    return hit
-
-
-def _cbdb_lookup_many(names):
-    """并发 CBDB 查询 → {name: hit|None}; 去重后投池。"""
-    uniq = list(dict.fromkeys(names))
-    if not uniq:
-        return {}
-    out = {}
-    with ThreadPoolExecutor(max_workers=_CBDB_WORKERS) as ex:
-        for n, hit in zip(uniq, ex.map(cbdb_find, uniq)):
-            out[n] = hit
-    return out
-
-
-def _cbdb_props(hit):
-    props = {}
-    if hit.get('dynasty'):
-        props['朝代'] = hit['dynasty']
-    if hit.get('birth'):
-        props['生'] = hit['birth']
-    if hit.get('death'):
-        props['卒'] = hit['death']
-    if hit.get('birth') or hit.get('death'):
-        props['生卒'] = f"{hit.get('birth') or '?'}-{hit.get('death') or '?'}"
-    # C3 轻量约束: 生卒年份抽为可过滤的 year_start/year_end
-    for src, key in (('birth', 'year_start'), ('death', 'year_end')):
-        raw = str(hit.get(src) or '')
-        m = re.search(r'(\d{3,4})', raw)
-        if m:
-            try:
-                props[key] = int(m.group(1))
-            except ValueError:
-                pass
-    return props
 
 
 # ── 抽取 ──
@@ -347,19 +226,13 @@ def _norm(s):
 
 
 def load_index(conn):
-    """书架归一词典: {'canon':{}, 'alias':{}, 'cbdb':{}} → entity_id。"""
-    idx = {'canon': {}, 'alias': {}, 'cbdb': {}}
-    for r in conn.execute("SELECT id, canonical, aliases, ext_ids FROM entities"):
+    """书架归一词典: {'canon':{}, 'alias':{}} → entity_id。"""
+    idx = {'canon': {}, 'alias': {}}
+    for r in conn.execute("SELECT id, canonical, aliases FROM entities"):
         idx['canon'][_norm(r['canonical'])] = r['id']
         try:
             for a in json.loads(r['aliases'] or '[]'):
                 idx['alias'].setdefault(_norm(a), r['id'])
-        except (ValueError, TypeError):
-            pass
-        try:
-            e = json.loads(r['ext_ids'] or '{}')
-            if e.get('cbdb'):
-                idx['cbdb'][int(e['cbdb'])] = r['id']
         except (ValueError, TypeError):
             pass
     return idx
@@ -452,45 +325,15 @@ def _llm_disambiguate(surfaces, canon_list, provider_id=None, canon_meta=None):
 def resolve_surfaces(conn, surfaces_cat, provider_id=None):
     """归一: [{'surface','category'}] → {surface: entity_id}。"""
     idx = load_index(conn)
-    # 预扫描: 收集需要 CBDB 的人名 (不在索引中), 并发查询一次
-    need, seen = [], set()
-    for sc in surfaces_cat:
-        k = _norm(sc['surface'])
-        if k in idx['canon'] or k in idx['alias']:
-            continue
-        cat = sc.get('category')
-        if cat and '人' in cat and k not in seen:
-            seen.add(k)
-            need.append(sc['surface'])
-    cbdb_hits = _cbdb_lookup_many(need)
     resolved, pending = {}, []
     for sc in surfaces_cat:
-        surface, cat = sc['surface'], sc.get('category')
+        surface = sc['surface']
         k = _norm(surface)
         if k in idx['canon']:
             resolved[surface] = idx['canon'][k]
             continue
         if k in idx['alias']:
             resolved[surface] = idx['alias'][k]
-            continue
-        hit = cbdb_hits.get(surface) if (cat and '人' in cat) else None
-        if hit:
-            if hit['pid'] in idx['cbdb']:
-                resolved[surface] = idx['cbdb'][hit['pid']]
-                continue
-            hk = _norm(hit['name'])
-            if hk in idx['canon']:
-                eid = idx['canon'][hk]
-                _set_ext_ids(conn, eid, {'cbdb': hit['pid']}, _cbdb_props(hit))
-                idx['cbdb'][hit['pid']] = eid
-                resolved[surface] = eid
-                continue
-            aliases = [surface] if k != hk else []
-            eid = _insert_entity(conn, hit['name'], cat, aliases,
-                                 {'cbdb': hit['pid']}, _cbdb_props(hit))
-            idx['canon'][hk] = eid
-            idx['cbdb'][hit['pid']] = eid
-            resolved[surface] = eid
             continue
         pending.append(sc)
 

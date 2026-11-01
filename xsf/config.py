@@ -4,14 +4,12 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-
 def get_data_dir() -> Path:
     """XSF_DATA 环境变量 → 默认 ~/xsf-data/"""
     data_dir = os.environ.get('XSF_DATA')
     path = Path(data_dir) if data_dir else Path.home() / 'xsf-data'
     path.mkdir(parents=True, exist_ok=True)
     return path
-
 
 def get_db_dir() -> Path:
     """数据库目录（必须本地磁盘）。
@@ -23,11 +21,9 @@ def get_db_dir() -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
-
 def get_db_path(collection: str) -> Path:
     """每个 collection 独立 DB: db/<collection>/xsf.db（本地磁盘）"""
     return get_db_dir() / collection / 'xsf.db'
-
 
 def list_collections() -> list[str]:
     """扫描 db 目录下含非空 xsf.db 的子目录，返回 collection 名称列表.
@@ -42,11 +38,9 @@ def list_collections() -> list[str]:
             result.append(child.name)
     return result
 
-
 # 路径分隔符 (跨平台) + Windows 保留 + URL/cookie 层风险字符 (# % & + 会让
 # /collections/{名}/... 链接与 last_collection cookie 出现截断/解码错乱)
 _COLL_FORBIDDEN = set('/\\:*?"<>|#%&+')
-
 
 def validate_collection_name(name: str) -> str | None:
     """校验书架名. 合法返回 None; 非法返回中文错误消息.
@@ -71,7 +65,6 @@ def validate_collection_name(name: str) -> str | None:
         return '名称包含控制字符'
     return None
 
-
 def find_orphan_collections() -> tuple[list[str], list[str]]:
     """探测两类「消失的书架」. 返回 (db_orphans, dir_orphans):
 
@@ -95,7 +88,6 @@ def find_orphan_collections() -> tuple[list[str], list[str]]:
     )
     return db_orphans, dir_orphans
 
-
 def get_collections_dir() -> Path:
     """书架目录（源文件/uploads）。可通过 XSF_COLLECTIONS_DIR 指向 NAS 等外部存储。
 
@@ -105,7 +97,6 @@ def get_collections_dir() -> Path:
     d = Path(os.environ.get('XSF_COLLECTIONS_DIR', str(get_data_dir() / 'collections')))
     d.mkdir(parents=True, exist_ok=True)
     return d
-
 
 def get_upload_dir(collection: str) -> Path:
     """某书架的源文件目录: <collections>/{collection}/uploads/
@@ -117,7 +108,6 @@ def get_upload_dir(collection: str) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
-
 def get_upload_path(collection: str, filename: str) -> Path:
     """书架投放暂存区内一份文件的完整路径（纯拼接，不创建目录）。
 
@@ -126,7 +116,6 @@ def get_upload_path(collection: str, filename: str) -> Path:
     resolve_original_path / get_original_file, 禁用本函数回退**。
     """
     return get_collections_dir() / collection / 'uploads' / filename
-
 
 def get_original_dir(collection: str, doc_id: int) -> Path:
     """某文献的原件目录: <collections>/{collection}/files/{doc_id}/
@@ -137,7 +126,6 @@ def get_original_dir(collection: str, doc_id: int) -> Path:
     d = get_collections_dir() / collection / 'files' / str(doc_id)
     d.mkdir(parents=True, exist_ok=True)
     return d
-
 
 def resolve_original_path(collection: str, linked_pdf: str | None) -> Path | None:
     """解析 linked_pdf 字段 → 原件绝对路径（纯拼接，不检查存在性）。
@@ -153,80 +141,9 @@ def resolve_original_path(collection: str, linked_pdf: str | None) -> Path | Non
         return None
     return get_collections_dir() / collection / v
 
-
 def get_ocr_config_path() -> Path:
     """OCR 配置文件路径: <XSF_DATA>/ocr-config.json"""
     return get_data_dir() / 'ocr-config.json'
-
-
-# ── 外部权威挂载 (显式, 用户决定挂载并告知位置) ──
-# 原则: 不自动探测路径。用户显式声明挂载哪个外部库、位于何处; 未挂载即
-# 该能力降级 (实体归一退化为纯 LLM)。
-# 配置: <XSF_DATA>/mounts.json
-#   {"version":1, "mounts": {"cbdb": {"enabled":true, "path":"...", "cmd":"python3"}}}
-def get_mounts_config_path() -> Path:
-    return get_data_dir() / 'mounts.json'
-
-
-def read_mounts() -> dict:
-    """读取挂载配置; 缺失/损坏 → 空配置。"""
-    p = get_mounts_config_path()
-    try:
-        d = json.loads(p.read_text('utf-8'))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {'version': 1, 'mounts': {}}
-    if not isinstance(d, dict):
-        return {'version': 1, 'mounts': {}}
-    d.setdefault('version', 1)
-    if not isinstance(d.get('mounts'), dict):
-        d['mounts'] = {}
-    return d
-
-
-def write_mounts(data: dict) -> None:
-    """原子写挂载配置 (tempfile + rename)。"""
-    p = get_mounts_config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    data = dict(data or {})
-    data.setdefault('version', 1)
-    fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix='.tmp')
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, p)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def get_mount(name: str) -> dict | None:
-    """返回已启用且路径存在的挂载 {path, cmd, ...} 或 None。
-
-    未挂载 / 未启用 / 路径不存在 → None (能力降级)。
-    """
-    m = (read_mounts().get('mounts') or {}).get(name)
-    if not isinstance(m, dict) or not m.get('enabled'):
-        return None
-    path = m.get('path')
-    if not path or not os.path.exists(path):
-        return None
-    return m
-
-
-def set_mount(name: str, enabled: bool, path: str = '', cmd: str = '') -> dict:
-    """写入/更新一个挂载项。返回完整配置。"""
-    cfg = read_mounts()
-    mounts = cfg.setdefault('mounts', {})
-    item = {'enabled': bool(enabled), 'path': (path or '').strip()}
-    if cmd:
-        item['cmd'] = cmd.strip()
-    mounts[name] = item
-    write_mounts(cfg)
-    return cfg
-
 
 def _read_ocr_config() -> dict:
     """读取 OCR 配置文件。损坏/不存在返回 {}。
@@ -268,7 +185,6 @@ def _read_ocr_config() -> dict:
             pass  # 迁移写失败不阻塞读 (下次再迁)
     return cfg
 
-
 def _write_ocr_config(data: dict) -> None:
     """原子写 OCR 配置文件 (tempfile + rename)，权限 600。"""
     p = get_ocr_config_path()
@@ -286,7 +202,6 @@ def _write_ocr_config(data: dict) -> None:
             pass
         raise
 
-
 # ── OCR provider 配置 (v3, 统一 vl_api 架构) ────────
 # schema: {version: 3, providers: [{id, name, type: 'vl_api',
 #          endpoint: 'paddle_http'|'aistudio_job'|'openai_chat',
@@ -298,7 +213,6 @@ def _write_ocr_config(data: dict) -> None:
 #                Ollama / vLLM / LM Studio / 本地 paddle-vl 均适用
 # 旧 v2 已自动迁移; v1 ({token, provider}) 不迁移, 读作空列表。
 
-
 def get_ocr_providers() -> list[dict]:
     """v3 providers 列表 (深拷贝)。旧版/损坏配置返回 []。"""
     cfg = _read_ocr_config()
@@ -306,7 +220,6 @@ def get_ocr_providers() -> list[dict]:
         return []
     providers = cfg.get('providers', [])
     return [dict(p) for p in providers if isinstance(p, dict) and p.get('id')]
-
 
 def get_default_ocr_provider_id() -> str | None:
     """默认 OCR provider id: 配置 default > XSF_OCR_METHOD (匹配 id) > 首个。
@@ -325,7 +238,6 @@ def get_default_ocr_provider_id() -> str | None:
         return env
     return ids[0] if ids else None
 
-
 def get_ocr_provider_cfg(provider_id: str = None) -> dict:
     """解析 provider 配置: 显式 id > default 解析链。找不到 raise RuntimeError。"""
     providers = get_ocr_providers()
@@ -342,14 +254,12 @@ def get_ocr_provider_cfg(provider_id: str = None) -> dict:
     avail = ', '.join(p['id'] for p in providers)
     raise RuntimeError(f'未知 OCR provider: {want}。已配置: {avail}')
 
-
 def _next_provider_id(providers: list[dict]) -> str:
     n = 1
     existing = {p['id'] for p in providers}
     while f'p{n}' in existing:
         n += 1
     return f'p{n}'
-
 
 def save_ocr_provider(name: str, url: str = None, pid: str = None,
                        api_key: str = None, model: str = None,
@@ -441,7 +351,6 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
     _write_ocr_config(cfg)
     return result
 
-
 def delete_ocr_provider(pid: str) -> bool:
     """删除 provider。若它是 default/default_llm 则清之。返回是否删除。"""
     cfg = _read_ocr_config()
@@ -463,7 +372,6 @@ def delete_ocr_provider(pid: str) -> bool:
     _write_ocr_config(cfg)
     return True
 
-
 def set_default_ocr_provider(pid: str, scope: str = 'ocr') -> None:
     """设置默认 provider。scope='ocr' (cfg['default']) / 'llm' (cfg['default_llm'])。"""
     cfg = _read_ocr_config()
@@ -475,13 +383,11 @@ def set_default_ocr_provider(pid: str, scope: str = 'ocr') -> None:
     cfg['updated_at'] = datetime.now().isoformat(timespec='seconds')
     _write_ocr_config(cfg)
 
-
 # ── LLM provider (P2c 翻译模型, 2026-10-17) ────────────
 
 def get_llm_providers() -> list[dict]:
     """type=='llm_chat' 的 provider 列表 (深拷贝)。"""
     return [p for p in get_ocr_providers() if p.get('type') == 'llm_chat']
-
 
 def get_default_llm_provider_id() -> str | None:
     """默认 LLM: default_llm > XSF_LLM_METHOD (匹配 id) > 首个 llm_chat。"""
@@ -496,7 +402,6 @@ def get_default_llm_provider_id() -> str | None:
     if env in ids:
         return env
     return ids[0] if ids else None
-
 
 def get_llm_provider_cfg(provider_id: str = None) -> dict:
     """解析 LLM provider 配置。未配置 raise RuntimeError。"""
