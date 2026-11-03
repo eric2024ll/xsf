@@ -4397,8 +4397,9 @@ def read_annotation_update(
     collection: str, doc_id: int, aid: int,
     note: str = Form(None),
     color: str = Form(None),
+    coords: str = Form(None),
 ):
-    """改批注文字/颜色 ( coords 不可改 —— 要改就删了重画)。"""
+    """改批注文字/颜色/坐标 (画布上移动/拉伸框回写)。"""
     gate = _read_gate(collection)
     if gate:
         return gate
@@ -4412,6 +4413,14 @@ def read_annotation_update(
         if color is not None:
             sets.append("color = ?")
             params.append(color)
+        if coords is not None:
+            try:
+                obj = json.loads(coords)
+            except (json.JSONDecodeError, ValueError):
+                return JSONResponse(status_code=422,
+                                    content={"error": "coords 非合法 JSON"})
+            sets.append("coords = ?")
+            params.append(json.dumps(obj, ensure_ascii=False))
         if not sets:
             return JSONResponse(status_code=422, content={"error": "无可更新字段"})
         sets.append("updated_at = datetime('now','localtime')")
