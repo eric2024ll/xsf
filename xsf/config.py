@@ -260,6 +260,9 @@ def _write_ocr_config(data: dict) -> None:
 #   openai_chat  POST <base_url>/chat/completions (OpenAI 兼容视觉)       [纯文本]
 #   glm_ocr      POST <base_url>/layout_parsing (智谱 GLM-OCR MaaS)       [结构化]
 #                默认 base_url https://open.bigmodel.cn/api/paas/v4
+#   lighton_grounding  POST <base_url>/v1/chat/completions (本机 vLLM)     [结构化]
+#                LightOnOCR-3; prompt=grounding, bbox 归一 0-1000;
+#                默认 base_url http://127.0.0.1:8023/v1
 #                Ollama / vLLM / LM Studio / 本地 paddle-vl 均适用
 # 旧 v2 已自动迁移; v1 ({token, provider}) 不迁移, 读作空列表。
 
@@ -294,7 +297,7 @@ def get_ocr_provider_cfg(provider_id: str = None) -> dict:
     if not providers:
         raise RuntimeError(
             '未配置 OCR provider。请在前端「OCR 设置」添加 '
-            '(vl_api: paddle_http / aistudio_job / openai_chat / glm_ocr)，'
+            '(vl_api: paddle_http / aistudio_job / openai_chat / glm_ocr / lighton_grounding)，'
             '或设置 XSF_OCR_METHOD 环境变量。'
         )
     want = provider_id or get_default_ocr_provider_id()
@@ -331,7 +334,7 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
     返回写入后的完整 provider dict。
     """
     ENDPOINTS = ('paddle_http', 'aistudio_job', 'openai_chat',
-                 'glm_ocr')
+                 'glm_ocr', 'lighton_grounding')
     name = (name or '').strip()
     url = (url or '').strip()
     ep = (endpoint or 'paddle_http').strip() or 'paddle_http'

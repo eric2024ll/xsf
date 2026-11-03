@@ -12,11 +12,16 @@ profiles:
   glm_ocr      POST <base_url>/layout_parsing (智谱 GLM-OCR MaaS)    structured
                0.9B OmniDocBench V1.5 94.62; 返回 md_results + layout_details
                (type+bbox); 0.2 元/百万 token, 逐页 PNG base64 直传 (2026-11-03)
+  lighton_grounding  POST <base_url>/v1/chat/completions (本机 vLLM)  structured
+               LightOnOCR-3-4B; prompt="grounding" → 每块前置
+               ![label](x1,y1,x2,y2) (归一 0-1000); 空 prompt=纯转录
+               (2026-11-03)
 
 设计依据: histflow-plan/system/tools/14-ocr-pipeline.md §3。
 """
 import base64
 import os
+import re
 import tempfile
 
 import requests
@@ -53,14 +58,17 @@ class VLApiAdapter:
         self.prompt = (cfg.get('prompt') or '').strip()
         self.name = cfg.get('name') or cfg.get('id', 'vl_api')
         if self.endpoint not in ('paddle_http', 'aistudio_job', 'openai_chat',
-                                 'glm_ocr'):
+                                 'glm_ocr', 'lighton_grounding'):
             raise RuntimeError(f'未知 vl_api endpoint: {self.endpoint}')
         if self.endpoint == 'glm_ocr' and not self.base_url:
             self.base_url = 'https://open.bigmodel.cn/api/paas/v4'
+        if self.endpoint == 'lighton_grounding' and not self.base_url:
+            self.base_url = 'http://127.0.0.1:8023/v1'
 
     @property
     def structured(self) -> bool:
-        return self.endpoint in ('paddle_http', 'aistudio_job', 'glm_ocr')
+        return self.endpoint in ('paddle_http', 'aistudio_job', 'glm_ocr',
+                                 'lighton_grounding')
 
     def _ocr_url(self) -> str:
         """结构化 /ocr 端点 (base_url 容忍带 /ocr 尾巴)。"""
@@ -93,6 +101,8 @@ class VLApiAdapter:
             return self._pdf_to_pages(pdf_path)
         if self.endpoint == 'glm_ocr':
             return self._glm_ocr_pages(pdf_path)
+        if self.endpoint == 'lighton_grounding':
+            return self._lighton_pages(pdf_path)
         return ocr_file(pdf_path, self._ocr_url(), api_key=self.api_key,
                         model=self.model)
 
@@ -240,6 +250,151 @@ class VLApiAdapter:
                         'block_bbox': None}]
         return out
 
+    # ── lighton_grounding 路径 (LightOnOCR-3, vLLM OpenAI 兼容) ──
+
+    LIGHTON_MAX_EDGE = 2048   # 官方: 400dpi 渲染后缩到长边 2048
+    _LIGHTON_MARK_RE = re.compile(
+        r'!\[([A-Za-z0-9_+]+)\]\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,'
+        r'\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\)')
+
+    def _lighton_chat(self, image_bytes: bytes, prompt: str,
+                      max_tokens: int = 4096) -> str:
+        """POST <base_url>/chat/completions (vLLM OpenAI 兼容)。
+
+        prompt='grounding' 走版面模式; 空串=纯转录 (只发图, 不发 text)。
+        """
+        url = self.base_url
+        if not url.endswith('/chat/completions'):
+            if not url.endswith('/v1'):
+                url += '/v1'
+            url += '/chat/completions'
+        headers = {'Content-Type': 'application/json'}
+        if self.api_key:
+            headers['Authorization'] = f'Bearer {self.api_key}'
+        content = [{'type': 'image_url',
+                    'image_url': {'url': 'data:image/png;base64,'
+                                         + base64.b64encode(image_bytes).decode('ascii')}}]
+        if prompt:
+            content.append({'type': 'text', 'text': prompt})
+        body = {
+            'model': self.model or 'lightonocr',
+            'messages': [{'role': 'user', 'content': content}],
+            'max_tokens': max_tokens,
+            'temperature': 0.2,
+            'top_p': 0.9,
+            'stream': False,
+        }
+        last_exc = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                r = requests.post(url, headers=headers, json=body,
+                                  timeout=HTTP_TIMEOUT)
+                if r.status_code in RETRYABLE_STATUS:
+                    import time
+                    last_exc = requests.HTTPError(f'HTTP {r.status_code}')
+                    time.sleep(RETRY_BASE_WAIT * (2 ** attempt))
+                    continue
+                if r.status_code >= 400:
+                    detail = ''
+                    try:
+                        err = r.json().get('error') or {}
+                        detail = err.get('message') if isinstance(err, dict) else str(err)
+                    except ValueError:
+                        detail = r.text[:200]
+                    raise RuntimeError(
+                        f'LightOnOCR HTTP {r.status_code}: {detail or url}')
+                data = r.json()
+                return ((data.get('choices') or [{}])[0]
+                        .get('message', {}).get('content') or '')
+            except (requests.ConnectionError, requests.Timeout, ValueError) as e:
+                import time
+                last_exc = e
+                time.sleep(RETRY_BASE_WAIT * (2 ** attempt))
+        raise last_exc
+
+    def _lighton_pages(self, pdf_path):
+        """逐页渲染到长边 2048 → grounding → 0-1000 归一 bbox 块。"""
+        import pymupdf
+
+        pages = []
+        with pymupdf.open(pdf_path) as doc:
+            for i, page in enumerate(doc):
+                longest = max(page.rect.width, page.rect.height) or 1.0
+                dpi = int(min(400.0, max(96.0,
+                                        self.LIGHTON_MAX_EDGE * 72.0 / longest)))
+                pix = page.get_pixmap(dpi=dpi)
+                png = pix.tobytes('png')
+                try:
+                    md = self._lighton_chat(png, 'grounding')
+                except RuntimeError as e:
+                    import logging
+                    logging.getLogger('xsf.ocr').warning(
+                        'lighton_grounding 第 %d 页失败: %s', i + 1, e)
+                    continue
+                blocks = self._lighton_parse_blocks(md)
+                if blocks:
+                    pages.append({
+                        'page_index': i,
+                        'width': 1000,
+                        'height': 1000,
+                        'parsing_res_list': blocks,
+                    })
+        return pages
+
+    _LIGHTON_MD_LABELS = {'text', 'title', 'list', 'header', 'footer',
+                          'page_number', 'footnote', 'caption', 'aside_text'}
+
+    @classmethod
+    def _lighton_clean(cls, content: str, label: str) -> str:
+        """剥掉模型自带 Markdown 标记 (标题 #/加粗 **), 保留表格 HTML。
+
+        检索文本层不该带排版记号; 块类型已由 label 表达。
+        """
+        if label not in cls._LIGHTON_MD_LABELS:
+            return content
+        out = []
+        for ln in content.splitlines():
+            s = ln.strip()
+            if not s:
+                continue
+            s = re.sub(r'^#{1,6}\s+', '', s)
+            s = s.replace('**', '')
+            out.append(s)
+        return '\n'.join(out) if out else content
+
+    @classmethod
+    def _lighton_parse_blocks(cls, md: str) -> list:
+        """grounding 标记 → parsing_res_list。
+
+        坐标归一 0-1000, 故 page_w/h 固定 1000 (下游按 bbox/page_w 归一)。
+        无标记时回退单块纯文本 (bbox None, 可入库不可定位)。
+        """
+        text = (md or '').strip()
+        if not text:
+            return []
+        marks = list(cls._LIGHTON_MARK_RE.finditer(text))
+        if not marks:
+            return [{'block_label': 'text', 'block_content': text,
+                     'block_bbox': None}]
+        out = []
+        for idx, m in enumerate(marks):
+            label = (m.group(1) or 'text').rstrip('+') or 'text'
+            try:
+                bbox = [float(m.group(j)) for j in range(2, 6)]
+            except ValueError:
+                continue
+            end = marks[idx + 1].start() if idx + 1 < len(marks) else len(text)
+            content = text[m.end():end].strip()
+            if not content:
+                continue
+            out.append({'block_label': label,
+                        'block_content': cls._lighton_clean(content, label),
+                        'block_bbox': bbox})
+        if not out:
+            return [{'block_label': 'text', 'block_content': text,
+                     'block_bbox': None}]
+        return out
+
     # ── plain 路径 ───────────────────────────────────
 
     def ocr_image_plain(self, image_bytes: bytes, mime: str = 'image/png',
@@ -267,6 +422,9 @@ class VLApiAdapter:
                 blocks = self._glm_parse_details(data, 1, 1)
                 md = '\n'.join(b['block_content'] for b in blocks)
             return md
+        if self.endpoint == 'lighton_grounding':
+            raw = (self._lighton_chat(image_bytes, '') or '').strip()
+            return self._lighton_clean(raw, 'text')
         raise NotImplementedError(
             'aistudio_job 暂不支持整图纯文本路径 (用于整本入库即可)')
 
@@ -354,6 +512,22 @@ class VLApiAdapter:
                                       + ('' if has_md else ' (md_results 空, 疑非文档图, 正常)')}
                 except RuntimeError as e:
                     return {'ok': False, 'detail': str(e)[:200]}
+            if self.endpoint == 'lighton_grounding':
+                url = self.base_url
+                if url.endswith('/chat/completions'):
+                    url = url[:-len('/chat/completions')]
+                if not url.endswith('/v1'):
+                    url += '/v1'
+                try:
+                    r = requests.get(url.rstrip('/') + '/models', timeout=10)
+                    if r.status_code != 200:
+                        return {'ok': False,
+                                'detail': f'HTTP {r.status_code}'}
+                    ids = [m.get('id') for m in r.json().get('data', [])]
+                    return {'ok': True,
+                            'detail': '已加载: ' + ', '.join(ids[:3])}
+                except (requests.ConnectionError, requests.Timeout) as e:
+                    return {'ok': False, 'detail': f'连不上 {url}: {e}'}
             if self.endpoint == 'paddle_http':
                 r = requests.get(f"{self._root_url()}/health",
                                  timeout=10)

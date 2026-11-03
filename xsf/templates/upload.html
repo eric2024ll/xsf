@@ -206,6 +206,7 @@
           <option value="aistudio_job">aistudio 云端（内置，免 URL）</option>
           <option value="openai_chat">OpenAI 兼容对话（Ollama / vLLM / LM Studio 等）</option>
           <option value="glm_ocr">智谱 GLM-OCR 云端（结构化版面解析，需 bigmodel key）</option>
+          <option value="lighton_grounding">本机 LightOnOCR-3（vLLM，结构化 grounding，需 GPU）</option>
         </select>
       </div>
       <div class="field">
@@ -440,7 +441,7 @@ async function loadProviders() {
 function _providerRow(p, scope) {
     var isDef = (scope === 'llm') ? (p.id === _defaultLlmPid) : (p.id === _defaultPid);
     var radioName = (scope === 'llm') ? 'defLlmProvider' : 'defProvider';
-    var epLabel = {paddle_http:'结构化', aistudio_job:'aistudio', openai_chat:'OpenAI', glm_ocr:'GLM-OCR 结构化'}[p.endpoint] || p.endpoint || '';
+    var epLabel = {paddle_http:'结构化', aistudio_job:'aistudio', openai_chat:'OpenAI', glm_ocr:'GLM-OCR 结构化', lighton_grounding:'LightOnOCR 结构化'}[p.endpoint] || p.endpoint || '';
     return '<div class="provider-item' + (isDef ? ' is-default' : '') + '">' +
       '<input type="radio" name="' + radioName + '" class="radio" id="def-' + p.id + '"' + (isDef ? ' checked' : '') +
       ' title="设为默认" onchange="setDefault(\'' + p.id + '\',\'' + scope + '\')">' +
