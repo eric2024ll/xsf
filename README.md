@@ -115,6 +115,8 @@ xsf stats
 | `paddle_http` | 本地 GPU / 自建服务 | structured | `parsing_res_list` 坐标契约，支持图文校对、画框重 OCR |
 | `aistudio_job` | AI Studio 云端 | structured | 内置三阶段协议（提交→轮询→取结果），只填 token |
 | `openai_chat` | OpenAI 兼容 chat API（qwen 等 VL 模型） | plain | 整页图直送、纯文本入库，可作默认引擎；对已有画框可裁切图片重 OCR 直送 |
+| `glm_ocr` | 智谱 GLM-OCR MaaS（`layout_parsing`） | structured | 逐页图 base64 直传，返回 `layout_details`（type+bbox）；需 bigmodel key |
+| `lighton_grounding` | 本机 LightOnOCR-3（vLLM，OpenAI 兼容） | structured | `grounding` prompt 输出 `![label](x1,y1,x2,y2)`（归一 0-1000）；逐页渲染长边 2048 |
 
 - 配置存 `<XSF_DATA>/ocr-config.json`（权限 600），Web「OCR 设置」自助添加
 - 上传/OCR 始终走全局默认 provider（列表点选切换）；CLI 可 `--provider <id>` 显式指定
@@ -124,6 +126,7 @@ xsf stats
 ### 本地 GPU 模型
 
 - **PaddleOCR-VL**：自建 HTTP 服务（如 systemd 常驻 :8091），以 `paddle_http` profile 接入
+- **LightOnOCR-3-4B**：vLLM 常驻 :8023（`lightonocr.service`），以 `lighton_grounding` profile 接入；4B bf16 约 13 GB 显存，与其它 GPU 服务按 systemd 让位错时使用；实测约 43 s/页（4060 Ti 16G）
 - **自训练管线**：`contrib/` 提供 pipeline 模板，支持本地模型缓存、GPU 独占（默认 `gpu:0`）、设备双层回退 GPU→CPU（无 CUDA 直落 + 初始化异常兜底），`PP_DEVICE` 可覆盖，`/health` 暴露实际设备
 
 ---
