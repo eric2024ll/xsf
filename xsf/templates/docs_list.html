@@ -135,6 +135,8 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
       <span id="wikiBadge" style="display:none;"></span>
     </div>
     <a class="btn" href="/collections/{{ collection | urlencode }}/entities/view">实体图谱</a>
+    <button class="btn" id="readToggleBtn" title="细读 = 图上勾画批注 + 选区问 AI（在细读页使用）；停用后数据保留，再启用即恢复"
+            onclick="toggleRead(event)" style="display:none;"></button>
   </div>
 
   <div class="toolbar">
@@ -240,6 +242,40 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
 const collection = {{ collection | tojson }};
 const sourceTags = {{ source_tags | tojson }};
 const bibTypeLabels = {{ bib_type_labels | tojson }};
+
+// ── 细读开关 (features.json 按书架启用; 数据随开关保留) ──
+let _readEnabled = null;
+function renderReadBtn(){
+  const b = document.getElementById('readToggleBtn');
+  if(!b) return;
+  b.style.display = '';
+  b.textContent = _readEnabled ? '细读 ✓ 已启用' : '细读 ✗ 未启用';
+  b.style.color = _readEnabled ? '#16a34a' : 'var(--text-muted)';
+}
+async function initReadBtn(){
+  try{
+    const r = await fetch('/collections/' + encodeURIComponent(collection) + '/read/status');
+    const d = await r.json();
+    _readEnabled = !!d.enabled;
+    renderReadBtn();
+  }catch(e){}
+}
+async function toggleRead(ev){
+  if(ev) ev.stopPropagation();
+  if(_readEnabled === null) return;
+  if(_readEnabled && !confirm('停用细读？批注与对话数据保留，再启用即恢复。')) return;
+  const b = document.getElementById('readToggleBtn');
+  b.disabled = true;
+  try{
+    const body = new URLSearchParams({enabled: _readEnabled ? 0 : 1});
+    const r = await fetch('/collections/' + encodeURIComponent(collection) + '/read/toggle', {
+      method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body.toString()});
+    const d = await r.json();
+    if(d.error){ alert('切换失败: ' + d.error); b.disabled = false; return; }
+    location.reload();   // 刷新使按钮/细读页状态一致
+  }catch(e){ alert('请求失败: ' + e.message); b.disabled = false; }
+}
+document.addEventListener('DOMContentLoaded', initReadBtn);
 const TAG_LABELS = {primary:'原始史料', secondary:'研究文献', reference:'工具书'};
 let state = {page:1, total:0, pages:0, docs:[]};
 let selectedIds = new Set();

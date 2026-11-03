@@ -29,7 +29,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from .config import (
     get_collections_dir, get_upload_dir,
     list_collections, get_db_path, validate_collection_name,
-    feature_enabled,
+    feature_enabled, set_feature,
 )
 from .db import init_db, get_conn
 from .read import (
@@ -4318,9 +4318,22 @@ def _read_gate(collection: str):
     if not feature_enabled('read', collection):
         return JSONResponse(
             status_code=404,
-            content={"error": "细读未启用: 在 <XSF_DATA>/features.json 的 "
-                              "\"read\" 数组里加上该书架名"})
+            content={"error": "细读未启用: 书架文献列表页点「细读」开关, "
+                              "或 features.json 的 \"read\" 数组加书架名"})
     return None
+
+
+@app.get("/collections/{collection}/read/status")
+def read_status(collection: str):
+    """细读开关状态 (管理开关本身, 不过门)。"""
+    return {"enabled": feature_enabled('read', collection)}
+
+
+@app.post("/collections/{collection}/read/toggle")
+def read_toggle(collection: str, enabled: int = Form(...)):
+    """切换细读开关 (数据保留, 再启用即恢复)。"""
+    state = set_feature('read', collection, bool(enabled))
+    return {"ok": True, "enabled": state}
 
 
 @app.get("/collections/{collection}/doc/{doc_id}/read/annotations")

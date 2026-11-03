@@ -174,6 +174,25 @@ def feature_enabled(name: str, collection: str) -> bool:
     lst = read_features().get(name)
     return isinstance(lst, list) and collection in lst
 
+
+def set_feature(name: str, collection: str, enabled: bool) -> bool:
+    """启用/停用某书架的某功能, 写回 features.json。返回写入后的启用态。"""
+    cfg = read_features()
+    lst = cfg.get(name)
+    if not isinstance(lst, list):
+        lst = []
+    if enabled and collection not in lst:
+        lst.append(collection)
+    if not enabled and collection in lst:
+        lst = [c for c in lst if c != collection]
+    cfg[name] = lst
+    import json
+    p = get_features_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                 encoding='utf-8')
+    return collection in lst
+
 def _read_ocr_config() -> dict:
     """读取 OCR 配置文件。损坏/不存在返回 {}。
 
