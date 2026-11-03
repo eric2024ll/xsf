@@ -193,7 +193,15 @@ class VLApiAdapter:
         pages = []
         with pymupdf.open(pdf_path) as doc:
             for i, page in enumerate(doc):
-                pix = page.get_pixmap(dpi=self.GLM_OCR_DPI)
+                # 长边封顶 2400px: 重OCR 路径喂进来的是「300dpi 像素当 pt」的
+                # 单页 PDF (2388×3568pt), 直接按 200dpi 渲染会变成 6637×9914
+                # 的 65MP 图 — 白烧 token 且被服务端缩回。按 72dpi≈原始像素
+                # 折算, 普通 A4 仍取满 200dpi。
+                dpi = self.GLM_OCR_DPI
+                max_pt = max(page.rect.width, page.rect.height)
+                if max_pt > 0:
+                    dpi = max(72, min(dpi, int(2400 / max_pt * 72)))
+                pix = page.get_pixmap(dpi=dpi)
                 png = pix.tobytes('png')
                 try:
                     data = self._glm_layout_parsing(png)
@@ -232,7 +240,8 @@ class VLApiAdapter:
             if isinstance(text, dict):
                 text = text.get('markdown') or text.get('html') or ''
             text = str(text).strip()
-            bbox = el.get('bbox') or el.get('box')
+            # GLM-OCR 实际字段是 bbox_2d; 兼容旧版 bbox/box
+            bbox = el.get('bbox_2d') or el.get('bbox') or el.get('box')
             if not text or not bbox or len(bbox) < 4:
                 continue
             try:
@@ -240,6 +249,16 @@ class VLApiAdapter:
                         float(bbox[2]), float(bbox[3])]
             except (TypeError, ValueError):
                 continue
+            # 每块自带 width/height 时, bbox 在该块坐标系 → 换算到本页像素
+            try:
+                ew = float(el.get('width') or 0)
+                eh = float(el.get('height') or 0)
+            except (TypeError, ValueError):
+                ew = eh = 0.0
+            if ew > 0 and eh > 0 and (ew != width or eh != height):
+                sx, sy = width / ew, height / eh
+                bbox = [bbox[0] * sx, bbox[1] * sy,
+                        bbox[2] * sx, bbox[3] * sy]
             out.append({'block_label': str(label),
                         'block_content': text,
                         'block_bbox': bbox})
@@ -499,11 +518,19 @@ class VLApiAdapter:
         """轻量探活, 不跑大推理。返回 {ok, detail}。"""
         try:
             if self.endpoint == 'glm_ocr':
-                # 1×1 PNG 直调 layout_parsing: 验 key/配额/路径
-                # (识别本身无意义, 只看能否 200 返回结构)
-                tiny = base64.b64decode(
-                    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE'
-                    'QVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+                # 空白 800×1000 PNG 直调 layout_parsing: 验 key/配额/路径。
+                # 注意: 服务端对过小图 (1×1 / 320×240 / 512×512) 一律回
+                # HTTP 400「格式不支持」, 与 key 无关 → 探活图必须够大。
+                try:
+                    import pymupdf
+                    pm = pymupdf.Pixmap(pymupdf.csRGB,
+                                        pymupdf.IRect(0, 0, 800, 1000), 0)
+                    tiny = pm.tobytes('png')
+                except Exception:
+                    tiny = base64.b64decode(
+                        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ'
+                        'AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5E'
+                        'rkJggg==')
                 try:
                     data = self._glm_layout_parsing(tiny)
                     has_md = bool((data.get('md_results') or '').strip())

@@ -5338,7 +5338,27 @@ def _reocr_regions_plain(provider, page_obj, page_w: int, page_h: int,
 
 def _write_reocr_page(conn, doc_id: int, page_num: int, new_blocks: list,
                       page_w: int, page_h: int, replace: bool = True) -> int:
-    """分栏重 OCR 结果写回 DB (短事务: DELETE→INSERT→commit), 返回写入行数."""
+    """分栏重 OCR 结果写回 DB (短事务: DELETE→INSERT→commit), 返回写入行数.
+
+    坐标空间归一: 页面已有 lines 的 page_w/page_h 可能不是 150dpi (整本 OCR
+    常用 300/400dpi)。新块若按 150dpi 写入, 与老块混在一页会让 bbox overlay
+    (applyScale 用单一 origWidth) 缩放错位 → 先把 bbox 换算到本页既有空间。
+    """
+    # 既有坐标空间 (必须在 DELETE 之前查)
+    row = conn.execute(
+        "SELECT MAX(page_w), MAX(page_h) FROM lines "
+        "WHERE doc_id = ? AND page_num = ?",
+        (doc_id, page_num),
+    ).fetchone()
+    tw, th = (row[0], row[1]) if row else (None, None)
+    if (tw and th and page_w and page_h
+            and (abs(tw - page_w) > 1 or abs(th - page_h) > 1)):
+        sx, sy = tw / page_w, th / page_h
+        for b in new_blocks:
+            bb = b.get("bbox")
+            if bb and len(bb) >= 4:
+                b["bbox"] = [bb[0] * sx, bb[1] * sy, bb[2] * sx, bb[3] * sy]
+        page_w, page_h = tw, th
     if replace:
         conn.execute(
             "DELETE FROM lines WHERE doc_id = ? AND page_num = ?",
@@ -5474,7 +5494,8 @@ def reocr_page(
             "new_blocks": len(new_blocks),
             "replaced": replace,
             # 细读卡片流用: 识别文本预览 (前 5 块, 各 120 字)
-            "texts": [((b.get('text') if isinstance(b, dict) else b) or '')[:120]
+            "texts": [('\n'.join(b.get('lines') or [])
+                       if isinstance(b, dict) else str(b))[:120]
                       for b in new_blocks[:5]],
         }
     except Exception as e:
