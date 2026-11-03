@@ -41,6 +41,14 @@
     return { x: Math.min(Math.max(x - r.left, 0), r.width) / r.width,
              y: Math.min(Math.max(y - r.top, 0), r.height) / r.height };
   }
+  // client 坐标 → 图内像素坐标 (夹在图框内)。
+  // 画笔首点曾误用 client 坐标 (onDown), 后续点用图内坐标 (onMove) →
+  // 一点下去就有一条从"屏幕坐标"连到"图内坐标"的斜线, 且笔迹整体错位。
+  function toLocal(x, y) {
+    var r = img.getBoundingClientRect();
+    return [Math.min(Math.max(x - r.left, 0), r.width),
+            Math.min(Math.max(y - r.top, 0), r.height)];
+  }
 
   // ── 当前页码: 从 URL 取 ──────────────────
   // 模板里的 const page 是首屏值; goPage() 用 AJAX 替换 #main 而不重跑脚本,
@@ -241,7 +249,8 @@
         drag.temp.setAttribute('stroke-linecap', 'round');
         drag.temp.setAttribute('opacity', '0.85');
         svg.appendChild(drag.temp);
-        drag.pts.push([cx, cy]);
+        drag.pts.push(toLocal(cx, cy));
+        drag.temp.setAttribute('points', drag.pts[0][0] + ',' + drag.pts[0][1]);
       } else {
         drag.temp = document.createElementNS(svgNS, 'rect');
         drag.temp.setAttribute('stroke', state.color);
@@ -274,7 +283,7 @@
       var y = Math.max(0, Math.min(cy - r.top, r.height));
       if (drag.kind === 'pen') {
         var lp = drag.pts[drag.pts.length - 1];
-        if (!lp || Math.abs(x - lp[0]) + Math.abs(y - lp[1]) > 3) {
+        if (!lp || Math.abs(x - lp[0]) + Math.abs(y - lp[1]) > 2) {
           drag.pts.push([x, y]);
           drag.temp.setAttribute('points', drag.pts.map(function (p) {
             return p[0] + ',' + p[1];
