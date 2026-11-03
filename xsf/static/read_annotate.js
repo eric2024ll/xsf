@@ -98,15 +98,27 @@
     var cursor = t === 'pen' ? 'crosshair' : (t ? 'crosshair' : '');
     if (layer) layer.style.cursor = cursor;
     layer && layer.classList.toggle('interactive', !!t);
+    // 工具激活时避免拖画带出文本选择
+    document.body.style.userSelect = t ? 'none' : '';
   }
   window.__readSetTool = setTool;
 
   // ── 画布: 拖矩形 / 画笔 ───────────────────
   function bindDraw(wrap) {
     var drawing = false, kind = null, sx = 0, sy = 0, temp = null, pts = [];
+    // 关键: Chromium 里 pointerdown 的 preventDefault 会抑制 mousedown,
+    // Firefox 不抑制 → initPan 同时启动, 拖画变成拖画+平移。
+    // 捕获阶段拦掉 mousedown, 且工具激活时禁拖选。
+    document.addEventListener('mousedown', function (e) {
+      if (state.tool && layer.contains(e.target)) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    }, true);
     layer.addEventListener('pointerdown', function (e) {
       if (!state.tool || e.button !== 0) return;
       e.preventDefault();
+      e.stopPropagation();
       drawing = true; kind = state.tool; pts = [];
       var r = img.getBoundingClientRect();
       sx = e.clientX - r.left; sy = e.clientY - r.top;
