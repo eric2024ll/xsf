@@ -258,6 +258,8 @@ def _write_ocr_config(data: dict) -> None:
 #                → {pages: [{page_index, parsing_res_list, ...}]}  [结构化]
 #   aistudio_job PaddleOCR aistudio 云端 (submit→poll→fetch, api_key=token) [结构化]
 #   openai_chat  POST <base_url>/chat/completions (OpenAI 兼容视觉)       [纯文本]
+#   glm_ocr      POST <base_url>/layout_parsing (智谱 GLM-OCR MaaS)       [结构化]
+#                默认 base_url https://open.bigmodel.cn/api/paas/v4
 #                Ollama / vLLM / LM Studio / 本地 paddle-vl 均适用
 # 旧 v2 已自动迁移; v1 ({token, provider}) 不迁移, 读作空列表。
 
@@ -292,7 +294,7 @@ def get_ocr_provider_cfg(provider_id: str = None) -> dict:
     if not providers:
         raise RuntimeError(
             '未配置 OCR provider。请在前端「OCR 设置」添加 '
-            '(vl_api: paddle_http / aistudio_job / openai_chat)，'
+            '(vl_api: paddle_http / aistudio_job / openai_chat / glm_ocr)，'
             '或设置 XSF_OCR_METHOD 环境变量。'
         )
     want = provider_id or get_default_ocr_provider_id()
@@ -328,7 +330,8 @@ def save_ocr_provider(name: str, url: str = None, pid: str = None,
     prompt: openai_chat 专属自定义转录 prompt (可空=用内置默认; 其他 endpoint 忽略)。
     返回写入后的完整 provider dict。
     """
-    ENDPOINTS = ('paddle_http', 'aistudio_job', 'openai_chat')
+    ENDPOINTS = ('paddle_http', 'aistudio_job', 'openai_chat',
+                 'glm_ocr')
     name = (name or '').strip()
     url = (url or '').strip()
     ep = (endpoint or 'paddle_http').strip() or 'paddle_http'

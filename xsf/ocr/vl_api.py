@@ -9,6 +9,9 @@ profiles:
   aistudio_job aistudio 云端 submit→poll→fetch (api_key=token)       structured
   openai_chat  POST <base_url>/chat/completions (OpenAI 兼容视觉)    plain
                适配 Ollama / vLLM / LM Studio / 本地 paddle-vl server.py
+  glm_ocr      POST <base_url>/layout_parsing (智谱 GLM-OCR MaaS)    structured
+               0.9B OmniDocBench V1.5 94.62; 返回 md_results + layout_details
+               (type+bbox); 0.2 元/百万 token, 逐页 PNG base64 直传 (2026-11-03)
 
 设计依据: histflow-plan/system/tools/14-ocr-pipeline.md §3。
 """
@@ -49,12 +52,15 @@ class VLApiAdapter:
         self.api_key = cfg.get('api_key')
         self.prompt = (cfg.get('prompt') or '').strip()
         self.name = cfg.get('name') or cfg.get('id', 'vl_api')
-        if self.endpoint not in ('paddle_http', 'aistudio_job', 'openai_chat'):
+        if self.endpoint not in ('paddle_http', 'aistudio_job', 'openai_chat',
+                                 'glm_ocr'):
             raise RuntimeError(f'未知 vl_api endpoint: {self.endpoint}')
+        if self.endpoint == 'glm_ocr' and not self.base_url:
+            self.base_url = 'https://open.bigmodel.cn/api/paas/v4'
 
     @property
     def structured(self) -> bool:
-        return self.endpoint in ('paddle_http', 'aistudio_job')
+        return self.endpoint in ('paddle_http', 'aistudio_job', 'glm_ocr')
 
     def _ocr_url(self) -> str:
         """结构化 /ocr 端点 (base_url 容忍带 /ocr 尾巴)。"""
@@ -85,6 +91,8 @@ class VLApiAdapter:
                                      model=self.model)
         if self.endpoint == 'openai_chat':
             return self._pdf_to_pages(pdf_path)
+        if self.endpoint == 'glm_ocr':
+            return self._glm_ocr_pages(pdf_path)
         return ocr_file(pdf_path, self._ocr_url(), api_key=self.api_key,
                         model=self.model)
 
@@ -113,6 +121,125 @@ class VLApiAdapter:
                 })
         return pages
 
+    # ── glm_ocr 路径 (智谱 GLM-OCR MaaS, 结构化) ──────
+
+    GLM_OCR_DPI = 200   # API 侧会再缩放; 200dpi 兼顾小字与 token
+
+    def _glm_layout_parsing(self, image_bytes: bytes) -> dict:
+        """POST /layout_parsing 单页。返回原始 JSON。"""
+        url = self.base_url.rstrip('/')
+        if not url.endswith('/layout_parsing'):
+            url += '/layout_parsing'
+        b64 = base64.b64encode(image_bytes).decode('ascii')
+        body = {'model': self.model or 'glm-ocr',
+                'file': f'data:image/png;base64,{b64}'}
+        headers = {'Content-Type': 'application/json'}
+        if self.api_key:
+            headers['Authorization'] = f'Bearer {self.api_key}'
+        last_exc = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                r = requests.post(url, headers=headers, json=body,
+                                  timeout=HTTP_TIMEOUT)
+                if r.status_code in RETRYABLE_STATUS:
+                    import time
+                    last_exc = requests.HTTPError(f'HTTP {r.status_code}')
+                    time.sleep(RETRY_BASE_WAIT * (2 ** attempt))
+                    continue
+                if r.status_code in (401, 403):
+                    raise RuntimeError(
+                        f'GLM-OCR 拒绝访问 (HTTP {r.status_code}): '
+                        f'检查 bigmodel API key')
+                if r.status_code >= 400:
+                    detail = ''
+                    try:
+                        err = r.json().get('error') or {}
+                        detail = err.get('message') or r.text[:200]
+                    except ValueError:
+                        detail = r.text[:200]
+                    raise RuntimeError(
+                        f'HTTP {r.status_code}: {detail}'
+                        if detail else f'HTTP {r.status_code} ({url})')
+                r.raise_for_status()
+                return r.json()
+            except (requests.ConnectionError, requests.Timeout,
+                    ValueError) as e:
+                import time
+                last_exc = e
+                time.sleep(RETRY_BASE_WAIT * (2 ** attempt))
+        raise last_exc
+
+    def _glm_ocr_pages(self, pdf_path):
+        """glm_ocr: 逐页渲染 PNG → layout_parsing → parsing_res_list。
+
+        layout_details 形状防御式兼容两态: 扁平 [elem,...] (单图调用常态)
+        或嵌套 [[elem,...], ...] (多页 PDF 时按页分组)。元素取
+        type/label + bbox + text/content/markdown; 缺 layout_details 时
+        回退 md_results 单块伪结构 (可入库不可几何过滤)。
+        bbox 单位按「所发图片像素」处理 (与 width/height 同空间)。
+        """
+        import pymupdf
+
+        pages = []
+        with pymupdf.open(pdf_path) as doc:
+            for i, page in enumerate(doc):
+                pix = page.get_pixmap(dpi=self.GLM_OCR_DPI)
+                png = pix.tobytes('png')
+                try:
+                    data = self._glm_layout_parsing(png)
+                except RuntimeError as e:
+                    # 单页失败不中断整本 (空页/配额等), 与其他引擎一致
+                    import logging
+                    logging.getLogger('xsf.ocr').warning(
+                        'glm_ocr 第 %d 页失败: %s', i + 1, e)
+                    continue
+                blocks = self._glm_parse_details(data, pix.width, pix.height)
+                if blocks:
+                    pages.append({
+                        'page_index': i,
+                        'width': pix.width,
+                        'height': pix.height,
+                        'parsing_res_list': blocks,
+                    })
+        return pages
+
+    @staticmethod
+    def _glm_parse_details(data: dict, width: int, height: int) -> list:
+        """layout_details + md_results → parsing_res_list。"""
+        ld = data.get('layout_details')
+        # 嵌套形态: 按页分组 → 取第一组 (我们是单页调用)
+        if isinstance(ld, list) and ld and isinstance(ld[0], list):
+            ld = ld[0] if ld else []
+        if not isinstance(ld, list):
+            ld = []
+        out = []
+        for el in ld:
+            if not isinstance(el, dict):
+                continue
+            label = (el.get('type') or el.get('label') or 'text')
+            text = (el.get('text') or el.get('content')
+                    or el.get('markdown') or el.get('md') or '')
+            if isinstance(text, dict):
+                text = text.get('markdown') or text.get('html') or ''
+            text = str(text).strip()
+            bbox = el.get('bbox') or el.get('box')
+            if not text or not bbox or len(bbox) < 4:
+                continue
+            try:
+                bbox = [float(bbox[0]), float(bbox[1]),
+                        float(bbox[2]), float(bbox[3])]
+            except (TypeError, ValueError):
+                continue
+            out.append({'block_label': str(label),
+                        'block_content': text,
+                        'block_bbox': bbox})
+        if not out:
+            md = (data.get('md_results') or data.get('text') or '').strip()
+            if md:
+                out = [{'block_label': 'text', 'block_content': md,
+                        'block_bbox': None}]
+        return out
+
     # ── plain 路径 ───────────────────────────────────
 
     def ocr_image_plain(self, image_bytes: bytes, mime: str = 'image/png',
@@ -133,6 +260,13 @@ class VLApiAdapter:
                     os.unlink(tmp)
                 except OSError:
                     pass
+        if self.endpoint == 'glm_ocr':
+            data = self._glm_layout_parsing(image_bytes)
+            md = (data.get('md_results') or data.get('text') or '').strip()
+            if not md:
+                blocks = self._glm_parse_details(data, 1, 1)
+                md = '\n'.join(b['block_content'] for b in blocks)
+            return md
         raise NotImplementedError(
             'aistudio_job 暂不支持整图纯文本路径 (用于整本入库即可)')
 
@@ -206,6 +340,20 @@ class VLApiAdapter:
     def test_connection(self) -> dict:
         """轻量探活, 不跑大推理。返回 {ok, detail}。"""
         try:
+            if self.endpoint == 'glm_ocr':
+                # 1×1 PNG 直调 layout_parsing: 验 key/配额/路径
+                # (识别本身无意义, 只看能否 200 返回结构)
+                tiny = base64.b64decode(
+                    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE'
+                    'QVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+                try:
+                    data = self._glm_layout_parsing(tiny)
+                    has_md = bool((data.get('md_results') or '').strip())
+                    return {'ok': True,
+                            'detail': 'glm-ocr 可调用'
+                                      + ('' if has_md else ' (md_results 空, 疑非文档图, 正常)')}
+                except RuntimeError as e:
+                    return {'ok': False, 'detail': str(e)[:200]}
             if self.endpoint == 'paddle_http':
                 r = requests.get(f"{self._root_url()}/health",
                                  timeout=10)
