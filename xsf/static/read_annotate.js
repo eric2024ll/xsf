@@ -608,7 +608,12 @@
       var ix = Math.max(0, Math.min(x1, rx1) - Math.max(x0, rx0));
       var iy = Math.max(0, Math.min(y1, ry1) - Math.max(y0, ry0));
       var barea = Math.max((x1 - x0) * (y1 - y0), 1e-9);
-      if (ix * iy / barea >= 0.3) hits.push(el);
+      // 与后端 region_text 同规则: 面积≥30% / 块中心在选区内 / 垂直覆盖≥50%
+      var cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      var inside = cx >= rx0 && cx <= rx1 && cy >= ry0 && cy <= ry1;
+      var vy = iy / Math.max(y1 - y0, 1e-9);
+      if (ix * iy / barea >= 0.3 || (inside && ix > 0 && iy > 0) ||
+          (vy >= 0.5 && ix > 0)) hits.push(el);
     });
     if (!hits.length) { toast('选区内没有文本块'); return; }
     hits.forEach(function (el) {

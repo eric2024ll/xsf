@@ -87,7 +87,7 @@ def _open_pdf(collection: str, linked_pdf):
 
 
 def region_text(conn, collection, doc, page_num: int, rect_norm: dict,
-                max_chars: int = 1200) -> str:
+                max_chars: int = 4000) -> str:
     """选区文本: 优先取校对后的 lines (bbox 交选区), 空则 pymupdf clip 兜底。
 
     lines.bbox 在 OCR 厂商像素空间 (page_w×page_h); 无 bbox 的文献
@@ -123,8 +123,17 @@ def region_text(conn, collection, doc, page_num: int, rect_norm: dict,
         ix = max(0.0, min(nx1, r['x'] + r['w']) - max(nx0, r['x']))
         iy = max(0.0, min(ny1, r['y'] + r['h']) - max(ny0, r['y']))
         barea = max((nx1 - nx0) * (ny1 - ny0), 1e-9)
-        # 覆盖判定: 交面积占块面积 ≥ 30% 视为命中 (轻擦边不算)
-        if (ix * iy) / barea >= 0.30:
+        # 覆盖判定: 交面积占块面积 ≥30%, 或块中心点落在选区内
+        # (2026-11-03: 原只认 30%, 框选边缘的整行/整段会被丢掉 → 用户反馈「识别不全」)
+        cx = (nx0 + nx1) / 2
+        cy = (ny0 + ny1) / 2
+        inside = (r['x'] <= cx <= r['x'] + r['w'] and
+                  r['y'] <= cy <= r['y'] + r['h'])
+        # 垂直覆盖行高 ≥50% 也算命中: 框只横向切一段 (选中几行中段) 时
+        # 面积占比会很低, 但整行确实在选区内 → 应取回 (2026-11-03)
+        vy = iy / max(ny1 - ny0, 1e-9)
+        if ((ix * iy) / barea >= 0.30 or (inside and ix > 0 and iy > 0)
+                or (vy >= 0.50 and ix > 0)):
             t = (row['text'] or '').strip()
             if t:
                 hits.append(t)
