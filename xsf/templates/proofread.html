@@ -4,8 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" href="/favicon.ico">
-<title>{% if error %}校对页错误{% else %}校对 - {{ doc.title or doc.filename }} · 第 {{ page_num }} 页{% endif %}</title>
+<title>{% if error %}细读页错误{% else %}细读 - {{ doc.title or doc.filename }} · 第 {{ page_num }} 页{% endif %}</title>
 <link rel="stylesheet" href="/static/app.css?v={{ static_v }}">
+{% if read_enabled %}<link rel="stylesheet" href="/static/read.css?v={{ static_v }}">{% endif %}
 <style>
 
 /* ── 来源标签 ── */
@@ -806,6 +807,16 @@ mark {
         <button onclick="zoomDelta(1.25)" title="放大">＋</button>
         <button onclick="zoomSetFit()" title="适应宽度">適寬</button>
         <button onclick="zoomSetPct(1)" title="实际尺寸 (150dpi)">1:1</button>
+        {% if read_enabled %}
+        <span class="read-tools">
+          <button class="rt-btn" data-tool="rect" title="框选区域 → 批注 / 问 AI / 定位文本块">框选批注</button>
+          <button class="rt-btn" data-tool="pen" title="自由画笔勾画">画笔</button>
+          <button class="rt-btn" data-tool="highlight" title="半透明高亮覆盖">高亮</button>
+          {%- for c in ['#e11d48', '#2563eb', '#16a34a', '#d97706', '#7c3aed'] %}
+          <button class="rt-color{{ ' on' if c == '#e11d48' }}" data-color="{{ c }}" style="background:{{ c }}" title="颜色"></button>
+          {%- endfor %}
+        </span>
+        {% endif %}
         <button class="reocr-btn" id="reocrToggle" onclick="toggleReocrMode()">框选重OCR</button>
         <button id="showAllBoxes" onclick="toggleShowAllBoxes()">显示全部框</button>
         <span class="hint">滚轮缩放 · 拖拽平移</span>
@@ -863,6 +874,21 @@ mark {
       {% endfor %}
       <div class="draw-layer" id="drawLayer"></div>
     </div>
+    {% if read_enabled %}
+    <div id="readCards">
+      <div class="rc-head" id="readCardsHead">
+        <b>本页卡片流</b>
+        <span class="rc-chips">
+          <button class="on" data-f="all">全部</button>
+          <button data-f="ann">批注</button>
+          <button data-f="ocr">OCR</button>
+        </span>
+        <input class="rc-search" id="rcSearch" placeholder="检索书架批注与划选原文…">
+      </div>
+      <div id="readCardsBody"></div>
+      <div class="rc-hits" id="rcHits"></div>
+    </div>
+    {% endif %}
   </div>
   {% elif has_pdf %}
   <div class="left" id="leftPanel" style="overflow:auto;">
@@ -873,6 +899,21 @@ mark {
            alt="第 {{ page_num }} 页"
            style="width:100%;height:auto;display:block;">
     </div>
+    {% if read_enabled %}
+    <div id="readCards">
+      <div class="rc-head" id="readCardsHead">
+        <b>本页卡片流</b>
+        <span class="rc-chips">
+          <button class="on" data-f="all">全部</button>
+          <button data-f="ann">批注</button>
+          <button data-f="ocr">OCR</button>
+        </span>
+        <input class="rc-search" id="rcSearch" placeholder="检索书架批注与划选原文…">
+      </div>
+      <div id="readCardsBody"></div>
+      <div class="rc-hits" id="rcHits"></div>
+    </div>
+    {% endif %}
   </div>
   {% else %}
   <div class="link-pdf-bar">
@@ -1932,6 +1973,7 @@ async function doReocr() {
     const data = await res.json();
     if (res.ok && data.status === 'ok') {
       _pageDirty = false;  // 用户明确选择替换本页，弃用编辑器中的旧内容
+      if (window.__readOcrCard) window.__readOcrCard(data);
       alert('重OCR完成：替换/新增 ' + data.new_blocks + ' 个文本块');
       goPage(new URL(location.href).searchParams.get('page') || 1);
     } else {
@@ -3208,6 +3250,16 @@ function locateInPageText(text) {
 }
 document.addEventListener('DOMContentLoaded', () => { if (typeof renderTocTree === 'function') renderTocTree(); });
 </script>
+<script>
+window.__READ = {
+  enabled: {{ 'true' if read_enabled else 'false' }},
+  vision: {{ (read_vision or []) | tojson }},
+};
+</script>
+{% if read_enabled %}
+<script src="/static/read_annotate.js?v={{ static_v }}"></script>
+<script src="/static/read_chat.js?v={{ static_v }}"></script>
+{% endif %}
 {% endif %}
 
 </body>

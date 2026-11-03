@@ -46,17 +46,25 @@ AUTOFILL_SYSTEM_PROMPT = """\
 
 
 def chat(messages: list[dict], provider_id: str = None,
-         max_tokens: int = None, timeout: float = 180.0) -> tuple[str, str]:
+         max_tokens: int = None, timeout: float = 180.0,
+         cfg: dict = None) -> tuple[str, str]:
     """调用 LLM (OpenAI 兼容)。返回 (content, model_name)。
 
     provider 配置可选 chat_extra (dict): 逐字段合并进请求 body
     (如 zhipau GLM 系列 {"thinking": {"type": "disabled"}} 关思考提速
     确定性转换任务; OpenAI 兼容网关一般忽略不认识的多余字段)。
+
+    cfg (内部): 显式 provider 配置, 跳过 llm_chat 列表解析 —— 细读「问图」
+    用 vl_api + openai_chat 的视觉模型, 它不在 llm_chat 列表里。messages
+    的 content 允许 OpenAI 多模态数组 (text + image_url data URI)。
     """
-    try:
-        cfg = get_llm_provider_cfg(provider_id)
-    except RuntimeError as e:
-        raise LLMNotConfigured(str(e))
+    if cfg is None:
+        try:
+            cfg = get_llm_provider_cfg(provider_id)
+        except RuntimeError as e:
+            raise LLMNotConfigured(str(e))
+    else:
+        cfg = dict(cfg)
     url = cfg.get('base_url', '')
     if not url.endswith('/chat/completions'):
         url += '/chat/completions'

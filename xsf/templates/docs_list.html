@@ -55,6 +55,12 @@ td .badge.incollection{background:#f0e8e6;color:#8e44ad;}
 td .badge.phdthesis{background:#f9e8e8;color:#a03030;}
 td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
 .actions a{font-size:0.8rem;margin-right:8px;}
+/* 细读 = 行内主操作 (2026-11-03): 实心主色, 比其他按钮大一档 */
+.actions a.btn-read{display:inline-block;padding:6px 14px;margin-right:10px;
+  font-size:0.9rem;font-weight:600;border-radius:5px;
+  background:var(--primary);color:#fff;text-decoration:none;
+  transition:filter .15s, transform .15s;}
+.actions a.btn-read:hover{filter:brightness(1.12);transform:translateY(-1px);}
 .bm-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1500;align-items:center;justify-content:center;}
 .bm-modal{background:var(--card-bg);border-radius:var(--radius);width:90%;max-width:800px;max-height:85vh;display:flex;flex-direction:column;}
 .bm-header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border);}
@@ -528,7 +534,7 @@ function renderTable(docs){
       '<td>' + (d.page_count || '-') + ocrBadge(d) + '</td>' +
       '<td>' + fmtDate(d.created_at) + '</td>' +
       '<td class="actions">' +
-        '<a href="/collections/' + collEnc + '/doc/' + d.id + '/proofread">校对</a>' +
+        '<a class="btn-read" href="/collections/' + collEnc + '/doc/' + d.id + '/proofread">细读</a>' +
         '<button class="btn" style="padding:2px 10px;font-size:0.8rem;" onclick="pmOpen('+attrEsc(JSON.stringify(collection))+','+d.id+',{title:'+attrEsc(JSON.stringify(d.title||''))+'})">预览</button>' +
         '<button class="btn" style="padding:2px 10px;font-size:0.8rem;" onclick="reocrDoc('+d.id+',this)">重OCR</button>' +
         '<button class="btn" style="padding:2px 10px;font-size:0.8rem;color:var(--danger);" onclick="deleteDoc('+d.id+',this)">删除</button>' +

@@ -208,6 +208,22 @@ function renderGroups(data){
       }).join('')+'</div>';
     container.appendChild(eb);
   }
+  if(data.annotations&&data.annotations.length){
+    var ab=document.createElement('div');
+    ab.className='doc-group';
+    ab.innerHTML='<div class="doc-group-head"><span class="dg-title">批注命中（'+data.annotations.length+'）</span></div>'+
+      '<div class="doc-group-body" style="display:block;padding:6px 10px;">'+
+      data.annotations.map(function(a){
+        var txt=(a.note||'')||a.clip_text||'';
+        return '<a class="rc-hit" style="display:block;margin:3px 0;color:inherit;text-decoration:none;" href="/collections/'+
+          encodeURIComponent(currentCollection)+'/doc/'+a.doc_id+'/proofread?page='+a.page_num+'">'+
+          '<b>'+escapeHtml(a.title||('文档#'+a.doc_id))+'</b>'+
+          ' <span style="color:var(--text-muted);font-size:0.78rem;">第 '+a.page_num+' 页'+
+          (a.origin==='ai'?' · AI批注':' · 批注')+'</span>'+
+          '<div style="color:var(--text-muted);font-size:0.78rem;">'+escapeHtml(String(txt).slice(0,100))+'</div></a>';
+      }).join('')+'</div>';
+    container.appendChild(ab);
+  }
   groupData=data.groups.map(function(g){
     return {doc_id:g.doc_id,title:g.title||g.filename,cite_key:g.cite_key,
             hit_count:g.hit_count,loaded:0};

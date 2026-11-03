@@ -195,7 +195,7 @@
         <label>用途 <span style="color:var(--text-muted);font-weight:400;font-size:0.75rem;">（决定它进哪条默认链）</span></label>
         <select id="pfPtype" onchange="onPtypeChange()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;">
           <option value="vl_api">视觉 OCR（识别引擎）</option>
-          <option value="llm_chat">翻译 LLM（多行制 AI 填充草稿层）</option>
+          <option value="llm_chat">对话 LLM（细读问答 / 多行制翻译 / 辅助填卡）</option>
         </select>
       </div>
       <input type="hidden" id="pfId" value="">
@@ -403,7 +403,7 @@ function onPtypeChange() {
   if (pt === 'llm_chat') {
     typeSel.value = 'openai_chat';
     typeSel.disabled = true;
-    typeSel.title = '翻译 LLM 固定走 OpenAI 兼容协议';
+    typeSel.title = '对话 LLM 固定走 OpenAI 兼容协议';
   } else {
     typeSel.disabled = false;
     typeSel.title = '';
@@ -447,7 +447,7 @@ function _providerRow(p, scope) {
       '<label for="def-' + p.id + '" style="cursor:pointer;" title="点击设为默认">' +
       '<div class="pname">' + escapeHtml(p.name) + (isDef ? ' <span class="badge-def">默认</span>' : '') +
       ' <span class="badge-def" style="color:var(--text-muted)">' + epLabel + '</span>' +
-      (scope === 'llm' ? ' <span style="color:#92400e;font-size:0.75rem;">翻译</span>' : '') +
+      (scope === 'llm' ? ' <span style="color:#92400e;font-size:0.75rem;">对话</span>' : '') +
       (!p.structured && scope !== 'llm' ? ' <span style="color:var(--warn,#c0392b);font-size:0.75rem;">(整页纯文本, 无块坐标)</span>' : '') + '</div>' +
       '<div class="purl">' + (p.endpoint === 'aistudio_job' ? 'aistudio 云端 (内置)' : escapeHtml(p.url)) + '</div>' +
       '<div class="pinfo">' +
@@ -476,7 +476,7 @@ function renderProviders() {
     html += ocr.map(function(p) { return _providerRow(p, 'ocr'); }).join('');
   }
   if (llm.length) {
-    html += '<div style="font-size:0.78rem;color:#92400e;margin:12px 0 2px;">翻译 LLM（多行制 AI 填充 · 独立默认）</div>';
+    html += '<div style="font-size:0.78rem;color:#92400e;margin:12px 0 2px;">对话 LLM（细读问答 / 翻译 / 辅助填卡 · 独立默认）</div>';
     html += llm.map(function(p) { return _providerRow(p, 'llm'); }).join('');
   }
   el.innerHTML = html;

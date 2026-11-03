@@ -29,8 +29,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from .config import (
     get_collections_dir, get_upload_dir,
     list_collections, get_db_path, validate_collection_name,
+    feature_enabled,
 )
 from .db import init_db, get_conn
+from .read import (
+    ensure_read_tables, save_annotation, annotation_row, search_annotations,
+    vision_providers as read_vision_providers, ask as read_ask,
+)
 from .search import (search, search_grouped, count_hits, get_block_lines,
                      get_context, get_highlight_terms)
 from .bib_utils import (
@@ -775,6 +780,16 @@ async def api_search_grouped(collection: str, q: str,
         cards = _card_hits(collection, q)
         wiki = _wiki_hits(collection, q)
         entities = _entity_hits(collection, q)
+        ann_hits = []
+        if feature_enabled('read', collection):
+            try:
+                ac = get_conn(collection)
+                try:
+                    ann_hits = search_annotations(ac, q, 20)
+                finally:
+                    ac.close()
+            except Exception:
+                ann_hits = []
         event_id = _record_search_event(
             collection, q, stats["docs"], len(entities or []),
             len(wiki or []), len(cards or []), bool(expanded))
@@ -784,6 +799,7 @@ async def api_search_grouped(collection: str, q: str,
                 "cards": cards,
                 "wiki": wiki,
                 "entities": entities,
+                "annotations": ann_hits,
                 "event_id": event_id,
                 "total_blocks": stats["blocks"], "total_docs": stats["docs"],
                 "groups_truncated": len(groups) >= limit}
@@ -4227,6 +4243,9 @@ async def proofread_page(
                     })(json.loads(doc["page_map"])) if (
                         "page_map" in doc.keys() and doc["page_map"]) else None,
                     doc_rows=_tri_rows_for(doc),
+                    read_enabled=feature_enabled('read', collection),
+                    read_vision=read_vision_providers() if (
+                        feature_enabled('read', collection)) else [],
                 ),
             )
         except Exception as e:
@@ -4289,6 +4308,227 @@ async def page_image(collection: str, doc_id: int, page_num: int):
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": str(e)})
     return await asyncio.to_thread(_work)
+
+
+# ── 细读层: 批注 + AI 对话 (features.json 按书架启用) ──
+# 坐标一律归一化 0-1; 阅读层与校对层/实体层零污染 (2026-11-03 方案)
+
+def _read_gate(collection: str):
+    """细读未启用 → 404 (路由存在但按书架关门)。"""
+    if not feature_enabled('read', collection):
+        return JSONResponse(
+            status_code=404,
+            content={"error": "细读未启用: 在 <XSF_DATA>/features.json 的 "
+                              "\"read\" 数组里加上该书架名"})
+    return None
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/read/annotations")
+def read_annotations_list(collection: str, doc_id: int, page: int = None):
+    """列批注 (page 省略 = 该文献全部)。"""
+    gate = _read_gate(collection)
+    if gate:
+        return gate
+    conn = get_conn(collection)
+    try:
+        ensure_read_tables(conn)
+        sql = "SELECT * FROM read_annotations WHERE doc_id = ?"
+        params = [doc_id]
+        if page:
+            sql += " AND page_num = ?"
+            params.append(page)
+        rows = conn.execute(sql + " ORDER BY id", params).fetchall()
+        return {"items": [annotation_row(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/read/annotations")
+def read_annotation_create(
+    collection: str, doc_id: int,
+    page_num: int = Form(...),
+    kind: str = Form(...),
+    coords: str = Form(...),
+    color: str = Form(None),
+    note: str = Form(None),
+    origin: str = Form("human"),
+    clip_text: str = Form(None),
+):
+    """落一条批注 (画完即存); rect 类服务端自动补裁文快照。"""
+    gate = _read_gate(collection)
+    if gate:
+        return gate
+    conn = get_conn(collection)
+    try:
+        doc = conn.execute(
+            "SELECT id, linked_pdf FROM documents WHERE id = ?",
+            (doc_id,)).fetchone()
+        if doc is None:
+            return JSONResponse(status_code=404, content={"error": "文献不存在"})
+        try:
+            coords_obj = json.loads(coords)
+        except (json.JSONDecodeError, ValueError):
+            return JSONResponse(status_code=422, content={"error": "coords 非合法 JSON"})
+        item = save_annotation(conn, collection, doc, page_num, kind,
+                               coords_obj, color=color, note=note,
+                               origin=origin, clip_text=clip_text)
+        return {"ok": True, "item": item}
+    except ValueError as e:
+        return JSONResponse(status_code=422, content={"error": str(e)})
+    finally:
+        conn.close()
+
+
+@app.patch("/collections/{collection}/doc/{doc_id}/read/annotations/{aid}")
+def read_annotation_update(
+    collection: str, doc_id: int, aid: int,
+    note: str = Form(None),
+    color: str = Form(None),
+):
+    """改批注文字/颜色 ( coords 不可改 —— 要改就删了重画)。"""
+    gate = _read_gate(collection)
+    if gate:
+        return gate
+    conn = get_conn(collection)
+    try:
+        ensure_read_tables(conn)
+        sets, params = [], []
+        if note is not None:
+            sets.append("note = ?")
+            params.append(note.strip() or None)
+        if color is not None:
+            sets.append("color = ?")
+            params.append(color)
+        if not sets:
+            return JSONResponse(status_code=422, content={"error": "无可更新字段"})
+        sets.append("updated_at = datetime('now','localtime')")
+        params += [aid, doc_id]
+        cur = conn.execute(
+            f"UPDATE read_annotations SET {', '.join(sets)} "
+            f"WHERE id = ? AND doc_id = ?", params)
+        conn.commit()
+        if cur.rowcount == 0:
+            return JSONResponse(status_code=404, content={"error": "批注不存在"})
+        return {"ok": True,
+                "item": annotation_row(conn.execute(
+                    "SELECT * FROM read_annotations WHERE id = ?",
+                    (aid,)).fetchone())}
+    finally:
+        conn.close()
+
+
+@app.delete("/collections/{collection}/doc/{doc_id}/read/annotations/{aid}")
+def read_annotation_delete(collection: str, doc_id: int, aid: int):
+    gate = _read_gate(collection)
+    if gate:
+        return gate
+    conn = get_conn(collection)
+    try:
+        ensure_read_tables(conn)
+        cur = conn.execute(
+            "DELETE FROM read_annotations WHERE id = ? AND doc_id = ?",
+            (aid, doc_id))
+        conn.commit()
+        return {"ok": True, "deleted": cur.rowcount}
+    finally:
+        conn.close()
+
+
+@app.get("/collections/{collection}/read/annotations/search")
+def read_annotations_search(collection: str, q: str, limit: int = 50):
+    """书架内批注检索 (LIKE: 批注文字 + 裁文快照), 供细读页抽屉与搜索页命中组。"""
+    gate = _read_gate(collection)
+    if gate:
+        return gate
+    q = (q or '').strip()
+    if not q:
+        return {"items": []}
+    conn = get_conn(collection)
+    try:
+        return {"items": search_annotations(conn, q, limit)}
+    finally:
+        conn.close()
+
+
+@app.get("/collections/{collection}/doc/{doc_id}/read/chat")
+def read_chat_list(collection: str, doc_id: int):
+    """整线程 (一书一线程) + 视觉 provider 可用性。"""
+    gate = _read_gate(collection)
+    if gate:
+        return gate
+    conn = get_conn(collection)
+    try:
+        ensure_read_tables(conn)
+        rows = conn.execute(
+            "SELECT * FROM read_chat WHERE doc_id = ? ORDER BY id",
+            (doc_id,)).fetchall()
+        return {"items": [dict(r) for r in rows],
+                "vision": read_vision_providers()}
+    finally:
+        conn.close()
+
+
+@app.post("/collections/{collection}/doc/{doc_id}/read/chat")
+def read_chat_ask(
+    collection: str, doc_id: int,
+    question: str = Form(...),
+    mode: str = Form("text"),
+    page_num: int = Form(None),
+    rect: str = Form(None),
+    with_notes: int = Form(1),
+    provider: str = Form(None),
+):
+    """一次问答。rect = 归一化 {x,y,w,h} JSON (可省)。
+
+    上下文: 选区裁文 (校对层 lines 优先, pymupdf clip 兜底) + 本页批注
+    (with_notes=1 时) + 线程最近几轮。mode=vision 需 vl_api+openai_chat
+    的视觉 provider (裁剪图 base64 直发, 不落盘)。
+    """
+    gate = _read_gate(collection)
+    if gate:
+        return gate
+    conn = get_conn(collection)
+    try:
+        doc = conn.execute(
+            "SELECT id, linked_pdf FROM documents WHERE id = ?",
+            (doc_id,)).fetchone()
+        if doc is None:
+            return JSONResponse(status_code=404, content={"error": "文献不存在"})
+        rect_obj = None
+        if rect:
+            try:
+                rect_obj = json.loads(rect)
+            except (json.JSONDecodeError, ValueError):
+                return JSONResponse(status_code=422,
+                                    content={"error": "rect 非合法 JSON"})
+        from .llm import LLMNotConfigured
+        try:
+            urow, arow = read_ask(conn, collection, doc, question,
+                                  mode=mode, page_num=page_num, rect=rect_obj,
+                                  with_notes=bool(with_notes),
+                                  provider_id=provider)
+        except LLMNotConfigured as e:
+            return JSONResponse(status_code=503, content={"error": str(e)})
+        except ValueError as e:
+            return JSONResponse(status_code=422, content={"error": str(e)})
+        return {"ok": True, "user": urow, "assistant": arow}
+    finally:
+        conn.close()
+
+
+@app.delete("/collections/{collection}/doc/{doc_id}/read/chat")
+def read_chat_clear(collection: str, doc_id: int):
+    gate = _read_gate(collection)
+    if gate:
+        return gate
+    conn = get_conn(collection)
+    try:
+        ensure_read_tables(conn)
+        cur = conn.execute("DELETE FROM read_chat WHERE doc_id = ?", (doc_id,))
+        conn.commit()
+        return {"ok": True, "deleted": cur.rowcount}
+    finally:
+        conn.close()
 
 
 # ── 保存行编辑 ──────────────────────────────────────────
@@ -5211,6 +5451,9 @@ def reocr_page(
             "regions": n_crops,
             "new_blocks": len(new_blocks),
             "replaced": replace,
+            # 细读卡片流用: 识别文本预览 (前 5 块, 各 120 字)
+            "texts": [((b.get('text') if isinstance(b, dict) else b) or '')[:120]
+                      for b in new_blocks[:5]],
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})

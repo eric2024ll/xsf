@@ -145,6 +145,35 @@ def get_ocr_config_path() -> Path:
     """OCR 配置文件路径: <XSF_DATA>/ocr-config.json"""
     return get_data_dir() / 'ocr-config.json'
 
+
+# ── 功能开关 (features.json, 按书架启用) ──
+# 形如 {"read": ["晚清乡土志", "考据"]}; 不存在的功能名/书架 = 未启用。
+# 设计: mem 小书房 细读方案 (2026-11-03) —— 功能模块按书架显隐, 不启用的
+# 书架不迁移表、不出现 UI; 已有数据随再启用恢复。
+
+def get_features_path() -> Path:
+    """功能开关文件路径: <XSF_DATA>/features.json"""
+    return get_data_dir() / 'features.json'
+
+
+def read_features() -> dict:
+    """读 features.json。损坏/不存在返回 {}。"""
+    p = get_features_path()
+    if not p.is_file():
+        return {}
+    try:
+        import json
+        d = json.loads(p.read_text(encoding='utf-8'))
+        return d if isinstance(d, dict) else {}
+    except (ValueError, OSError):
+        return {}
+
+
+def feature_enabled(name: str, collection: str) -> bool:
+    """某书架是否启用了某功能 (features.json 里 name 数组含书架名)。"""
+    lst = read_features().get(name)
+    return isinstance(lst, list) and collection in lst
+
 def _read_ocr_config() -> dict:
     """读取 OCR 配置文件。损坏/不存在返回 {}。
 
