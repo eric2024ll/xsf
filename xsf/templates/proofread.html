@@ -1555,7 +1555,7 @@ async function toggleRevPkg(cb, id) {
 }
 
 // 翻页: AJAX 局部替换 #main (2026-10-18 裁定: 不整页刷新, tab/滚动/卡片状态保持)
-async function goPage(page, extraParams) {
+async function goPage(page, extraParams, _noPush) {
   page = parseInt(page, 10) || 1;
   const url = new URL(location.href);
   url.searchParams.set('page', page);
@@ -1579,9 +1579,14 @@ async function goPage(page, extraParams) {
   const oldMain = document.getElementById('main');
   if (!newMain || !oldMain) { location.href = url; return; }
   oldMain.replaceWith(newMain);
-  history.pushState({}, '', url);
+  if (!_noPush) history.pushState({}, '', url);
   rebindWorkArea();
 }
+// 浏览器前进/后退: 按 URL 重取页面 (原先无 popstate, 后退只改 URL 不换内容)
+window.addEventListener('popstate', function () {
+  const p = parseInt(new URLSearchParams(location.search).get('page'), 10) || 1;
+  goPage(p, null, true);
+});
 function rebindWorkArea() {
   if (typeof initBib === 'function' && window.bibEditor) { try { initBib(); } catch (e) {} }
   if (typeof initPan === 'function') initPan();

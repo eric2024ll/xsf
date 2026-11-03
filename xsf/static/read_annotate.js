@@ -1,5 +1,6 @@
 /* 细读·批注层 + 本页卡片流 (2026-11-03)
- * 依赖页面全局: collection / docId / page / pageCount / origWidth / origHeight
+ * 依赖页面全局: collection / docId / pageCount (page 仅作首屏兜底, 页码一律走 curPage())
+ * 批注层随 #main 重建 (goPage 是 AJAX 局部替换)
  * window.__READ = {enabled, vision:[{id,name,model}]}
  * 坐标: 存归一化 0-1; 渲染乘 img 显示尺寸。
  * 事件层: mouse + touch 双轨, 不依赖 pointer events (国产浏览器兼容模式/
@@ -41,28 +42,71 @@
              y: Math.min(Math.max(y - r.top, 0), r.height) / r.height };
   }
 
-  // ── 初始化 ───────────────────────────────
-  document.addEventListener('DOMContentLoaded', init);
-
-  function init() {
-    img = document.getElementById('pageImage');
-    var wrap = img ? img.parentNode : null;
-    if (!wrap) return;
-    svg = document.createElementNS(svgNS, 'svg');
-    svg.setAttribute('id', 'readSvg');
-    layer = document.createElement('div');
-    layer.id = 'readLayer';
-    layer.appendChild(svg);
-    wrap.appendChild(layer);
-    img.addEventListener('load', relayout);
-    window.addEventListener('resize', relayout);
-    // 缩放/適寬改 img 内联尺寸 → 批注层跟随重排
-    new MutationObserver(function () { relayout(); })
-      .observe(img, { attributes: true, attributeFilter: ['style', 'width'] });
-    bindTools();
-    bindCanvas(wrap);
-    loadItems();
+  // ── 当前页码: 从 URL 取 ──────────────────
+  // 模板里的 const page 是首屏值; goPage() 用 AJAX 替换 #main 而不重跑脚本,
+  // 所以模块内一切页码/读写都必须走这里 (2026-11-03 翻页后批注错页的根因)。
+  function curPage() {
+    var p = parseInt(new URLSearchParams(location.search).get('page'), 10);
+    if (p > 0) return p;
+    return (typeof page !== 'undefined' && page) ? page : 1;
   }
+  window.__readPage = curPage;
+
+  // ── 初始化 / 重建 ────────────────────────
+  // goPage() 会整体 replaceWith 新的 #main: 工具条按钮、批注层、卡片流全部被
+  // 换成新节点, 原来绑在旧节点上的监听与 SVG 一并消失 → 必须在替换后重建。
+  document.addEventListener('DOMContentLoaded', mount);
+  window.addEventListener('resize', function () { relayout(); });
+
+  var mountedImg = null;
+  function mount() {
+    var newImg = document.getElementById('pageImage');
+    if (!newImg) return;                 // markdown 无原件分支: 无页面图可画
+    img = newImg;
+    var wrap = img.parentNode;
+    if (!wrap) return;
+    var same = (newImg === mountedImg) && wrap.querySelector('#readLayer');
+    mountedImg = newImg;
+    if (!same) {
+      var old = wrap.querySelector('#readLayer');
+      if (old) old.parentNode.removeChild(old);
+      svg = document.createElementNS(svgNS, 'svg');
+      svg.setAttribute('id', 'readSvg');
+      layer = document.createElement('div');
+      layer.id = 'readLayer';
+      layer.appendChild(svg);
+      wrap.appendChild(layer);
+      state.selected = null;
+      state.items = [];
+      renderCards();
+      loadItems();
+    }
+    if (!img.__readObserved) {
+      img.__readObserved = true;
+      img.addEventListener('load', relayout);
+      // 缩放/適寬改 img 内联尺寸 → 批注层跟随重排
+      new MutationObserver(function () { relayout(); })
+        .observe(img, { attributes: true, attributeFilter: ['style', 'width'] });
+    }
+    bindCanvas(wrap);
+    applyToolUI();
+    relayout();
+  }
+  window.__readMount = mount;
+
+  // #main 被替换 / 前进后退 → 重建 (防抖, 只在页面图换人时动)
+  var mountTimer = null;
+  function scheduleMount() {
+    if (mountTimer) return;
+    mountTimer = setTimeout(function () {
+      mountTimer = null;
+      mount();
+    }, 60);
+  }
+  new MutationObserver(function () {
+    if (document.getElementById('pageImage') !== mountedImg) scheduleMount();
+  }).observe(document.documentElement, { childList: true, subtree: true });
+  window.addEventListener('popstate', scheduleMount);
 
   function relayout() {
     if (!img || !img.clientWidth) return;
@@ -72,24 +116,38 @@
     renderBoxes();
   }
 
-  // ── 工具条 ───────────────────────────────
-  function bindTools() {
+  // ── 工具条 (事件委托: 翻页重建后无需重绑) ──
+  function applyToolUI() {
     document.querySelectorAll('.rt-btn').forEach(function (b) {
-      b.addEventListener('click', function () {
-        var t = b.dataset.tool;
-        setTool(state.tool === t ? null : t);
-      });
+      b.classList.toggle('on', b.dataset.tool === state.tool);
     });
     document.querySelectorAll('.rt-color').forEach(function (c) {
-      c.addEventListener('click', function () {
-        state.color = c.dataset.color;
-        document.querySelectorAll('.rt-color').forEach(function (x) {
-          x.classList.toggle('on', x === c);
-        });
-      });
+      c.classList.toggle('on', c.dataset.color === state.color);
     });
-    // 与框选重OCR模式互斥
-    if (typeof window.toggleReocrMode === 'function') {
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    while (t && t.nodeType === 1) {
+      if (t.classList.contains('rt-btn')) {
+        var tool = t.dataset.tool;
+        setTool(state.tool === tool ? null : tool);
+        return;
+      }
+      if (t.classList.contains('rt-color')) {
+        state.color = t.dataset.color;
+        applyToolUI();
+        return;
+      }
+      if (t.id === 'main') return;
+      t = t.parentNode;
+    }
+  });
+
+  function bindTools() {
+    // 与框选重OCR模式互斥 (模板脚本只执行一次, 补丁一次即可)
+    if (typeof window.toggleReocrMode === 'function' && !window.__readReocrPatched) {
+      window.__readReocrPatched = true;
       var _orig = window.toggleReocrMode;
       window.toggleReocrMode = function () {
         setTool(null);
@@ -97,13 +155,12 @@
       };
     }
   }
+  bindTools();
 
   function setTool(t) {
     state.tool = t;
     if (t) select(null);   // 画图与选中调整互斥
-    document.querySelectorAll('.rt-btn').forEach(function (b) {
-      b.classList.toggle('on', b.dataset.tool === t);
-    });
+    applyToolUI();
     if (t && typeof window.exitReocrMode === 'function') {
       try { window.exitReocrMode(); } catch (e) {}
     }
@@ -119,6 +176,8 @@
   //   否则放行 → 拖拽平移、bbox hover 等原有交互不受影响
   // 不依赖 pointer events: 国产浏览器兼容模式/IE 内核无之 (2026-11-03 实测)。
   function bindCanvas(wrap) {
+    if (wrap.__readBound) return;   // 同一 wrap 只绑一次 (翻页会换新 wrap)
+    wrap.__readBound = true;
     function gate(e, cx, cy) {
       if (state.tool) {
         e.preventDefault(); e.stopPropagation();
@@ -361,7 +420,7 @@
   // ── 持久化 ───────────────────────────────
   function save(kind, coords, extra, cb) {
     var body = new URLSearchParams();
-    body.append('page_num', page);
+    body.append('page_num', curPage());
     body.append('kind', kind);
     body.append('coords', JSON.stringify(coords));
     body.append('color', state.color);
@@ -418,7 +477,7 @@
   }
 
   function loadItems() {
-    fetch(api('/read/annotations?page=' + page))
+    fetch(api('/read/annotations?page=' + curPage()))
       .then(function (r) { return r.json(); })
       .then(function (d) {
         state.items = d.items || [];
@@ -495,7 +554,7 @@
       var op = ev.target.dataset && ev.target.dataset.op;
       if (!op) return;
       if (op === 'ask') {
-        state.pendingCtx = { page: page, rect: item.coords };
+        state.pendingCtx = { page: curPage(), rect: item.coords };
         window.__readChatOpen && window.__readChatOpen();
       } else if (op === 'note') {
         var ta = document.querySelector('.rc-card[data-aid="' + item.id + '"] textarea');
@@ -522,13 +581,26 @@
   }
 
   // ── 定位文本块 (选区交 bbox, 闪黄滚动) ─────
+  // OCR 像素空间尺寸按当前页 DOM 现算: 模板里的 origWidth 是首屏值,
+  // 翻页后各页尺寸不同 (AJAX 不重跑脚本) → 直接用会错位。
+  function curOrig() {
+    var w = 0, h = 0;
+    document.querySelectorAll('.bbox-overlay').forEach(function (el) {
+      var x1 = +el.dataset.x1, y1 = +el.dataset.y1;
+      if (x1 > w) w = x1;
+      if (y1 > h) h = y1;
+    });
+    return { w: w || origWidth, h: h || origHeight };
+  }
+
   function locateBlocks(rect) {
-    if (!origWidth || !origHeight) {
+    var o = curOrig();
+    if (!o.w || !o.h) {
       toast('本页无块坐标 (原生 PDF), 请直接在文本列查看');
       return;
     }
-    var rx0 = rect.x * origWidth, ry0 = rect.y * origHeight;
-    var rx1 = (rect.x + rect.w) * origWidth, ry1 = (rect.y + rect.h) * origHeight;
+    var rx0 = rect.x * o.w, ry0 = rect.y * o.h;
+    var rx1 = (rect.x + rect.w) * o.w, ry1 = (rect.y + rect.h) * o.h;
     var hits = [];
     document.querySelectorAll('.bbox-overlay').forEach(function (el) {
       var x0 = +el.dataset.x0, y0 = +el.dataset.y0;
@@ -617,7 +689,7 @@
         var it = state.items.find(function (x) { return x.id === aid; });
         if (b.dataset.op === 'del') { del(aid); return; }
         if (b.dataset.op === 'ask' && it) {
-          state.pendingCtx = { page: page, rect: it.coords };
+          state.pendingCtx = { page: curPage(), rect: it.coords };
           window.__readChatOpen && window.__readChatOpen();
         }
       });
@@ -633,68 +705,77 @@
     });
   }
 
-  // 卡片流头 (筛选 + 检索)
-  document.addEventListener('DOMContentLoaded', function () {
-    var head = document.getElementById('readCardsHead');
-    if (!head) return;
-    head.querySelectorAll('.rc-chips button').forEach(function (b) {
-      b.addEventListener('click', function () {
-        state.filter = b.dataset.f;
-        head.querySelectorAll('.rc-chips button').forEach(function (x) {
-          x.classList.toggle('on', x === b);
+  // 卡片流头 (筛选 + 检索) — 委托绑定, 翻页重建后照常工作
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    while (t && t.nodeType === 1) {
+      if (t.classList.contains('rc-hit')) {
+        var it = (window.__rcHits || [])[+t.dataset.i];
+        if (!it) return;
+        if (it.doc_id === docId) {
+          location.href = location.pathname + '?page=' + it.page_num;
+        } else {
+          location.href = '/collections/' + encodeURIComponent(collection) +
+            '/doc/' + it.doc_id + '/proofread?page=' + it.page_num;
+        }
+        return;
+      }
+      if (t.classList.contains('rc-chips')) return;   // chips 容器, 由下段处理
+      if (t.tagName === 'BUTTON' && t.dataset.f &&
+          t.parentNode && t.parentNode.classList.contains('rc-chips')) {
+        state.filter = t.dataset.f;
+        t.parentNode.querySelectorAll('button').forEach(function (x) {
+          x.classList.toggle('on', x === t);
         });
         renderCards();
-      });
-    });
-    var si = document.getElementById('rcSearch');
-    var timer = null;
-    si.addEventListener('input', function () {
-      clearTimeout(timer);
-      var q = si.value.trim();
-      var hitBox = document.getElementById('rcHits');
-      if (!q) { hitBox.innerHTML = ''; return; }
-      timer = setTimeout(function () {
-        fetch('/collections/' + encodeURIComponent(collection) +
-              '/read/annotations/search?q=' + encodeURIComponent(q))
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
-            var items = d.items || [];
-            hitBox.innerHTML = items.length ? items.map(function (it, i) {
-              return '<div class="rc-hit" data-i="' + i + '">' +
-                '<b>' + esc(it.title || ('文档#' + it.doc_id)) + '</b>' +
-                ' <span class="rc-hit-meta">第 ' + it.page_num + ' 页</span>' +
-                '<div class="rc-hit-meta">' +
-                esc(((it.note || '') + ' — ' + (it.clip_text || '')).slice(0, 90)) +
-                '</div></div>';
-            }).join('') : '<div class="rc-empty">无命中</div>';
-            hitBox.querySelectorAll('.rc-hit').forEach(function (h) {
-              h.addEventListener('click', function () {
-                var it = items[+h.dataset.i];
-                if (it.doc_id === docId) {
-                  location.href = location.pathname + '?page=' + it.page_num;
-                } else {
-                  location.href = '/collections/' + encodeURIComponent(collection) +
-                    '/doc/' + it.doc_id + '/proofread?page=' + it.page_num;
-                }
-              });
-            });
-          });
-      }, 350);
-    });
+        return;
+      }
+      if (t.id === 'main') return;
+      t = t.parentNode;
+    }
+  });
+
+  var searchTimer = null;
+  document.addEventListener('input', function (e) {
+    if (!e.target || e.target.id !== 'rcSearch') return;
+    clearTimeout(searchTimer);
+    var q = e.target.value.trim();
+    var hitBox = document.getElementById('rcHits');
+    if (!hitBox) return;
+    if (!q) { hitBox.innerHTML = ''; window.__rcHits = []; return; }
+    searchTimer = setTimeout(function () {
+      fetch('/collections/' + encodeURIComponent(collection) +
+            '/read/annotations/search?q=' + encodeURIComponent(q))
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          var items = d.items || [];
+          window.__rcHits = items;
+          var box = document.getElementById('rcHits');
+          if (!box) return;
+          box.innerHTML = items.length ? items.map(function (it, i) {
+            return '<div class="rc-hit" data-i="' + i + '">' +
+              '<b>' + esc(it.title || ('文档#' + it.doc_id)) + '</b>' +
+              ' <span class="rc-hit-meta">第 ' + it.page_num + ' 页</span>' +
+              '<div class="rc-hit-meta">' +
+              esc(((it.note || '') + ' — ' + (it.clip_text || '')).slice(0, 90)) +
+              '</div></div>';
+          }).join('') : '<div class="rc-empty">无命中</div>';
+        });
+    }, 350);
   });
 
   // ── OCR 瞬态卡 (sessionStorage 跨页面重载) ──
   function readOcrData() {
     try {
       var d = JSON.parse(sessionStorage.getItem('read_ocr_card') || 'null');
-      if (d && d.docId === docId && d.page === page) return d;
+      if (d && d.docId === docId && d.page === curPage()) return d;
     } catch (e) {}
     return null;
   }
   window.__readOcrCard = function (data) {
     try {
       sessionStorage.setItem('read_ocr_card', JSON.stringify({
-        docId: docId, page: page,
+        docId: docId, page: curPage(),
         blocks: data.new_blocks, texts: data.texts || [],
         at: Date.now(),
       }));

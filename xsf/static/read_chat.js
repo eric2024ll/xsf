@@ -283,7 +283,7 @@
       body.append('page_num', pc.page);
       body.append('rect', JSON.stringify(pc.rect));
     } else {
-      body.append('page_num', page);
+      body.append('page_num', (window.__readPage ? window.__readPage() : page));
     }
     sending = true;
     var sendBtn = el.querySelector('#rcwSend');
