@@ -77,13 +77,20 @@ def _entity_expansions(conn, query: str, limit: int = 8) -> dict:
     return {query: names} if names else {}
 
 
+# FTS5 MATCH 语法字符: 用户查询里出现会破坏短语引号结构 (如 a"b →
+# unterminated string), 一律剔除 — 检索语义不受影响 (这些字符不参与词形)
+_FTS_STRIP = set('"()*:^{}[]')
+
+
 def _query_tokens(query: str) -> list[str]:
     """查询分词：CJK 连续段 jieba 切词，非 CJK 连续段整段保留。
 
     jieba 会把西里尔查询切成单字（全部 <3 字被丢弃, 只剩 LIKE 兜底且
     匹配不上）——非 CJK 段必须整体作为一个 token (2026-10-26 修)。
+    查询先剔除 FTS 语法字符 (批 A1, 2026-11-05): 非词形字符不参与检索。
     """
     from .ingest import _CJK_SEG
+    query = ''.join(ch for ch in query if ch not in _FTS_STRIP)
     tokens = []
     for i, p in enumerate(_CJK_SEG.split(query)):
         if not p.strip():

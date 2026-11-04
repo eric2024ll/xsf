@@ -720,11 +720,27 @@ def _record_miss(collection: str, query: str, total_docs: int,
         pass
 
 
+def _collection_400(collection: str):
+    """书架不存在/空壳库 → 400 (原 500)。返回 None=正常, JSONResponse=拒绝。
+
+    A1 查询净化 (2026-11-05): 检索端点对外必须 4xx 而非 500。
+    """
+    try:
+        conn = get_conn(collection)
+        conn.close()
+        return None
+    except (RuntimeError, sqlite3.OperationalError) as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
 @app.get("/collections/{collection}/search")
 async def api_search(collection: str, q: str, limit: int = 20,
                      offset: int = 0, source_type: str = None,
                      doc_id: int = None):
     """块级搜索 (rank 序, 分页). 响应含 total/has_more 供前端『加载更多』."""
+    bad = _collection_400(collection)
+    if bad is not None:
+        return bad
     try:
         results = search(q, collection=collection, limit=limit,
                          offset=offset, source_type=source_type,
@@ -769,6 +785,9 @@ async def api_search_grouped(collection: str, q: str,
 
     前端分组视图用: 先展示全部命中文献, 展开单篇再调 /search?doc_id=.
     """
+    bad = _collection_400(collection)
+    if bad is not None:
+        return bad
     try:
         groups = search_grouped(q, collection=collection,
                                 source_type=source_type, limit=limit)
