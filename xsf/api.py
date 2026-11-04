@@ -1695,8 +1695,13 @@ async def upload_page(request: Request, collection: str):
 
 
 @app.get("/collections/{collection}/doc/{doc_id}/preview")
-async def preview_page(request: Request, collection: str, doc_id: int):
-    """纯文本预览页 (page→block→line + source-tag, 无 bib)."""
+async def preview_page(request: Request, collection: str, doc_id: int,
+                       page: str = "1"):
+    """纯文本预览页 (page→block→line + source-tag, 无 bib).
+
+    ?page=N: 原件 PDF 查看器与右侧文本初始定位到第 N 页 (越界钳到 1..page_count)。
+    声明为 str: 非法值 (abc/空) 落回第 1 页, 不抛 422。
+    """
     try:
         conn = get_conn(collection)
         try:
@@ -1723,10 +1728,17 @@ async def preview_page(request: Request, collection: str, doc_id: int):
         except (json.JSONDecodeError, TypeError):
             tags = ["primary"]
         doc_d["source_tags"] = tags
+        # ?page=N 深链: 钳到 1..page_count
+        pc = doc_d.get("page_count") or 1
+        try:
+            pv_page = max(1, min(int(page), pc))
+        except (TypeError, ValueError):
+            pv_page = 1
         return templates.TemplateResponse(
             request,
             "preview.html",
-            _nav_ctx("", collection, doc=doc_d, doc_id=doc_id),
+            _nav_ctx("", collection, doc=doc_d, doc_id=doc_id,
+                     pv_page=pv_page),
         )
     except Exception as e:
         return templates.TemplateResponse(
