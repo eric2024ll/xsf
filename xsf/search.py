@@ -182,8 +182,16 @@ def get_highlight_terms(query: str) -> list[str]:
     return sorted(all_terms, key=len, reverse=True)
 
 
-def _search_filters(source_type: str, doc_id: int) -> tuple[str, list]:
-    """构造 source_type / doc_id 过滤 (WHERE 追加段 + 参数)."""
+def _search_filters(source_type: str, doc_id: int, label: str = None,
+                    exclude: str = None, year_from=None, year_to=None
+                    ) -> tuple[str, list]:
+    """构造 source_type / doc_id / 块标签 / 年份过滤 (WHERE 追加段 + 参数).
+
+    label:   逗号分隔白名单 — 只保留这些 block_label 的块 (如 text,vertical_text)
+    exclude: 逗号分隔黑名单 — 剔除这些标签 (默认 UI 传 header,page_number,footer,number)
+             块标签可能为 NULL (无结构化标签的入库路): NULL 视为非噪声, 不被剔除
+    标签过滤走 EXISTS 探 lines (blocks_fts 不存 label), 每命中块一次索引探查
+    """
     extra_where = ''
     params = []
     valid_types = {'primary', 'secondary', 'reference'}
@@ -192,16 +200,50 @@ def _search_filters(source_type: str, doc_id: int) -> tuple[str, list]:
     if doc_id is not None:
         extra_where += ' AND f.doc_id = ?'
         params.append(doc_id)
+    labels = None
+    if label:
+        labels = [s.strip() for s in label.split(',') if s.strip()]
+    elif exclude:
+        labels = [s.strip() for s in exclude.split(',') if s.strip()]
+    if labels:
+        ph = ','.join('?' * len(labels))
+        if label:
+            extra_where += (f' AND EXISTS (SELECT 1 FROM lines l '
+                            f'WHERE l.doc_id = f.doc_id '
+                            f'AND l.page_num = f.page_num '
+                            f'AND l.block_num = f.block_num '
+                            f'AND l.block_label IN ({ph}))')
+        else:
+            extra_where += (f' AND EXISTS (SELECT 1 FROM lines l '
+                            f'WHERE l.doc_id = f.doc_id '
+                            f'AND l.page_num = f.page_num '
+                            f'AND l.block_num = f.block_num '
+                            f'AND (l.block_label IS NULL '
+                            f'OR l.block_label NOT IN ({ph})))')
+        params.extend(labels)
+    # 年份: bib_data.$.date 前 4 位; 未填日期的文献不命中 (显式选用, 不做默认)
+    if year_from is not None or year_to is not None:
+        yexpr = "CAST(substr(json_extract(d.bib_data,'$.date'),1,4) AS INTEGER)"
+        if year_from is not None:
+            extra_where += f' AND {yexpr} >= ?'
+            params.append(int(year_from))
+        if year_to is not None:
+            extra_where += f' AND {yexpr} <= ?'
+            params.append(int(year_to))
     return extra_where, params
 
 
 def search(query: str, collection: str,
            limit: int = 20, offset: int = 0,
-           source_type: str = None, doc_id: int = None) -> list[dict]:
+           source_type: str = None, doc_id: int = None,
+           label: str = None, exclude: str = None,
+           year_from: int = None, year_to: int = None) -> list[dict]:
     """全文搜索，返回匹配块列表 (rank 序, 分页).
 
     source_type: 'primary'/'secondary'/'reference' 之一，用于按来源类型过滤。
     doc_id: 给定时只搜该文档 (用于分组视图展开单篇)。
+    label/exclude: 块标签白/黑名单 (逗号分隔), 批 A2 (2026-11-05)。
+    year_from/year_to: bib_data 年份范围 (未填日期文献不命中)。
     """
     conn = get_conn(collection)
     try:
@@ -209,7 +251,8 @@ def search(query: str, collection: str,
         if not match_expr and not like_terms:
             return []
 
-        extra_where, filter_params = _search_filters(source_type, doc_id)
+        extra_where, filter_params = _search_filters(
+            source_type, doc_id, label, exclude, year_from, year_to)
         fts_where, fts_params = _fts_where(match_expr, like_terms)
 
         rows = conn.execute(
@@ -229,7 +272,9 @@ def search(query: str, collection: str,
 
 
 def count_hits(query: str, collection: str,
-               source_type: str = None, doc_id: int = None) -> dict:
+               source_type: str = None, doc_id: int = None,
+               label: str = None, exclude: str = None,
+               year_from: int = None, year_to: int = None) -> dict:
     """统计命中规模: 匹配块总数 + 涉及文献数."""
     conn = get_conn(collection)
     try:
@@ -237,7 +282,8 @@ def count_hits(query: str, collection: str,
         if not match_expr and not like_terms:
             return {"blocks": 0, "docs": 0}
 
-        extra_where, filter_params = _search_filters(source_type, doc_id)
+        extra_where, filter_params = _search_filters(
+            source_type, doc_id, label, exclude, year_from, year_to)
         fts_where, fts_params = _fts_where(match_expr, like_terms)
 
         row = conn.execute(
@@ -253,12 +299,15 @@ def count_hits(query: str, collection: str,
 
 
 def search_grouped(query: str, collection: str,
-                   source_type: str = None, limit: int = 200) -> list[dict]:
+                   source_type: str = None, limit: int = 200,
+                   label: str = None, exclude: str = None,
+                   year_from: int = None, year_to: int = None) -> list[dict]:
     """按文档聚合命中: 每篇的命中块数 + 最佳 rank.
 
     排序: 命中块数降序, 同数按最佳 rank. 供搜索页分组视图.
     """
-    extra_where, filter_params = _search_filters(source_type, None)
+    extra_where, filter_params = _search_filters(
+        source_type, None, label, exclude, year_from, year_to)
 
     conn = get_conn(collection)
     try:

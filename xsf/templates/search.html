@@ -90,6 +90,28 @@
       <button type="button" id="searchBtn" onclick="doSearch()">搜索</button>
       <button type="button" onclick="toggleStats()" title="检索效用统计">统计</button>
     </div>
+    <div class="st-filter-row" style="display:flex;gap:8px;margin-top:8px;align-items:center;font-size:0.82rem;flex-wrap:wrap;">
+      <label>块范围
+        <select id="fLabel" style="padding:3px 6px;">
+          <option value="exclude" selected>剔页眉页码</option>
+          <option value="text">仅正文</option>
+          <option value="all">全部</option>
+        </select>
+      </label>
+      <label>来源
+        <select id="fSource" style="padding:3px 6px;">
+          <option value="" selected>全部</option>
+          <option value="primary">一手史料</option>
+          <option value="secondary">研究文献</option>
+          <option value="reference">工具书</option>
+        </select>
+      </label>
+      <label>年份
+        <input type="number" id="fYearFrom" placeholder="起" style="width:64px;padding:3px 6px;" title="仅对已填年份(bib_data)的文献生效">
+        –
+        <input type="number" id="fYearTo" placeholder="止" style="width:64px;padding:3px 6px;" title="仅对已填年份(bib_data)的文献生效">
+      </label>
+    </div>
     <div id="statsSec" style="display:none;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);font-size:0.82rem;color:var(--text-muted);">加载中…</div>
   </div>
   <div id="resultCount" class="result-count"></div>
@@ -150,6 +172,22 @@ async function toggleStats(){
   }
 }
 
+// ── A2 过滤器 (2026-11-05): 块范围 / 来源 / 年份 ──
+// 默认「剔页眉页码」: 乡土志系正文标签是 vertical_text, 仅正文模式须含二者
+function filterParams(){
+  var p={};
+  var m=document.getElementById('fLabel').value;
+  if(m==='exclude') p.exclude='header,page_number,footer,number';
+  else if(m==='text') p.label='text,vertical_text';
+  var s=document.getElementById('fSource').value;
+  if(s) p.source_type=s;
+  var yf=document.getElementById('fYearFrom').value;
+  var yt=document.getElementById('fYearTo').value;
+  if(yf) p.year_from=yf;
+  if(yt) p.year_to=yt;
+  return p;
+}
+
 async function doFtsSearch(q){
   var btn=document.getElementById('searchBtn');
   btn.disabled=true;btn.textContent='搜索中...';
@@ -157,7 +195,9 @@ async function doFtsSearch(q){
   document.getElementById('results').innerHTML='';
   var base='/collections/'+encodeURIComponent(currentCollection)+'/';
   try{
-    var res=await fetch(base+'search-grouped?'+new URLSearchParams({q:q}));
+    var ps=new URLSearchParams({q:q});
+    Object.entries(filterParams()).forEach(function(kv){ps.append(kv[0],kv[1]);});
+    var res=await fetch(base+'search-grouped?'+ps);
     var data=await res.json();
     if(data.error){throw new Error(data.error);}
     renderGroups(data);
@@ -266,6 +306,7 @@ async function loadGroupBlocks(i){
   if(btn)btn.disabled=true;
   var base='/collections/'+encodeURIComponent(currentCollection)+'/';
   var params=new URLSearchParams({q:currentQuery,doc_id:g.doc_id,limit:20,offset:g.loaded});
+  Object.entries(filterParams()).forEach(function(kv){params.append(kv[0],kv[1]);});
   try{
     var res=await fetch(base+'search?'+params);
     var data=await res.json();
@@ -322,6 +363,12 @@ if(currentQuery&&currentCollection){
   document.getElementById('searchInput').value=currentQuery;
   doSearch();
 }
+// 过滤器变更即时重查 (有活动查询时)
+['fLabel','fSource','fYearFrom','fYearTo'].forEach(function(id){
+  document.getElementById(id).addEventListener('change',function(){
+    if(currentQuery&&currentCollection) doSearch();
+  });
+});
 </script>
 </body>
 </html>

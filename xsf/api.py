@@ -736,15 +736,22 @@ def _collection_400(collection: str):
 @app.get("/collections/{collection}/search")
 async def api_search(collection: str, q: str, limit: int = 20,
                      offset: int = 0, source_type: str = None,
-                     doc_id: int = None):
-    """块级搜索 (rank 序, 分页). 响应含 total/has_more 供前端『加载更多』."""
+                     doc_id: int = None, label: str = None,
+                     exclude: str = None, year_from: int = None,
+                     year_to: int = None):
+    """块级搜索 (rank 序, 分页). 响应含 total/has_more 供前端『加载更多』.
+
+    A2 过滤器 (2026-11-05): label/exclude 块标签白/黑名单 (逗号分隔),
+    year_from/year_to 按 bib_data 年份。实体/wiki/批注命中组不经过本过滤器。
+    """
     bad = _collection_400(collection)
     if bad is not None:
         return bad
     try:
         results = search(q, collection=collection, limit=limit,
                          offset=offset, source_type=source_type,
-                         doc_id=doc_id)
+                         doc_id=doc_id, label=label, exclude=exclude,
+                         year_from=year_from, year_to=year_to)
         out = []
         for r in results:
             lines = get_block_lines(
@@ -765,7 +772,9 @@ async def api_search(collection: str, q: str, limit: int = 20,
                 "text": _highlight_keyword(text, q),
             })
         total = count_hits(q, collection=collection,
-                           source_type=source_type, doc_id=doc_id)["blocks"]
+                           source_type=source_type, doc_id=doc_id,
+                           label=label, exclude=exclude,
+                           year_from=year_from, year_to=year_to)["blocks"]
         if total == 0 and doc_id is None:
             _record_miss(collection, q, 0, 'web')
         return {"query": q, "collection": collection,
@@ -780,7 +789,9 @@ async def api_search(collection: str, q: str, limit: int = 20,
 
 @app.get("/collections/{collection}/search-grouped")
 async def api_search_grouped(collection: str, q: str,
-                             source_type: str = None, limit: int = 200):
+                             source_type: str = None, limit: int = 200,
+                             label: str = None, exclude: str = None,
+                             year_from: int = None, year_to: int = None):
     """按文档聚合的搜索结果: 命中文献列表 + 每篇命中块数.
 
     前端分组视图用: 先展示全部命中文献, 展开单篇再调 /search?doc_id=.
@@ -790,8 +801,12 @@ async def api_search_grouped(collection: str, q: str,
         return bad
     try:
         groups = search_grouped(q, collection=collection,
-                                source_type=source_type, limit=limit)
-        stats = count_hits(q, collection=collection, source_type=source_type)
+                                source_type=source_type, limit=limit,
+                                label=label, exclude=exclude,
+                                year_from=year_from, year_to=year_to)
+        stats = count_hits(q, collection=collection, source_type=source_type,
+                           label=label, exclude=exclude,
+                           year_from=year_from, year_to=year_to)
         if stats["docs"] == 0:
             _record_miss(collection, q, 0, 'web')
         from .search import expansions_for

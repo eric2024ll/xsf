@@ -42,6 +42,20 @@ CASES = [
     {'shelf': 'ai与历史研究综合', 'q': 'Berlin'},
 ]
 
+# ── 过滤器用例 (批 A2 起追加): 只增不改, diff 双方都有才比较 ──
+FILTER_CASES = [
+    {'shelf': '晚清乡土志', 'q': '學堂',
+     'params': {'exclude': 'header,page_number,footer,number'}},
+    {'shelf': '晚清乡土志', 'q': '學堂',
+     'params': {'label': 'text,vertical_text'}},
+    {'shelf': '晚清乡土志', 'q': '上谷郡',
+     'params': {'source_type': 'primary'}},
+    {'shelf': '考据', 'q': '乾嘉考据学',
+     'params': {'label': 'text'}},
+    {'shelf': 'ai与历史研究综合', 'q': '包伟民',
+     'params': {'year_from': 2020, 'year_to': 2026}},
+]
+
 # ── 边界用例: 断言期望状态码 (期望栏按批 A 之后的目标填写) ──
 BOUNDARY = [
     # (shelf, q, 批A后期望状态)
@@ -70,14 +84,18 @@ def _get(base, path, timeout=TIMEOUT):
         return e.code, body
 
 
-def run_case(base, shelf, q):
+def run_case(base, shelf, q, extra=None):
     """跑单题: /search 取 total+top10, /search-grouped 取分组计数。"""
     coll = urllib.parse.quote(shelf)
     qq = urllib.parse.quote(q)
     t0 = time.time()
-    code, d = _get(base, f'/collections/{coll}/search?q={qq}&limit=10')
+    qs = f'q={qq}&limit=10'
+    if extra:
+        qs += '&' + urllib.parse.urlencode(extra)
+    code, d = _get(base, f'/collections/{coll}/search?{qs}')
     dt = time.time() - t0
-    rec = {'shelf': shelf, 'q': q, 'status': code, 'seconds': round(dt, 2)}
+    rec = {'shelf': shelf, 'q': q, 'params': extra or {},
+           'status': code, 'seconds': round(dt, 2)}
     if code == 200:
         rec['total'] = d.get('total', 0)
         rec['top'] = [
@@ -86,7 +104,9 @@ def run_case(base, shelf, q):
              'text': (r.get('text') or '')[:30]}
             for r in (d.get('results') or [])[:10]
         ]
-        _, g = _get(base, f'/collections/{coll}/search-grouped?q={qq}&limit=5')
+        _, g = _get(base, f'/collections/{coll}/search-grouped?q={qq}'
+                    + ('&' + urllib.parse.urlencode(extra) if extra else '')
+                    + '&limit=5')
         if isinstance(g, dict):
             rec['groups'] = {
                 'docs': len(g.get('docs') or g.get('results') or []),
@@ -102,11 +122,16 @@ def run_case(base, shelf, q):
 
 def cmd_snapshot(args):
     out = {'created': time.strftime('%Y-%m-%d %H:%M:%S'),
-           'base': args.base, 'cases': []}
+           'base': args.base, 'cases': [], 'filters': []}
     for c in CASES:
         rec = run_case(args.base, c['shelf'], c['q'])
         out['cases'].append(rec)
         print(f"[{rec['status']}] {c['shelf']} · {c['q']} → "
+              f"total={rec.get('total')} {rec.get('seconds')}s")
+    for c in FILTER_CASES:
+        rec = run_case(args.base, c['shelf'], c['q'], c['params'])
+        out['filters'].append(rec)
+        print(f"[{rec['status']}] 滤 {c['shelf']} · {c['q']} {c['params']} → "
               f"total={rec.get('total')} {rec.get('seconds')}s")
     with open(args.out, 'w', encoding='utf-8') as f:
         json.dump(out, f, ensure_ascii=False, indent=1)
@@ -117,27 +142,36 @@ def cmd_snapshot(args):
 def cmd_diff(args):
     a = json.load(open(args.a, encoding='utf-8'))
     b = json.load(open(args.b, encoding='utf-8'))
-    am = {(c['shelf'], c['q']): c for c in a['cases']}
-    bm = {(c['shelf'], c['q']): c for c in b['cases']}
-    changed = 0
-    for key in sorted(set(am) | set(bm)):
-        ca, cb = am.get(key), bm.get(key)
-        if ca is None or cb is None:
-            print(f'  仅一侧存在: {key}'); changed += 1; continue
-        # total 与 top 命中集必须一致; seconds/groups 允许漂移
-        fa = (ca.get('status'), ca.get('total'),
-              json.dumps(ca.get('top'), ensure_ascii=False, sort_keys=True))
-        fb = (cb.get('status'), cb.get('total'),
-              json.dumps(cb.get('top'), ensure_ascii=False, sort_keys=True))
-        if fa != fb:
-            print(f'  变化: {key[0]} · {key[1]}: '
-                  f'status {ca.get("status")}→{cb.get("status")}, '
-                  f'total {ca.get("total")}→{cb.get("total")}')
-            ta = {(t['doc'], t['page'], t['block']) for t in ca.get('top') or []}
-            tb = {(t['doc'], t['page'], t['block']) for t in cb.get('top') or []}
-            if ta - tb: print(f'    top10 减少: {sorted(ta - tb)[:3]}')
-            if tb - ta: print(f'    top10 新增: {sorted(tb - ta)[:3]}')
-            changed += 1
+
+    def cmp(section):
+        am = {(c['shelf'], c['q'], json.dumps(c.get('params') or {}, sort_keys=True)): c
+              for c in (a.get(section) or [])}
+        bm = {(c['shelf'], c['q'], json.dumps(c.get('params') or {}, sort_keys=True)): c
+              for c in (b.get(section) or [])}
+        changed = 0
+        for key in sorted(set(am) | set(bm)):
+            ca, cb = am.get(key), bm.get(key)
+            if ca is None or cb is None:
+                if section == 'cases':   # filters 段可后建, 只提示不判变化
+                    print(f'  仅一侧存在: {key[0]} · {key[1]}')
+                    changed += 1
+                continue
+            fa = (ca.get('status'), ca.get('total'),
+                  json.dumps(ca.get('top'), ensure_ascii=False, sort_keys=True))
+            fb = (cb.get('status'), cb.get('total'),
+                  json.dumps(cb.get('top'), ensure_ascii=False, sort_keys=True))
+            if fa != fb:
+                print(f'  变化[{section}]: {key[0]} · {key[1]} {key[2]}: '
+                      f'status {ca.get("status")}→{cb.get("status")}, '
+                      f'total {ca.get("total")}→{cb.get("total")}')
+                ta = {(t['doc'], t['page'], t['block']) for t in ca.get('top') or []}
+                tb = {(t['doc'], t['page'], t['block']) for t in cb.get('top') or []}
+                if ta - tb: print(f'    top10 减少: {sorted(ta - tb)[:3]}')
+                if tb - ta: print(f'    top10 新增: {sorted(tb - ta)[:3]}')
+                changed += 1
+        return changed
+
+    changed = cmp('cases') + cmp('filters')
     print('结论:', '有变化, 逐条核对可解释性' if changed else '快照一致 ✅')
     return 1 if changed else 0
 
