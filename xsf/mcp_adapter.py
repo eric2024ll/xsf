@@ -43,33 +43,66 @@ def search(query: str, collection: str = "", limit: int = 10) -> str:
 
     Args:
         query: 搜索词 (如 "噶玛兰")
-        collection: 书架名. 空串 = 搜索全部书架
+        collection: 书架名. 空串 = 遍历全部书架合并 (A4, 2026-11-07):
+            各书架按 rank 序取候选后轮询交织, 每条结果带 collection 字段 —
+            后续 get_context/get_doc 必须用它回指书架
         limit: 返回条数 (默认 10)
 
     Returns:
         JSON: {engine, collection, count, results: [{doc_id, title, cite_key,
-        page_num, text}]}
+        page_num, text, collection}], totals_per_shelf}
+        单书架时行为不变; 实体/wiki 命中组不进本工具 (保持书架域, 见检索设计 3.0)
     """
     import json as _json
 
     if not query.strip():
         return _json.dumps({'error': 'query 为空'}, ensure_ascii=False)
 
-    if not collection:
+    try:
+        if collection:
+            data = _fts5_search(query, collection, limit)
+            data['engine'] = 'fts5'
+            for r in data.get('results') or []:
+                r.setdefault('collection', collection)
+            return _json.dumps(data, ensure_ascii=False)
+
+        # ── 全书架: 遍历 merge, 书架轮询交织 (防单书架排序偏置) ──
         r = _xsf_get('/api/collections')
         r.raise_for_status()
         colls = r.json().get('collections') or []
         if not colls:
             return _json.dumps({'error': '没有书架'}, ensure_ascii=False)
-        collection = colls[0]
-
-    try:
-        data = _fts5_search(query, collection, limit)
+        per, totals = [], {}
+        for c in colls:
+            try:
+                d = _fts5_search(query, c, limit)
+                res = d.get('results') or []
+                for x in res:
+                    x['collection'] = c
+                per.append(res)
+                totals[c] = d.get('total', 0)
+            except requests.RequestException:
+                totals[c] = None   # 单书架失败不拖垮全书架
+        merged, i = [], 0
+        while len(merged) < limit:
+            added = False
+            for res in per:
+                if i < len(res):
+                    merged.append(res[i])
+                    added = True
+                    if len(merged) >= limit:
+                        break
+            if not added:
+                break
+            i += 1
+        return _json.dumps({
+            'engine': 'fts5', 'collection': '__all__',
+            'collections': colls, 'count': len(merged),
+            'results': merged, 'totals_per_shelf': totals,
+            'total_all': sum(v for v in totals.values() if v),
+        }, ensure_ascii=False)
     except requests.RequestException as e:
         return _json.dumps({'error': f'xsf 不可达: {e}'}, ensure_ascii=False)
-
-    data['engine'] = 'fts5'
-    return _json.dumps(data, ensure_ascii=False)
 
 
 @mcp.tool()
