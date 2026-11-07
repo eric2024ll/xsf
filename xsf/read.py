@@ -225,15 +225,33 @@ def save_annotation(conn, collection, doc, page_num: int, kind: str,
 
 
 def search_annotations(conn, query: str, limit: int = 50) -> list[dict]:
-    """书架内批注检索 (LIKE, 批注文字 + 裁文快照)。"""
+    """书架内批注检索 (LIKE note/clip_text)。
+
+    A3 (2026-11-05): 与主路同款——jieba 分词 + 繁简变体, 组内 OR (任一
+    变体命中), 组间 AND; 繁体查询不再漏简体批注。
+    """
     ensure_read_tables(conn)
-    like = f"%{query}%"
+    from .search import _all_variants, _query_tokens
+    q = (query or '').strip()
+    tokens = _query_tokens(q) or ([q] if q else [])
+    conds, params = [], []
+    for t in tokens:
+        variants = list(_all_variants(t)) or [t]
+        esc = [v.replace('\\', '\\\\').replace('%', '\\%')
+               .replace('_', '\\_') for v in variants]
+        grp = ' OR '.join(
+            "(a.note LIKE ? ESCAPE '\\' "
+            "OR a.clip_text LIKE ? ESCAPE '\\')" for _ in esc)
+        conds.append(f'({grp})')
+        params.extend(v for _e in esc for v in (f'%{_e}%', f'%{_e}%'))
+    if not conds:
+        return []
     rows = conn.execute(
-        """SELECT a.*, d.title, d.cite_key FROM read_annotations a
+        f"""SELECT a.*, d.title, d.cite_key FROM read_annotations a
            JOIN documents d ON d.id = a.doc_id
-           WHERE a.note LIKE ? OR a.clip_text LIKE ?
+           WHERE {' AND '.join(conds)}
            ORDER BY a.id DESC LIMIT ?""",
-        (like, like, max(1, min(int(limit or 50), 200)))).fetchall()
+        params + [max(1, min(int(limit or 50), 200))]).fetchall()
     return [annotation_row(r) for r in rows]
 
 

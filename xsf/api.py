@@ -4023,20 +4023,23 @@ async def api_doc_content(collection: str, doc_id: int,
 # ── 关键词高亮 helper ───────────────────────────────────
 
 def _highlight_keyword(text: str, keyword: str) -> str:
-    """把 keyword 中的空格/空白分隔词在 text 里高亮为 <mark>（繁简互转）。"""
+    """把 keyword 高亮为 <mark>（繁简互转）。
+
+    A3 (2026-11-05): 词表与搜索主路同源 — 原 keyword.split() 空格分词对
+    CJK 无效 (整串一个词, 子词命中不高亮), 统一走 get_highlight_terms
+    (jieba 分词 + 繁简变体, 与校对页模板同一份词表)。
+    """
     if not text or not keyword:
         return html.escape(text or "")
-    from .search import _all_variants
+    from .search import get_highlight_terms
 
-    tokens = [t for t in keyword.split() if t.strip()]
-    if not tokens:
+    terms = get_highlight_terms(keyword)
+    if not terms:
         return html.escape(text)
     result = html.escape(text)
-    for tok in tokens:
-        variants = _all_variants(tok)
-        alt = '|'.join(re.escape(v) for v in sorted(variants))
-        pattern = re.compile(f'({alt})', re.IGNORECASE)
-        result = pattern.sub(r'<mark>\1</mark>', result)
+    alt = '|'.join(re.escape(t) for t in sorted(terms, key=len, reverse=True))
+    pattern = re.compile(f'({alt})', re.IGNORECASE)
+    result = pattern.sub(r'<mark>\1</mark>', result)
     return result
 
 

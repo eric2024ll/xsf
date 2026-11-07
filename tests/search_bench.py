@@ -54,6 +54,9 @@ FILTER_CASES = [
      'params': {'label': 'text'}},
     {'shelf': 'ai与历史研究综合', 'q': '包伟民',
      'params': {'year_from': 2020, 'year_to': 2026}},
+    # A3: 批注繁简变体 — clip_text 是简体「乾嘉考据学研究」, 繁体查询须命中
+    {'shelf': '考据', 'q': '考據',
+     'params': {}},
 ]
 
 # ── 边界用例: 断言期望状态码 (期望栏按批 A 之后的目标填写) ──

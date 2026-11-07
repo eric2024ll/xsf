@@ -133,7 +133,7 @@ def cmd_add(args):
 
 def cmd_search(args):
     results = search(args.query, collection=args.collection,
-                     limit=args.limit)
+                     limit=args.limit, source_type=args.source_type)
     if not results:
         print('未找到匹配结果')
         return
@@ -513,6 +513,9 @@ def main():
     p_s.add_argument('query', help='搜索词')
     p_s.add_argument('-c', '--collection', required=True, help='限定书架')
     p_s.add_argument('-n', '--limit', type=int, default=20)
+    p_s.add_argument('--source-type', choices=['primary', 'secondary',
+                                               'reference'], default=None,
+                     help='按来源类型过滤 (A3, 2026-11-05: 与 API/skill 对齐)')
 
     p_ctx = sub.add_parser('context', help='查看命中块上下文')
     p_ctx.add_argument('doc_id', type=int)
