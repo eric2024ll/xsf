@@ -96,6 +96,45 @@ def _source_flags(source_tags: str):
     )
 
 
+# ── 语种判定 (2026-11-07) ──────────────────────────────
+# documents.lang 默认 'zh'，此前入库从不判定语种：英文 PDF 入库后既不算外文
+# (翻译批处理按 lang!='zh' 筛选)，界面也只按中文单行渲染 —— 用户看到「没有
+# 翻译」的 3 篇英文论文就是这么漏的。入库后按正文拉丁/中日韩字符占比判定，
+# 仅当「明确拉丁主导」时才改标 eng (保守：样本不足或中英混排一律留 zh)。
+
+_CJK_CHAR = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff]')
+LANG_DETECT_MIN_ALPHA = 400      # 字母样本下限 (太小不判)
+LANG_DETECT_CJK_RATIO = 0.02     # 中日韩字符占比低于此值视为拉丁主导
+
+
+def detect_lang(conn, doc_id: int) -> str | None:
+    """按正文判定语种: 明确拉丁主导返回 'eng', 否则 None (留默认 zh)。
+
+    只读, 不改库 —— 入库流程判定后自行 UPDATE。
+    """
+    cjk = ascii_alpha = 0
+    for row in conn.execute(
+            "SELECT text FROM lines WHERE doc_id = ? "
+            "ORDER BY page_num, block_num, line_num LIMIT 400", (doc_id,)):
+        t = row[0] or ''
+        cjk += len(_CJK_CHAR.findall(t))
+        ascii_alpha += sum(1 for ch in t if ch.isascii() and ch.isalpha())
+    total = cjk + ascii_alpha
+    if total < LANG_DETECT_MIN_ALPHA:
+        return None
+    if cjk / total < LANG_DETECT_CJK_RATIO:
+        return 'eng'
+    return None
+
+
+def _apply_detected_lang(conn, doc_id: int) -> str | None:
+    """入库收尾: 判出外文则回写 documents.lang。返回写入语种或 None。"""
+    lang = detect_lang(conn, doc_id)
+    if lang:
+        conn.execute("UPDATE documents SET lang = ? WHERE id = ?", (lang, doc_id))
+    return lang
+
+
 def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
                        cite_key: str = None, title: str = None,
                        author: str = None,
@@ -182,6 +221,7 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
                 )
                 total_blocks += 1
 
+        _apply_detected_lang(conn, doc_id)
         conn.commit()
     finally:
         conn.close()
@@ -247,6 +287,7 @@ def ingest_markdown(md_path: str | Path, collection: str,
                 (doc_id, 1, block_num, _tokenize('\n'.join(block_texts)))
             )
 
+        _apply_detected_lang(conn, doc_id)
         conn.commit()
     finally:
         conn.close()
@@ -467,6 +508,7 @@ def ingest_native_pdf(pdf_path: str | Path, collection: str,
         if total_lines == 0:
             raise RuntimeError(
                 '整篇无可转文本层 (全部页需 OCR), 请用扫描件 OCR 管线')
+        _apply_detected_lang(conn, doc_id)
         conn.commit()
     except Exception:
         conn.rollback()
