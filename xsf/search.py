@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from itertools import product
+from pathlib import Path
 
 import jieba
 from opencc import OpenCC
@@ -9,6 +10,34 @@ from .db import get_conn
 
 _s2t = OpenCC('s2t')
 _t2s = OpenCC('t2s')
+
+
+# ── B1: OCR 形近混淆变体表 (2026-11-07) ─────────────────
+# 数据文件 xsf/data/ocr_confusions.tsv (带 provenance, 人工审核增删);
+# 双向 map: 查正字命中错字语料, 反之亦然。扩展策略 = 对繁简变体做
+# 「单位置替换」(线性量, 不做笛卡尔积防爆表)。
+def _load_confusions() -> dict[str, set[str]]:
+    path = Path(__file__).parent / 'data' / 'ocr_confusions.tsv'
+    m: dict[str, set[str]] = {}
+    try:
+        for line in path.read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split('\t')
+            if len(parts) < 2:
+                continue
+            a, b = parts[0].strip(), parts[1].strip()
+            if len(a) != 1 or len(b) != 1 or a == b:
+                continue
+            m.setdefault(a, set()).add(b)
+            m.setdefault(b, set()).add(a)
+    except OSError:
+        pass
+    return m
+
+
+_CONFUSIONS = _load_confusions()
 
 
 def _char_variants(ch: str) -> list[str]:
@@ -20,6 +49,22 @@ def _all_variants(token: str) -> set[str]:
     """字符级笛卡尔积：生成所有可能的繁简混合形式。"""
     char_options = [_char_variants(ch) for ch in token]
     return {''.join(combo) for combo in product(*char_options) if ''.join(combo)}
+
+
+def _confusion_variants(token: str, base: list[str]) -> list[str]:
+    """B1: 对 base (繁简变体集) 做单位置混淆替换, 去重保序, 不含 base 已有项。"""
+    if not _CONFUSIONS:
+        return []
+    out: list[str] = []
+    seen = set(base)
+    for v in base:
+        for i, ch in enumerate(v):
+            for alt in _CONFUSIONS.get(ch, ()):
+                cand = v[:i] + alt + v[i + 1:]
+                if cand not in seen:
+                    seen.add(cand)
+                    out.append(cand)
+    return out
 
 
 def _expand_token(token: str) -> str:
@@ -116,6 +161,11 @@ def _fts_plan_plain(query: str) -> tuple[str, list[str]]:
         variants = sorted(_all_variants(t))
         if len(variants) > 32:
             variants = [t]
+        # B1: 词内含混淆表字符才追加单位置替换变体 (无混淆字符的行为零变化)
+        if _CONFUSIONS:
+            conf = _confusion_variants(t, variants)
+            if conf:
+                variants = variants + conf[:max(0, 48 - len(variants))]
         if len(t) >= 3:
             parts.append('(' + ' OR '.join(f'"{v}"' for v in variants) + ')')
         else:
@@ -172,13 +222,19 @@ def _fts_where(match_expr: str, like_groups: list[list[str]],
 
 
 def get_highlight_terms(query: str) -> list[str]:
-    """生成用于前端高亮的所有繁简变体（按长度降序）。"""
+    """生成用于前端高亮的所有繁简/混淆变体（按长度降序）。
+
+    A3+ 起与检索主路同源: 高亮词表 = 检索词表, 错字形态命中的块也能标出。
+    """
     tokens = _query_tokens(query)
     if not tokens:
         return []
     all_terms: set[str] = set()
     for token in tokens:
-        all_terms |= _all_variants(token)
+        variants = sorted(_all_variants(token))
+        all_terms |= set(variants)
+        if _CONFUSIONS:
+            all_terms |= set(_confusion_variants(token, variants))
     return sorted(all_terms, key=len, reverse=True)
 
 
