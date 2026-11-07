@@ -3902,22 +3902,33 @@ async def api_entity_constraint(collection: str, entity_id: int,
 
 
 def _wiki_hits(collection: str, q: str, limit: int = 10):
-    """Wiki 命中组: LIKE 检索概念页 (标题+正文), 供两 search 端点."""
+    """Wiki 命中组: LIKE 检索概念页 (标题+正文), 供两 search 端点.
+
+    B2b (2026-11-07): 改走 like_variant_groups 同款变体组——繁体查询不再
+    漏简体概念页, snippet 用首个命中变体定位 (原 find(q) 精确匹配, 变体
+    命中即退化前 80 字)。概念页量级小, 不建 FTS 表 (设计档 B2b)。
+    """
     rows = []
     try:
         conn = get_conn(collection)
         try:
-            esc_q = q.replace('\\', '\\\\').replace('%', r'\%') \
-                    .replace('_', r'\_')
+            from .search import like_variant_groups, get_highlight_terms
+            where, params = like_variant_groups(q, ['title', 'content'])
+            if not where:
+                return []
             for r in conn.execute(
-                    "SELECT slug, title, content FROM wiki_pages "
-                    "WHERE collection = ? AND (title LIKE ? ESCAPE '\\' "
-                    "OR content LIKE ? ESCAPE '\\') LIMIT ?",
-                    (collection, f"%{esc_q}%", f"%{esc_q}%", limit)).fetchall():
-                pos = (r["content"] or "").lower().find(q.lower())
-                snippet = (r["content"] or "")[
-                    max(0, pos - 20):max(0, pos - 20) + 80] if pos >= 0 else \
-                    (r["content"] or "")[:80]
+                    f"SELECT slug, title, content FROM wiki_pages "
+                    f"WHERE collection = ? AND ({where}) LIMIT ?",
+                    [collection] + params + [limit]).fetchall():
+                content = r["content"] or ""
+                low = content.lower()
+                pos = -1
+                for v in get_highlight_terms(q):
+                    pos = low.find(v.lower())
+                    if pos >= 0:
+                        break
+                snippet = content[max(0, pos - 20):max(0, pos - 20) + 80] \
+                    if pos >= 0 else content[:80]
                 rows.append({"slug": r["slug"], "title": r["title"],
                              "snippet": snippet})
         finally:

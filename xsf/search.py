@@ -221,6 +221,35 @@ def _fts_where(match_expr: str, like_groups: list[list[str]],
     return ' AND '.join(conds), params
 
 
+def like_variant_groups(query: str, col_exprs: list[str]) -> tuple[str, list]:
+    """A3/B2b 共用: 分词 + 繁简/混淆变体的 LIKE 条件 (组内 OR 组间 AND).
+
+    col_exprs: 参与 LIKE 的列表达式 (如 ['a.note', 'a.clip_text'])。
+    返回 (where, params); 空查询返回 ('', [])。语义与 _fts_where 的
+    LIKE 路完全同款 (2026-10-26 修复的繁简误杀在此继承)。
+    """
+    q = (query or '').strip()
+    tokens = _query_tokens(q) or ([q] if q else [])
+    conds, params = [], []
+    ncol = max(1, len(col_exprs))
+    for t in tokens:
+        variants = sorted(_all_variants(t))
+        if len(variants) > 32:
+            variants = [t]
+        if _CONFUSIONS:
+            conf = _confusion_variants(t, variants)
+            if conf:
+                variants = variants + conf[:max(0, 48 - len(variants))]
+        esc = [v.replace('\\', '\\\\').replace('%', r'\%')
+               .replace('_', r'\_') for v in variants]
+        grp = ' OR '.join(
+            '(' + ' OR '.join(f"{c} LIKE ? ESCAPE '\\'" for c in col_exprs) + ')'
+            for _ in esc)
+        conds.append(f'({grp})')
+        params.extend(f'%{e}%' for e in esc for _ in range(ncol))
+    return ' AND '.join(conds), params
+
+
 def get_highlight_terms(query: str) -> list[str]:
     """生成用于前端高亮的所有繁简/混淆变体（按长度降序）。
 
