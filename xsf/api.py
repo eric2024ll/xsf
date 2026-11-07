@@ -3245,9 +3245,11 @@ async def api_candidates_generate(collection: str, doc_id: int,
                                   prompt: str = Form(None),
                                   bib_source: str = Form(None),
                                   toc_source: str = Form(None)):
-    """LLM 生成候选: 抽样文献前部块文本, 按目标生成目录候选/实体候选/摘要草稿/元数据回填.
+    """LLM 生成候选: 抽样文献前部块文本, 按目标生成目录候选/摘要草稿/元数据回填.
 
-    targets 逗号分隔子集 (toc/entities/summary/meta), 默认全部。
+    targets 逗号分隔子集 (toc/summary/meta), 默认全部。
+    entities 目标已移除 (2026-11-07 用户裁定): 实体仅经人工监督来源编译
+    (校对页「实体依据」卡粘贴索引/关键词, AI 只作解析器), 传 entities 返回 422。
     prompt: 自主补充提示 (仅 meta 目标生效, 附加到提取指令后)。
     bib_source: 粘贴/导入的书目数据 (BibTeX/RIS/引文格式), meta 目标下
     由 LLM 解析填入 (优先于文献块样本)。
@@ -3256,10 +3258,16 @@ async def api_candidates_generate(collection: str, doc_id: int,
     复用 P2c 的 llm_chat provider 配置 (default_llm).
     """
     from .generate import gen_cards_core
-    want = {t.strip() for t in (targets or "toc,entities,summary,meta").split(",")
-            if t.strip() in ("toc", "entities", "summary", "meta")}
+    asked = {t.strip() for t in (targets or "").split(",") if t.strip()}
+    if "entities" in asked:
+        return JSONResponse(status_code=422, content={
+            "error": "实体候选生成已移除 (2026-11-07): 实体仅经人工监督来源编译"
+                     "——校对页「实体依据」卡粘贴索引/关键词文本 (AI 解析后人工核改), "
+                     "再到文献列表页「实体库」编译"})
+    want = {t.strip() for t in (targets or "toc,summary,meta").split(",")
+            if t.strip() in ("toc", "summary", "meta")}
     if not want:
-        want = {"toc", "entities", "summary"}
+        want = {"toc", "summary"}
     if collection not in list_collections():
         return JSONResponse(status_code=404, content={"error": "书架不存在"})
     try:  # 配置缺失同步快速失败 (503), 不入后台

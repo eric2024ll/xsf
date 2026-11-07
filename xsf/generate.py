@@ -34,17 +34,20 @@ def _noop(_msg):
 # 卡片候选 (目录/摘要/元数据/实体) — 单文献
 # ════════════════════════════════════════════════════════════
 
-def gen_cards_core(collection, doc_id, targets="toc,entities,summary,meta",
+def gen_cards_core(collection, doc_id, targets="toc,summary,meta",
                    prompt=None, toc_source=None, bib_source=None,
                    provider_id=None, progress=None):
-    """生成目录/摘要/元数据/实体候选 (落库: 实体->候选队列; 摘要->draft 卡;
-    元数据->bib_data; 目录树经返回值 tree 交调用方确认合并)。"""
+    """生成目录/摘要/元数据候选 (落库: 摘要->draft 卡; 元数据->bib_data;
+    目录树经返回值 tree 交调用方确认合并)。
+
+    实体目标已移除 (2026-11-07 用户裁定): 实体仅经人工监督来源编译
+    (依据卡/bib 关键词/文献自带索引), 不再 LLM 扫正文出实体候选。"""
     progress = progress or _noop
     A = _api()
-    want = {t.strip() for t in (targets or "toc,entities,summary,meta").split(",")
-            if t.strip() in ("toc", "entities", "summary", "meta")}
+    want = {t.strip() for t in (targets or "toc,summary,meta").split(",")
+            if t.strip() in ("toc", "summary", "meta")}
     if not want:
-        want = {"toc", "entities", "summary"}
+        want = {"toc", "summary"}
     if provider_id is None:
         provider_id = get_default_llm_provider_id()  # 未配置则抛 LLMNotConfigured
 
@@ -72,23 +75,6 @@ def gen_cards_core(collection, doc_id, targets="toc,entities,summary,meta",
                       '"page_num": 页码, '
                       '"children": [同构子节点数组, 最多嵌套3层, 叶子可省略]}]'
                       '（根节点 3-8 个, 层级按目录实际结构）')
-    if "entities" in want:
-        _ev = []
-        try:
-            _vc = get_conn(collection)
-            try:
-                _ev = [r["term"] for r in _vc.execute(
-                    "SELECT term FROM vocabs WHERE kind = 'entity_category' ORDER BY id"
-                ).fetchall()]
-            finally:
-                _vc.close()
-        except Exception:
-            _ev = []
-        _cat_desc = ('实体类别（从词表选择: ' + '/'.join(_ev) + '）'
-                     if _ev else '实体类别（如 人名/地名/机构/物产/职官）')
-        fields.append('"entities": [{"label": "实体名（人名/地名/机构/物产等）", '
-                      '"category": "' + _cat_desc + '", '
-                      '"page_num": 页码, "confidence": 0到1}]（3-15 个）')
     if "summary" in want:
         fields.append('"summary": "100-200字摘要"')
     if "meta" in want:
@@ -159,7 +145,6 @@ def gen_cards_core(collection, doc_id, targets="toc,entities,summary,meta",
         return n
 
     toc_tree = _clean_tree(toc_tree_raw)
-    entity_items = (parsed.get("entities") or []) if "entities" in want else []
     summary_text = (parsed.get("summary") or "").strip() if "summary" in want else ""
     meta_items = (parsed.get("meta") or {}) if "meta" in want else {}
 
@@ -198,35 +183,9 @@ def gen_cards_core(collection, doc_id, targets="toc,entities,summary,meta",
         finally:
             conn_m.close()
 
-    conn = get_conn(collection)
-    try:
-        # 页码语义: 目录节点页码=原书页 (来自书目目录文本/LLM 读目录页), 不换算;
-        # 实体页码来自内容块物理页 (pdf), 校准时换算为原书页落库
-        pm_groups = A._pm_groups(A._load_page_map(conn, doc_id))
-        if pm_groups:
-            for it in entity_items:
-                if it.get("page_num"):
-                    it["page_num"] = A._pm_reverse(pm_groups, int(it["page_num"]))
-        n_ent = 0
-        for it in entity_items:
-            label = str(it.get("label") or "").strip()
-            if not label:
-                continue
-            conn.execute(
-                """INSERT INTO card_candidates
-                   (doc_id, ctype, label, category, confidence, page_num, status)
-                   VALUES (?, 'entity', ?, ?, ?, ?, 'pending')""",
-                (doc_id, label,
-                 str(it.get("category") or '').strip() or None,
-                 float(it.get("confidence") or 0.5),
-                 int(it.get("page_num") or 0) or None))
-            n_ent += 1
-        conn.commit()
-        return {"ok": True, "toc": _count_tree(toc_tree), "tree": toc_tree,
-                "entities": n_ent, "meta": n_meta,
-                "summary": bool(summary_text), "model": model}
-    finally:
-        conn.close()
+    return {"ok": True, "toc": _count_tree(toc_tree), "tree": toc_tree,
+            "meta": n_meta,
+            "summary": bool(summary_text), "model": model}
 
 
 # ════════════════════════════════════════════════════════════

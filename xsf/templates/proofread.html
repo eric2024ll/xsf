@@ -2933,16 +2933,6 @@ async function reviewCand(id, action) {
       else window.__tocTree.push({ label: lab, category: cat, page_num: pg, from: 'candidate#' + id });
       renderTocTree();
       showToast('已采纳并入目录树（已落库）');
-    } else if (ctype === 'entity') {
-      // 管口收敛 (2026-10-31): 实体候选采纳 = 并入依据卡关键词草稿, 人工保存后重编译生效
-      const kwTa = document.getElementById('seedKw');
-      if (kwTa) {
-        const cur = (kwTa.value || '').split('\n').map(x => x.trim()).filter(Boolean);
-        if (!cur.some(x => x === (lab || '').trim())) cur.push((lab || '').trim());
-        kwTa.value = cur.join('\n');
-      }
-      showToast('已并入实体依据卡草稿——点「保存依据」落库后重编译生效');
-      return;
     } else showToast('已采纳');
   } else showToast('已驳回');
 }
@@ -3016,9 +3006,9 @@ async function genMeta() {
 }
 
 async function genCards(target) {
-  const labels = { toc: '目录候选', entities: '实体候选', summary: '摘要草稿' };
+  const labels = { toc: '目录候选', summary: '摘要草稿' };
   if (!confirm('AI 生成' + labels[target] + '？将在后台生成（页面可继续操作），完成后提示。')) return;
-  const pane = document.querySelector(`.tp-pane[data-pane="${target === 'entities' ? 'entity' : target}"]`);
+  const pane = document.querySelector(`.tp-pane[data-pane="${target}"]`);
   const btn = pane ? [...pane.querySelectorAll('.card-actions button')].find(b => b.textContent.includes('AI ')) : null;
   const orig = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '后台生成中…'; }
@@ -3035,7 +3025,6 @@ async function genCards(target) {
         if (target === 'toc' && res.tree && res.tree.length) { tocAcceptTree(res.tree, res.toc); if (btn) { btn.disabled = false; btn.textContent = orig; } return; }
         let msg = `生成完成（${res.model}）：`;
         if (target === 'toc') msg += `${res.toc} 个目录节点`;
-        else if (target === 'entities') msg += `${res.entities} 个实体候选`;
         else {
           msg += res.summary ? '摘要草稿已生成（填入元数据「摘要」）' : '摘要未变化';
           showToast(msg, 5000);

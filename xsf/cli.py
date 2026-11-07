@@ -534,12 +534,13 @@ def main():
     p_gen = sub.add_parser('gen', help='LLM 生成: 卡片候选/知识地图/实体库')
     gensub = p_gen.add_subparsers(dest='gen_action')
     g_cards = gensub.add_parser('cards',
-                                help='生成卡片候选 (目录/摘要/元数据/实体)')
+                                help='生成卡片候选 (目录/摘要/元数据; 实体目标已移除)')
     g_cards.add_argument('-c', '--collection', required=True, help='书架名')
     g_cards.add_argument('--doc', type=int, required=True, dest='doc_id',
                          help='文献 id')
-    g_cards.add_argument('--targets', default='toc,entities,summary,meta',
-                         help='逗号分隔: toc/entities/summary/meta')
+    g_cards.add_argument('--targets', default='toc,summary,meta',
+                         help='逗号分隔: toc/summary/meta (entities 已移除: '
+                              '实体仅经依据卡人工来源编译, 见 gen entities)')
     g_cards.add_argument('--prompt', help='自主补充提示 (meta 目标生效)')
     g_cards.add_argument('--toc-source', dest='toc_source',
                          help='目录文本 (目录解析优先)')

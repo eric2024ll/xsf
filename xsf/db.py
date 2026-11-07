@@ -573,6 +573,13 @@ def _migrate(conn):
     except Exception:
         pass   # 旧库无表/结构差异 → 跳过, _card_hits 有空兜底
 
+    # ── 实体候选存量清理 (2026-11-07): gen cards entities 目标移除,
+    # 实体仅经依据卡人工来源编译——扫正文产生的候选一律清除 (幂等) ──
+    try:
+        conn.execute("DELETE FROM card_candidates WHERE ctype = 'entity'")
+    except Exception:
+        pass
+
     # ── entity_names 回填 (B2, 2026-11-07): 拆表空而实体非空 → 一次重建;
     # 之后由各实体写点调 rebuild_entity_names 维护 ──
     try:
