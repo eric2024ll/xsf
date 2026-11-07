@@ -461,6 +461,8 @@ def ingest_doc(conn, doc_id, provider_id=None):
                 "VALUES(?,?,?,?,?)", (eid, doc_id, m.get('page_num'),
                                       m.get('block_num'), m['surface']))
             n += 1
+    from .db import rebuild_entity_names
+    rebuild_entity_names(conn)   # B2: names 拆表同步
     conn.commit()
     return n
 
@@ -484,6 +486,8 @@ def generate_graph(collection, doc_ids=None, provider_id=None, progress=None):
             "ON CONFLICT(collection) DO UPDATE SET status='ready', "
             "base_edits=excluded.base_edits, generated_at=excluded.generated_at",
             (collection, base))
+        from .db import rebuild_entity_names
+        rebuild_entity_names(conn)   # B2: names 拆表同步
         conn.commit()
         return total
     finally:
@@ -596,6 +600,8 @@ def migrate_legacy(collection, provider_id=None):
                 "VALUES(?,?,?,?,?)",
                 (eid, p['doc_id'], p['page_num'], None, p['surface']))
             n += 1
+        from .db import rebuild_entity_names
+        rebuild_entity_names(conn)   # B2: names 拆表同步
         conn.commit()
         return n
     finally:

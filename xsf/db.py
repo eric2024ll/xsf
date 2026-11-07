@@ -102,6 +102,47 @@ def get_conn(collection: str, create: bool = False) -> sqlite3.Connection:
     return conn
 
 
+def rebuild_entity_names(conn) -> int:
+    """B2 (2026-11-07): entities → entity_names 拆表全量重建.
+
+    canonical + aliases(JSON 数组) 全部展开成一行一名; aliases JSON
+    解析在 Python 侧 (脏数据只跳过该实体, 不炸 SQL json_each)。
+    全量重建幂等, 实体量级书架内数百, 代价可忽略。返回写入行数。
+    调用时机: entities/aliases 的任何写点之后 + 迁移回填。
+    自愈: 表不存在时现建 (CLI/直连 get_conn 不走 lifespan 迁移也能用)。
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entity_names (
+            entity_id INTEGER NOT NULL,
+            name TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_entity_names_entity
+            ON entity_names(entity_id)
+    """)
+    names: list[tuple[int, str]] = []
+    for eid, canonical, aliases in conn.execute(
+            "SELECT id, canonical, aliases FROM entities"):
+        seen: set[str] = set()
+        cand = [canonical]
+        try:
+            arr = json.loads(aliases) if aliases else []
+            if isinstance(arr, list):
+                cand.extend(a for a in arr if isinstance(a, str))
+        except (ValueError, TypeError):
+            pass
+        for raw in cand:
+            n = (raw or '').strip()
+            if n and n not in seen:
+                seen.add(n)
+                names.append((eid, n))
+    conn.execute("DELETE FROM entity_names")
+    conn.executemany(
+        "INSERT INTO entity_names(entity_id, name) VALUES (?, ?)", names)
+    return len(names)
+
+
 def _migrate(conn):
     """给旧 DB 补列: lines 表 bbox/block_label (P1); documents 表 source_type (P2);
     lines.suspect + ocr_page_state (P3, 2026-09-06)."""
@@ -368,6 +409,16 @@ def _migrate(conn):
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS entity_names (
+            entity_id INTEGER NOT NULL,
+            name TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_entity_names_entity
+            ON entity_names(entity_id)
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS entity_mentions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             entity_id INTEGER NOT NULL,
@@ -521,6 +572,17 @@ def _migrate(conn):
                          r["title"] or "", flat))
     except Exception:
         pass   # 旧库无表/结构差异 → 跳过, _card_hits 有空兜底
+
+    # ── entity_names 回填 (B2, 2026-11-07): 拆表空而实体非空 → 一次重建;
+    # 之后由各实体写点调 rebuild_entity_names 维护 ──
+    try:
+        n_names = conn.execute(
+            "SELECT COUNT(*) FROM entity_names").fetchone()[0]
+        n_ents = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+        if n_ents and not n_names:
+            rebuild_entity_names(conn)
+    except Exception:
+        pass   # 旧库无实体表 → 跳过
 
 
 def _card_flat_text(kind: str, content_json: str) -> str:

@@ -933,6 +933,8 @@ async def search_miss_add_alias(collection: str, mid: int,
             conn.execute("UPDATE entities SET aliases = ? WHERE id = ?",
                          (json.dumps(aliases, ensure_ascii=False), er["id"]))
             changed = True
+            from .db import rebuild_entity_names
+            rebuild_entity_names(conn)   # B2: names 拆表同步
         conn.execute(
             "INSERT INTO entity_additions(entity_id, kind, value, evidence) "
             "VALUES(?, 'alias', ?, ?)",
@@ -3457,17 +3459,24 @@ def _entity_neighbors(conn, entity_id, limit: int = 30):
 
 
 def _entity_hits(collection: str, q: str, limit: int = 10):
-    """实体命中组: 检索 canonical/aliases, 供 search-grouped."""
+    """实体命中组: 检索 canonical/aliases, 供 search-grouped.
+
+    B2 (2026-11-07): 改查 entity_names 拆表 + 繁简/混淆变体
+    (原 aliases JSON 裸 LIKE, 繁体查询漏、JSON 标点可误命中)。
+    """
     rows = []
     try:
         conn = get_conn(collection)
         try:
-            esc = q.replace('\\', '\\\\').replace('%', r'\%').replace('_', r'\_')
+            from .search import like_variant_groups
+            where, params = like_variant_groups(q, ['n.name'])
+            if not where:
+                return []
             for r in conn.execute(
-                    "SELECT id, canonical, category FROM entities "
-                    "WHERE canonical LIKE ? ESCAPE '\\' "
-                    "OR aliases LIKE ? ESCAPE '\\' LIMIT ?",
-                    (f"%{esc}%", f"%{esc}%", limit)).fetchall():
+                    f"SELECT e.id, e.canonical, e.category FROM entities e "
+                    f"WHERE EXISTS (SELECT 1 FROM entity_names n "
+                    f"WHERE n.entity_id = e.id AND ({where})) LIMIT ?",
+                    params + [limit]).fetchall():
                 n = conn.execute(
                     "SELECT COUNT(*) c FROM entity_mentions "
                     "WHERE entity_id = ? AND valid = 1",
@@ -3605,10 +3614,20 @@ async def api_entities(collection: str, q: str = None, category: str = None,
     try:
         where, params = [], []
         if q:
-            esc = q.replace('\\', '\\\\').replace('%', r'\%').replace('_', r'\_')
-            where.append("(canonical LIKE ? ESCAPE '\\' "
-                         "OR aliases LIKE ? ESCAPE '\\')")
-            params += [f"%{esc}%", f"%{esc}%"]
+            from .search import like_variant_groups
+            try:
+                w_n, p_n = like_variant_groups(q, ['n.name'])
+            except Exception:
+                w_n, p_n = '', []
+            if w_n:
+                where.append(f"EXISTS (SELECT 1 FROM entity_names n "
+                             f"WHERE n.entity_id = entities.id AND ({w_n}))")
+                params += p_n
+            else:
+                esc = q.replace('\\', '\\\\').replace('%', r'\%') \
+                       .replace('_', r'\_')
+                where.append("canonical LIKE ? ESCAPE '\\'")
+                params.append(f"%{esc}%")
         if category:
             where.append("category = ?")
             params.append(category)
@@ -3802,6 +3821,8 @@ async def api_entity_merge(collection: str, entity_id: int,
                 dst_alias.append(a)
         conn.execute("UPDATE entities SET aliases = ? WHERE id = ?",
                      (json.dumps(dst_alias, ensure_ascii=False), into_id))
+        from .db import rebuild_entity_names
+        rebuild_entity_names(conn)   # B2: names 拆表同步
         try:
             de = json.loads(dst["ext_ids"] or '{}')
         except (ValueError, TypeError):
@@ -3824,6 +3845,8 @@ async def api_entity_merge(collection: str, entity_id: int,
                  "merged_canonical": src["canonical"]}, ensure_ascii=False),
              None))
         conn.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
+        from .db import rebuild_entity_names
+        rebuild_entity_names(conn)   # B2: names 拆表同步 (合并/删除后)
         conn.commit()
         return {"ok": True, "into_id": into_id}
     finally:

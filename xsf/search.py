@@ -100,22 +100,29 @@ def _entity_expansions(conn, query: str, limit: int = 8) -> dict:
     """整条查询命中实体 (规范名/别名) 时 → {查询词: [该实体其它名称]}。
 
     用于检索前归一扩展 (异体字/别称/音译变体), 救 miss。
+    B2 (2026-11-07): 改查 entity_names 拆表 + 变体组 (繁体查询不再漏)。
     表缺失时返回 {}。
     """
     qn = _norm_name(query)
     if len(qn) < 2:
         return {}
     try:
+        where, params = like_variant_groups(qn, ['n.name'])
+        if not where:
+            return {}
         rows = conn.execute(
-            "SELECT canonical, aliases FROM entities "
-            "WHERE LOWER(canonical) = LOWER(?) "
-            "   OR LOWER(aliases) LIKE LOWER(?) LIMIT ?",
-            (qn, f'%"{qn}"%', limit)).fetchall()
+            f"SELECT entity_id FROM entity_names n WHERE {where} LIMIT ?",
+            params + [limit]).fetchall()
     except sqlite3.OperationalError:
         return {}
     names = []
     for r in rows:
-        for n in [r['canonical']] + _parse_aliases(r['aliases']):
+        ent = conn.execute(
+            "SELECT canonical, aliases FROM entities WHERE id = ?",
+            (r["entity_id"],)).fetchone()
+        if not ent:
+            continue
+        for n in [ent["canonical"]] + _parse_aliases(ent["aliases"]):
             nn = (n or '').strip()
             if nn and _norm_name(nn) != qn and nn not in names:
                 names.append(nn)
