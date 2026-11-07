@@ -335,7 +335,20 @@ async function loadGroupBlocks(i){
 function buildBlockItem(r){
   var div=document.createElement('div');
   div.className='result-item';
-  var preview=r.text&&r.text.length>300?r.text.slice(0,300)+'...':(r.text||'');
+  // 预览窗围绕首个命中点取文 (2026-11-07): 长块开头常是元数据头/长铺垫,
+  // 固定前 300 字会把 <mark> 截在窗外 → 看起来「没高亮」
+  var text=r.text||'';
+  var preview;
+  if(text.length<=300){ preview=text; }
+  else{
+    var mk=text.indexOf('<mark>');
+    if(mk>300){
+      var start=Math.max(0, mk-120);
+      preview='…'+text.slice(start, start+300);
+    }else{
+      preview=text.slice(0,300)+'…';
+    }
+  }
   var collEnc=encodeURIComponent(currentCollection);
   var meta='<div class="result-meta">'+
       (r.page_num?'<span>第 '+r.page_num+' 页 / 段 '+r.block_num+'</span>':'')+
