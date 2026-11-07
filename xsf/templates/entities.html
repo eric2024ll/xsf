@@ -160,7 +160,7 @@ function egRenderList(){
   });
   document.getElementById('egList').innerHTML = list.map(function(e){
     return '<div class="eg-item'+(EG_CUR===e.id?' on':'')+'" data-id="'+e.id+'" onclick="egShow('+e.id+')">'
-      + '<span class="cn">'+esc(e.canonical)+'</span>'
+      + '<span class="cn">'+esc(e.canonical)+(e.origin==='manual'?' <span class="hint">人工</span>':'')+'</span>'
       + '<span class="mc">'+e.mention_count+'</span></div>';
   }).join('');
 }
@@ -174,6 +174,7 @@ async function egShow(id){
   var h = [];
   h.push('<h2 class="eg-title">'+esc(e.canonical)
     + (e.category?' <span class="cat-badge">'+esc(e.category)+'</span>':'')
+    + (e.origin==='manual'?' <span class="hint" title="检索未命中补录, 人工点选创建">人工实体</span>':'')
     + (e.ext_ids && e.ext_ids.cbdb?' <span class="ext-link">CBDB PID '+e.ext_ids.cbdb+'</span>':'')
     + '</h2>');
 
@@ -220,7 +221,8 @@ async function egShow(id){
       + e.mentions.map(function(m){
         var t = esc(m.title||m.filename||('doc '+m.doc_id));
         var pg = (m.page_num!=null)?('<a class="mlink" href="'+api('/doc/'+m.doc_id+'/proofread?page='+m.page_num)+'">p'+m.page_num+' ↗</a>'):'—';
-        return '<tr'+(m.valid?'':' style="opacity:.45"')+'><td>'+t+'</td><td>'+pg+'</td><td>'+esc(m.surface)+'</td>'
+        var anchor = (m.anchor_ok===false)?' <span class="hint" title="原文写法已不在锚定块内 (页被重写), 供参考">锚偏</span>':'';
+        return '<tr'+(m.valid?'':' style="opacity:.45"')+'><td>'+t+'</td><td>'+pg+'</td><td>'+esc(m.surface)+anchor+'</td>'
           + '<td>'+(m.valid?'':'已标错')+'</td>'
           + '<td>'+(m.valid?'<button class="mini-btn" onclick="egInvalidate('+m.id+',this)">错了</button>':'<button class="mini-btn" onclick="egInvalidate('+m.id+',this,1)">恢复</button>')+'</td></tr>';
       }).join('')+'</table></div>');

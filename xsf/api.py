@@ -919,8 +919,30 @@ async def search_miss_add_alias(collection: str, mid: int,
                 "WHERE canonical = ? OR aliases LIKE ? LIMIT 1",
                 (ent, f'%"{ent}"%')).fetchone()
         if not er:
-            return JSONResponse(status_code=404,
-                                content={"error": "实体未找到: " + ent})
+            # B3 (2026-11-07): 实体不存在 → 建 NIL 实体 (canonical=填写的实体名,
+            # 别名=未命中词)。人工点选即监督, origin='manual' 实体页标识。
+            conn.execute(
+                "INSERT OR IGNORE INTO entities(canonical, category, aliases, "
+                "ext_ids, props, origin, compiled_at) "
+                "VALUES(?, NULL, ?, '{}', '{}', 'manual', datetime('now'))",
+                (ent, json.dumps([q], ensure_ascii=False) if q != ent else '[]'))
+            er = conn.execute(
+                "SELECT id, canonical, aliases FROM entities WHERE canonical = ?",
+                (ent,)).fetchone()
+            if not er:
+                return JSONResponse(status_code=500,
+                                    content={"error": "实体创建失败"})
+            from .db import rebuild_entity_names
+            rebuild_entity_names(conn)   # B2: names 拆表同步
+            conn.execute(
+                "INSERT INTO entity_additions(entity_id, kind, value, evidence) "
+                "VALUES(?, 'entity_new', ?, ?)",
+                (er["id"], json.dumps({"canonical": ent, "alias": q},
+                                      ensure_ascii=False),
+                 f"检索未命中新建 (miss #{mid})"))
+            created = True
+        else:
+            created = False
         try:
             aliases = json.loads(er["aliases"] or "[]")
         except (ValueError, TypeError):
@@ -945,7 +967,8 @@ async def search_miss_add_alias(collection: str, mid: int,
             (f"已加为 {er['canonical']} 别名", mid))
         conn.commit()
         return {"ok": True, "entity_id": er["id"],
-                "canonical": er["canonical"], "alias": q, "changed": changed}
+                "canonical": er["canonical"], "alias": q, "changed": changed,
+                "created": created}
     finally:
         conn.close()
 
@@ -3430,7 +3453,37 @@ async def wiki_view(request: Request, collection: str):
 
 # ── 实体图层 (P8, 2026-10-18): 书架级编译产物 · ontology RAG 底座 ──
 
-def _entity_mentions(conn, entity_id, doc_id=None):
+def _reanchor_mentions(conn, doc_id: int, page_num: int) -> int:
+    """B5 (2026-11-07): 页重写后按 surface 重匹配 mentions 的 block_num.
+
+    只在重写路径挂 (reocr); 找不到不删不改 (surface 可能跨块/被改写),
+    留给跳转侧 anchor_ok 时点核验兜底。返回更新行数。
+    """
+    rows = conn.execute(
+        "SELECT id, surface, block_num FROM entity_mentions "
+        "WHERE doc_id = ? AND page_num = ?",
+        (doc_id, page_num)).fetchall()
+    lines = conn.execute(
+        "SELECT block_num, text FROM lines WHERE doc_id = ? AND page_num = ?",
+        (doc_id, page_num)).fetchall()
+    updated = 0
+    for r in rows:
+        surf = (r["surface"] or "").strip()
+        if not surf:
+            continue
+        new_block = None
+        for bl in lines:
+            if surf in (bl["text"] or ""):
+                new_block = bl["block_num"]
+                break
+        if new_block is not None and new_block != r["block_num"]:
+            conn.execute("UPDATE entity_mentions SET block_num = ? "
+                         "WHERE id = ?", (new_block, r["id"]))
+            updated += 1
+    return updated
+
+
+def _entity_mentions(conn, entity_id: int, doc_id=None):
     sql = ("SELECT m.id, m.doc_id, m.page_num, m.block_num, m.surface, m.valid, "
            "d.title, d.filename FROM entity_mentions m "
            "LEFT JOIN documents d ON d.id = m.doc_id WHERE m.entity_id = ?")
@@ -3439,7 +3492,22 @@ def _entity_mentions(conn, entity_id, doc_id=None):
         sql += " AND m.doc_id = ?"
         params.append(doc_id)
     sql += " ORDER BY m.doc_id, m.page_num, m.block_num"
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    out = []
+    for r in conn.execute(sql, params).fetchall():
+        d = dict(r)
+        # B5: 锚点时点核验 — surface 仍在锚定块内? 失配供前端降级/警示
+        ok = False
+        if d["surface"] and d["page_num"] is not None \
+                and d["block_num"] is not None:
+            row = conn.execute(
+                "SELECT 1 FROM lines WHERE doc_id = ? AND page_num = ? "
+                "AND block_num = ? AND instr(text, ?) > 0 LIMIT 1",
+                (d["doc_id"], d["page_num"], d["block_num"],
+                 d["surface"])).fetchone()
+            ok = row is not None
+        d["anchor_ok"] = ok
+        out.append(d)
+    return out
 
 
 def _entity_neighbors(conn, entity_id, limit: int = 30):
@@ -5566,6 +5634,8 @@ def reocr_page(
         try:
             _write_reocr_page(conn, doc_id, page_num, new_blocks,
                               reocr_page_w, reocr_page_h, replace=replace)
+            _reanchor_mentions(conn, doc_id, page_num)   # B5: 页重写后重锚
+            conn.commit()
         finally:
             conn.close()
 
