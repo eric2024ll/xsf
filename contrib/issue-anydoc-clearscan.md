@@ -1,7 +1,7 @@
 # ISSUE: anydoc 对 ClearScan 型 PDF 判 needs-OCR 拒转, 静默产出薄文献
 
 - 日期: 2026-11-11
-- 状态: OPEN (数据已人工修复, 根因未修)
+- 状态: FIXED (2026-11-11 根因已修, `4d9a440`; 修复实施与检测记录见文末)
 - 来源: 互嵌式书架批量入库 (181 篇) 过程中发现
 - 修复会话引用本文即可, 复现样本/兜底脚本路径见下
 
@@ -53,3 +53,21 @@ anydoc.to_markdown('/tmp/p101.pdf')    # NeedsOcrError: needs OCR
 - doc132: parsons_direct.py 直提修复 (13301 行)
 - 14 篇薄文献 (doc 27/32/34/46/48/56/60/62/72/79/81/91/121/125):
   reocr 云端逐页修复, 全部 ≥76 行, error 页清零
+
+## 修复实施 (2026-11-11, `4d9a440`)
+
+建议三条全落地:
+
+1. `_office_to_markdown` 显式捕 `NeedsOcrError` (子类先于 ConvertError;
+   import 路径 + CLI 路径文案识别) → 抛 `NativePdfNeedsOcr` 带类型异常。
+   根因链第 1 条的实际机制修正: 子类其实被笼统捕住了, 问题是**类型被抹掉**,
+   效果同逃逸。
+2. `_native_extract_pages` 区分两类失败页; 空页率 >30% 时
+   `logger.warning` + 结果字段 `warning`, 上传页 note 直接可见。
+3. 兜底落地: NeedsOcr 页先试 `_fallback_blocks_extract` (PyMuPDF
+   blocks 直提, 带 bbox + suspect, parsons_direct 13 行生产化),
+   提不出才算空页。返回 4 元组, `needs_ocr_fallback` 字段计入结果。
+
+检测 (隔离库, 本 issue 复现样本 doc132 p101-103):
+ClearScan 0→39 行; 数字原生不受扰; 纯图仍回退 OCR 管线;
+混合 40% 空页告警触发; 上传 API note 可见; FTS 可达。
