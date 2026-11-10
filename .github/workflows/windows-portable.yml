@@ -47,7 +47,8 @@ jobs:
           Get-ChildItem 'dist/xsf-portable/_internal/pymupdf' -ErrorAction SilentlyContinue |
             Select-Object Name, Length | Format-Table | Out-String | Write-Host
           $mb = [math]::Round(((Get-ChildItem 'dist/xsf-portable' -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
-          Write-Host "便携版解压体积: $mb MB"
+          $pm = [math]::Round(((Get-ChildItem 'dist/xsf-portable/_internal/pymupdf' -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB), 1)
+          Write-Host "便携版解压体积: $mb MB | pymupdf: $pm MB (核心基线 37.8, 含死重时 93.2)"
           foreach ($p in @('dist/xsf-portable/_internal/pymupdf/layout', 'dist/xsf-portable/_internal/pymupdf/mupdf-devel')) {
             if (Test-Path $p) {
               $sub = [math]::Round((Get-ChildItem $p -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
@@ -55,7 +56,9 @@ jobs:
               throw "未剔除: $p ($sub MB)"
             }
           }
-          if ($mb -gt 120) { throw "体积异常增大 ($mb MB > 120MB), 检查依赖漂移" }
+          # 基线: 剔除死重后 pymupdf 37.8MB / 整包 155.2MB (v0.3.4 实测)
+          if ($pm -gt 50) { throw "pymupdf 体积异常 ($pm MB > 50MB), 死重未剔除干净" }
+          if ($mb -gt 170) { throw "整包体积异常 ($mb MB > 170MB), 检查依赖漂移" }
 
       - name: 便携版 doctor 自检 (frozen 可跑性)
         shell: pwsh
