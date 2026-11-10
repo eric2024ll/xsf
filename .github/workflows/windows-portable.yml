@@ -35,6 +35,21 @@ jobs:
           dist/xsf-portable/xsf.exe add smoke.md -c _ci_smoke
           $out = dist/xsf-portable/xsf.exe search "冒烟" -c _ci_smoke | Out-String
           if ($out -notmatch '条结果') { throw "frozen 入库检索链路未命中: $out" }
+          # 2026-11-11 体积案回归: pymupdf 文本提层链路 (spec 剔除 layout/mupdf-devel 后必测)
+          python -c "import pymupdf; d = pymupdf.open(); p = d.new_page(); p.insert_text((72, 72), 'PDFSMOKE pymupdf core path'); d.save('smoke.pdf'); d.close()"
+          dist/xsf-portable/xsf.exe add smoke.pdf -c _ci_smoke
+          $out = dist/xsf-portable/xsf.exe search "PDFSMOKE" -c _ci_smoke | Out-String
+          if ($out -notmatch '条结果') { throw "frozen PDF 文本提层链路未命中: $out" }
+
+      - name: 便携版死重断言 (pymupdf layout/mupdf-devel 已剔除)
+        shell: pwsh
+        run: |
+          foreach ($p in @('dist/xsf-portable/_internal/pymupdf/layout', 'dist/xsf-portable/_internal/pymupdf/mupdf-devel')) {
+            if (Test-Path $p) { throw "未剔除: $p" }
+          }
+          $mb = [math]::Round(((Get-ChildItem 'dist/xsf-portable' -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
+          Write-Host "便携版解压体积: $mb MB"
+          if ($mb -gt 120) { throw "体积异常增大 ($mb MB > 120MB), 检查依赖漂移" }
 
       - name: 便携版 doctor 自检 (frozen 可跑性)
         shell: pwsh

@@ -29,8 +29,33 @@ pkg_datas = [
 ]
 
 
+# pymupdf 2.x 的死重 (2026-11-11 体积案): 便携包 v0.3.4 85MB → v0.3.5 128MB,
+# +55MB 全在 pymupdf —— layout/ 版面识别 ONNX 模型 48.9MB + mupdf-devel/ C 头文件
+# 6.5MB。xsf 只用 pymupdf 核心 (open/text/blocks): 全仓无 layout/find_tables/
+# pymupdf4llm 调用, anydoc 也不 import pymupdf; pymupdf 核心对 layout 仅
+# importlib.util.find_spec 软探测 (缺了静默降级)。numpy 已在 excludes, layout
+# 本就无法工作。excludes 管 Python 模块, 数据目录靠 strip_pymupdf_bulk 过滤。
+PYMUPDF_EXCLUDES = ['pymupdf.layout', 'pymupdf4llm', 'pymupdf_layout',
+                    'onnxruntime']
+
+
+def strip_pymupdf_bulk(toc):
+    """从 Analysis TOC 剔除 pymupdf 的 layout 模型与 mupdf-devel 头文件。
+
+    精确匹配目录边界: 近似名 (如 pymupdf/layoutx) 不误伤。
+    """
+    def _is_bulk(x):
+        s = str(x).replace('\\', '/').rstrip('/')
+        if '/mupdf-devel' in s:
+            return True
+        return (s == 'pymupdf/layout' or s.endswith('/pymupdf/layout')
+                or '/pymupdf/layout/' in s)
+
+    return [e for e in toc if not any(_is_bulk(x) for x in e[:2])]
+
+
 def make_analysis(script: str):
-    return Analysis(
+    a = Analysis(
         [str(entries / script)],
         pathex=[str(root)],
         binaries=[],
@@ -38,9 +63,13 @@ def make_analysis(script: str):
         hiddenimports=['pystray._win32', 'anydoc'],
         hookspath=[],
         runtime_hooks=[],
-        excludes=['tkinter', 'matplotlib', 'numpy', 'pytest'],
+        excludes=['tkinter', 'matplotlib', 'numpy', 'pytest',
+                  *PYMUPDF_EXCLUDES],
         noarchive=False,
     )
+    a.datas = strip_pymupdf_bulk(a.datas)
+    a.binaries = strip_pymupdf_bulk(a.binaries)
+    return a
 
 
 a_gui = make_analysis('gui.py')
