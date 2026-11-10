@@ -8,6 +8,7 @@
 # 组装 zip: pwsh packaging/make_portable.ps1
 
 import importlib
+import shutil
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
@@ -115,7 +116,25 @@ exe_mcp = EXE(
     console=True,
 )
 
-coll = COLLECT(
+class PrunedCollect(COLLECT):
+    """组装完成后删除 pymupdf 死重 (layout 模型 / mupdf-devel 头文件)。
+
+    注意: COLLECT() 构造时不 assemble, 产物在 PyInstaller 主流程里才落盘,
+    所以 spec 末尾写 rmtree 是无效的 (v0.3.6 首两轮 CI 因此仍带死重)。
+    覆写 assemble() 在 super() 之后删, 才是真正落盘后清理。
+    """
+
+    def assemble(self):
+        super().assemble()
+        base = Path(self.name) / self.contents_directory / 'pymupdf'
+        for _sub in ('layout', 'mupdf-devel'):
+            _p = base / _sub
+            if _p.exists():
+                print(f'[spec] 剔除死重: {_p}')
+                shutil.rmtree(_p, ignore_errors=True)
+
+
+coll = PrunedCollect(
     exe_gui, exe_cli, exe_mcp,
     a_gui.binaries, a_gui.datas,
     a_cli.binaries, a_cli.datas,
@@ -124,11 +143,3 @@ coll = COLLECT(
     upx=False,
     name='xsf-portable',
 )
-
-# 兜底: TOC 过滤之外若有 hook 收集绕过 (v0.3.6 CI 实测在 Windows 上发生了),
-# 落盘后强制删除死重目录, 保证包体积与死重断言成立。
-import shutil as _shutil
-
-_pymupdf_dir = Path(DISTPATH) / 'xsf-portable' / '_internal' / 'pymupdf'
-for _sub in ('layout', 'mupdf-devel'):
-    _shutil.rmtree(_pymupdf_dir / _sub, ignore_errors=True)
