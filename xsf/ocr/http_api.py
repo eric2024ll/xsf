@@ -15,6 +15,7 @@
 parsing_res_list 元素 = {block_label, block_content, block_bbox, block_order}
 坐标系铁律: width/height 与 block_bbox 同一像素空间。
 """
+import os
 import time
 
 import requests
@@ -22,7 +23,20 @@ import requests
 MAX_RETRIES = 3
 RETRY_BASE_WAIT = 2
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
-HTTP_TIMEOUT = 900  # 大 PDF 本地 GPU 推理可达数分钟
+
+
+def _http_timeout(default: int = 900) -> int:
+    """单请求超时(秒): 大 PDF 本地 GPU 推理可达数分钟, 大部头扫描书
+    可超 900s。可由 XSF_OCR_HTTP_TIMEOUT 覆盖; 非法值回退默认。
+    需与服务端 POCR_TASK_TIMEOUT(看门狗) 协同: 客户端超时应略大于
+    服务端看门狗, 避免客户端先断而服务端白算。"""
+    try:
+        return int(os.environ.get("XSF_OCR_HTTP_TIMEOUT", default))
+    except (TypeError, ValueError):
+        return default
+
+
+HTTP_TIMEOUT = _http_timeout()  # 运行时可覆盖, 见 _http_timeout()
 # 503 (服务忙) 快速失败: 固定短等待 + 独立次数上限, 避免排队风暴时
 # 每页原地拉锯 MAX_RETRIES × (排队 120s + 退避), 页 error 交给断点补跑
 BUSY_WAIT = 60
