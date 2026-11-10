@@ -1,6 +1,7 @@
 import json
 import re
 import shutil
+import logging
 import posixpath
 
 import pymupdf
@@ -10,7 +11,19 @@ from .db import get_conn
 from .config import get_collections_dir
 from .suspect import detect_suspect
 
+logger = logging.getLogger(__name__)
+
 _CJK_SEG = re.compile(r'([\u4e00-\u9fff]+)')
+
+
+class NativePdfNeedsOcr(RuntimeError):
+    """anydoc 判该 PDF 无可用文本层 (含 ClearScan 型: 图像版式 + 残缺文本层)。
+
+    anydoc.NeedsOcrError 是 ConvertError 子类, 笼统 except 会把类型抹成
+    普通转换失败 (contrib/issue-anydoc-clearscan.md 根因链); 此类型让
+    _native_extract_pages 能区分「真空白页」与「转换失败页」并触发
+    blocks 直提兜底。
+    """
 
 
 def attach_original(collection: str, doc_id: int, src_path: str | Path,
@@ -316,6 +329,8 @@ def _office_to_markdown(path: Path) -> str:
     if anydoc is not None:
         try:
             return anydoc.to_markdown(str(path))
+        except anydoc.NeedsOcrError as e:   # 子类, 必须先于 ConvertError
+            raise NativePdfNeedsOcr(f"无可用文本层 (需 OCR): {e}") from e
         except anydoc.ConvertError as e:
             raise RuntimeError(f"anydoc 转换失败: {e}") from e
 
@@ -340,6 +355,10 @@ def _office_to_markdown(path: Path) -> str:
     if r.returncode != 0:
         msg = r.stderr.strip().removeprefix('anydoc:').strip() \
             or f'退出码 {r.returncode}'
+        # CLI 路径没有异常类型, 靠报错文案识别 needs-OCR (识别不出则退回
+        # 普通失败 → 空页 + 空页率告警仍兜底, 不会静默)
+        if 'needs ocr' in msg.lower():
+            raise NativePdfNeedsOcr(f"无可用文本层 (需 OCR): {msg}")
         raise RuntimeError(f"anydoc 转换失败: {msg}")
     return r.stdout
 
@@ -409,23 +428,58 @@ def repair_split_words(text: str, words: set, bigrams: set,
     return _SPLIT_SPACE_RE.sub(_join, text)
 
 
+def _fallback_blocks_extract(page, conn, doc_id: int, page_num: int) -> int:
+    """NeedsOcrError 页兜底: PyMuPDF blocks 直提 (ClearScan 隐形文本层)。
+
+    anydoc 判需 OCR 但 PyMuPDF 可读时 (ClearScan 型: 图像版式 + 残缺
+    ToUnicode, anydoc 文本层直提不可靠), 按块直提建 lines/blocks_fts
+    (带 bbox, 可校对可检索, suspect 照常检测)。
+    实证: contrib/parsons_direct.py (互嵌式 doc132 927 页 2 行 → 13301 行)。
+    返回写入块数; 0 = 该页 PyMuPDF 也无文本, 交回空页处理。
+    排序按 (y, x) 阅读序; 竖排件此序不准, 由校对台人工核 (suspect 已标)。
+    """
+    w, h = page.rect.width, page.rect.height
+    blocks = [b for b in page.get_text('blocks') if b[6] == 0 and b[4].strip()]
+    n = 0
+    for bn, b in enumerate(sorted(blocks, key=lambda x: (x[1], x[0])), 1):
+        text = ' '.join(b[4].split())
+        bbox = json.dumps([b[0], b[1], b[2], b[3]])
+        suspect = detect_suspect(text, 'text', bbox, w, h)
+        conn.execute(
+            'INSERT INTO lines (doc_id, page_num, block_num, line_num, text, '
+            'bbox, block_label, page_w, page_h, suspect) '
+            'VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)',
+            (doc_id, page_num, bn, text, bbox, 'text', w, h, suspect))
+        conn.execute(
+            'INSERT INTO blocks_fts (doc_id, page_num, block_num, text) '
+            'VALUES (?, ?, ?, ?)',
+            (doc_id, page_num, bn, _tokenize(text)))
+        n += 1
+    return n
+
+
 def _native_extract_pages(pdf_path: str | Path, conn, doc_id: int):
     """逐页 anydoc 抽取写 lines/blocks_fts (born-digital 文本层管线唯一实现).
 
     - anydoc 整篇输出无页界标记, 故按页拆转; 页归属 100% 保真,
       跨页段落按页硬切 (校对工作台按页工作, 页内完整可接受)
     - 每段落一个 block (单 line), 段内折行合并; 剥 md 标记前缀
-    - 单页 anydoc 无法转换 (无文本层: 封面/插图/空白页): 该页留空
-      (记入 empty_pages, 页图仍可看; 需要文本用校对台 reocr), 不中断整篇
+    - 单页失败分两类 (2026-11-11 ClearScan 修复, issue-anydoc-clearscan):
+      * NativePdfNeedsOcr (anydoc 判无文本层): 先试 PyMuPDF blocks 直提
+        兜底 (ClearScan 隐形文本层), 提不出才算空页
+      * 其他转换异常 (加密/损坏页): 该页留空 (记入 empty_pages,
+        页图仍可看; 需要文本用校对台 reocr), 不中断整篇
     - 事务 commit/rollback 由调用方负责
 
-    返回 (n_lines, n_blocks, empty_pages).
+    返回 (n_lines, n_blocks, empty_pages, needs_ocr_pages);
+    needs_ocr_pages = 兜底成功页 (ClearScan 直提已建块)。
     """
     import tempfile
     src = pymupdf.open(pdf_path)
     try:
         total_lines = total_blocks = 0
         empty_pages = []
+        needs_ocr_pages = []
         with tempfile.TemporaryDirectory(prefix='xsf_native_') as td:
             for pno in range(len(src)):
                 one = pymupdf.open()
@@ -437,6 +491,16 @@ def _native_extract_pages(pdf_path: str | Path, conn, doc_id: int):
                     one.close()
                 try:
                     md = _office_to_markdown(tmp_pdf)
+                except NativePdfNeedsOcr:
+                    n = _fallback_blocks_extract(src[pno], conn, doc_id,
+                                                 pno + 1)
+                    if n:
+                        total_lines += n
+                        total_blocks += n
+                        needs_ocr_pages.append(pno + 1)
+                    else:
+                        empty_pages.append(pno + 1)
+                    continue
                 except Exception:
                     empty_pages.append(pno + 1)
                     continue
@@ -465,7 +529,7 @@ def _native_extract_pages(pdf_path: str | Path, conn, doc_id: int):
                     total_blocks += 1
                 if block_num == 0:
                     empty_pages.append(pno + 1)
-        return total_lines, total_blocks, empty_pages
+        return total_lines, total_blocks, empty_pages, needs_ocr_pages
     finally:
         src.close()
 
@@ -503,8 +567,8 @@ def ingest_native_pdf(pdf_path: str | Path, collection: str,
             (cite_key, title, author, pdf_path.name, page_count,
              is_primary, is_secondary, is_reference, source_tags))
         doc_id = cur.lastrowid
-        total_lines, total_blocks, empty_pages = _native_extract_pages(
-            pdf_path, conn, doc_id)
+        total_lines, total_blocks, empty_pages, needs_ocr_pages = \
+            _native_extract_pages(pdf_path, conn, doc_id)
         if total_lines == 0:
             raise RuntimeError(
                 '整篇无可转文本层 (全部页需 OCR), 请用扫描件 OCR 管线')
@@ -516,6 +580,15 @@ def ingest_native_pdf(pdf_path: str | Path, collection: str,
     finally:
         conn.close()
 
+    # 空页率告警 (2026-11-11, issue-anydoc-clearscan): 互嵌式 doc132 曾
+    # 927 页只入 2 行且静默通过——大面积转换失败必须有显式信号
+    warning = None
+    if page_count and len(empty_pages) / page_count > 0.3:
+        warning = (f'空页率 {len(empty_pages)}/{page_count} 超过 30%, '
+                   '文本层可能大面积不可用, 建议改用扫描件 OCR 管线重转')
+        logger.warning('native pdf ingest %s doc%d: %s',
+                       collection, doc_id, warning)
+
     return {
         'doc_id': doc_id,
         'pages': page_count,
@@ -524,6 +597,8 @@ def ingest_native_pdf(pdf_path: str | Path, collection: str,
         'title': title,
         'mode': 'native (anydoc)',
         'empty_pages': empty_pages,
+        'needs_ocr_fallback': len(needs_ocr_pages),
+        'warning': warning,
     }
 
 

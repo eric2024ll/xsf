@@ -1270,6 +1270,12 @@ async def api_add(
                                 res = ingest_native_pdf(path, **kw)
                                 res['note'] = ('原生提取 (anydoc 段落建块); '
                                                '无文本层页留空')
+                                if res.get('needs_ocr_fallback'):
+                                    res['note'] += (
+                                        f"; {res['needs_ocr_fallback']} 页"
+                                        ' ClearScan 直提兜底')
+                                if res.get('warning'):
+                                    res['note'] += '; ⚠ ' + res['warning']
                                 return res
                             except (sqlite3.Error, OSError):
                                 # 环境故障 (锁/磁盘满/IO): 换管线救不了,
