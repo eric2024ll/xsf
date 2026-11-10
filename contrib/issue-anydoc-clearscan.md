@@ -44,9 +44,9 @@ anydoc.to_markdown('/tmp/p101.pdf')    # NeedsOcrError: needs OCR
    **空页率超阈值 (建议 >30%) 时告警或自动建议回退扫描件 OCR 管线**。
 3. (可选) ClearScan 检测兜底: NeedsOcrError 页改用 pymupdf `get_text('blocks')`
    直提 (带 bbox, 可完整建 lines)。已验证的实现:
-   `/tmp/opencode/parsons_direct.py` (doc132 2 行 → 13301 行, 927 页仅 5 空页)。
-   注意 /tmp 会清, 修复时可直接抄该脚本核心 13 行 (blocks 过滤 b[6]==0 →
-   detect_suspect/_tokenize/_apply_detected_lang 入库)。
+   `contrib/parsons_direct.py` (doc132 2 行 → 13301 行, 927 页仅 5 空页)。
+   脚本本体已从 /tmp 固化入仓 (2026-11-11); 核心仅 13 行 (blocks 过滤
+   b[6]==0 → detect_suspect/_tokenize/_apply_detected_lang 入库), 可直接抄。
 
 ## 相关数据修复记录 (已完成, 勿重复)
 
