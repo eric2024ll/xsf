@@ -39,19 +39,22 @@ PYMUPDF_EXCLUDES = ['pymupdf.layout', 'pymupdf4llm', 'pymupdf_layout',
                     'onnxruntime']
 
 
-def strip_pymupdf_bulk(toc):
-    """从 Analysis TOC 剔除 pymupdf 的 layout 模型与 mupdf-devel 头文件。
+def _bulk_path(x):
+    """路径是否属 pymupdf 死重 (layout 模型目录 / mupdf-devel 头文件)。
 
-    精确匹配目录边界: 近似名 (如 pymupdf/layoutx) 不误伤。
+    按路径分段精确判断: 无前导斜杠的相对路径 (Windows TOC) 与近似名
+    (如 pymupdf/layoutx) 都不误判。
     """
-    def _is_bulk(x):
-        s = str(x).replace('\\', '/').rstrip('/')
-        if '/mupdf-devel' in s:
-            return True
-        return (s == 'pymupdf/layout' or s.endswith('/pymupdf/layout')
-                or '/pymupdf/layout/' in s)
+    parts = str(x).replace('\\', '/').rstrip('/').split('/')
+    if 'mupdf-devel' in parts:
+        return True
+    return any(parts[i] == 'pymupdf' and parts[i + 1] == 'layout'
+               for i in range(len(parts) - 1))
 
-    return [e for e in toc if not any(_is_bulk(x) for x in e[:2])]
+
+def strip_pymupdf_bulk(toc):
+    """从 Analysis TOC (datas/binaries/zipped_data) 剔除 pymupdf 死重。"""
+    return [e for e in toc if not any(_bulk_path(x) for x in e[:2])]
 
 
 def make_analysis(script: str):
@@ -69,6 +72,9 @@ def make_analysis(script: str):
     )
     a.datas = strip_pymupdf_bulk(a.datas)
     a.binaries = strip_pymupdf_bulk(a.binaries)
+    zipped = getattr(a, 'zipped_data', None)   # PyInstaller 6 的第三条数据通道
+    if zipped is not None:
+        a.zipped_data = strip_pymupdf_bulk(zipped)
     return a
 
 
@@ -118,3 +124,11 @@ coll = COLLECT(
     upx=False,
     name='xsf-portable',
 )
+
+# 兜底: TOC 过滤之外若有 hook 收集绕过 (v0.3.6 CI 实测在 Windows 上发生了),
+# 落盘后强制删除死重目录, 保证包体积与死重断言成立。
+import shutil as _shutil
+
+_pymupdf_dir = Path(DISTPATH) / 'xsf-portable' / '_internal' / 'pymupdf'
+for _sub in ('layout', 'mupdf-devel'):
+    _shutil.rmtree(_pymupdf_dir / _sub, ignore_errors=True)

@@ -44,11 +44,17 @@ jobs:
       - name: 便携版死重断言 (pymupdf layout/mupdf-devel 已剔除)
         shell: pwsh
         run: |
-          foreach ($p in @('dist/xsf-portable/_internal/pymupdf/layout', 'dist/xsf-portable/_internal/pymupdf/mupdf-devel')) {
-            if (Test-Path $p) { throw "未剔除: $p" }
-          }
+          Get-ChildItem 'dist/xsf-portable/_internal/pymupdf' -ErrorAction SilentlyContinue |
+            Select-Object Name, Length | Format-Table | Out-String | Write-Host
           $mb = [math]::Round(((Get-ChildItem 'dist/xsf-portable' -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
           Write-Host "便携版解压体积: $mb MB"
+          foreach ($p in @('dist/xsf-portable/_internal/pymupdf/layout', 'dist/xsf-portable/_internal/pymupdf/mupdf-devel')) {
+            if (Test-Path $p) {
+              $sub = [math]::Round((Get-ChildItem $p -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
+              Get-ChildItem $p -Recurse -File | Select-Object -First 10 FullName | Out-String | Write-Host
+              throw "未剔除: $p ($sub MB)"
+            }
+          }
           if ($mb -gt 120) { throw "体积异常增大 ($mb MB > 120MB), 检查依赖漂移" }
 
       - name: 便携版 doctor 自检 (frozen 可跑性)
