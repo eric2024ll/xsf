@@ -5,6 +5,7 @@ token 来自 provider 配置 (api_key), 不依赖环境变量。
 返回 list[dict]: {page_index, parsing_res_list, width, height}。
 """
 import json
+import os
 import time
 
 import requests
@@ -16,7 +17,14 @@ OPTIONAL_PAYLOAD = {
     "useDocUnwarping": False,
     "useChartRecognition": False,
 }
-POLL_TIMEOUT = 600
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+POLL_TIMEOUT = _env_int("XSF_OCR_POLL_TIMEOUT", 600)
 POLL_INTERVAL = 3
 MAX_RETRIES = 3
 RETRY_BASE_WAIT = 2
