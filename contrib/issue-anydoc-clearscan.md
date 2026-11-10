@@ -71,3 +71,10 @@ anydoc.to_markdown('/tmp/p101.pdf')    # NeedsOcrError: needs OCR
 检测 (隔离库, 本 issue 复现样本 doc132 p101-103):
 ClearScan 0→39 行; 数字原生不受扰; 纯图仍回退 OCR 管线;
 混合 40% 空页告警触发; 上传 API note 可见; FTS 可达。
+
+## 追加实例 (2026-11-11)
+
+- danfeifei2019xinshidai: 普通 CNKI 5 页小 PDF (203KB, 文本层完好,
+  pymupdf 每页 ~1700 字符) 也被 anydoc 判 needs-OCR → add 回退 OCR 路径
+  → 本地 8091 被拒/云端 500 两次失败。已 pymupdf 直提手动入库。
+  **影响面不止 ClearScan 大部头, 普通 CNKI PDF 同样中招**, 建议优先修。
