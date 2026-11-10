@@ -1,0 +1,1590 @@
+{
+ "created": "2026-11-10 14:18:15",
+ "base": "http://127.0.0.1:8099",
+ "cases": [
+  {
+   "shelf": "晚清乡土志",
+   "q": "學堂",
+   "params": {},
+   "status": 200,
+   "seconds": 0.75,
+   "total": 7405,
+   "top": [
+    {
+     "doc": 16,
+     "page": 41,
+     "block": 3,
+     "text": "周文藻字芸田浙江人光緒二十八年秋七月署州任持重識大體甫下車特"
+    },
+    {
+     "doc": 16,
+     "page": 43,
+     "block": 1,
+     "text": "值教育萌芽風氣未開設算學館閱報處研究所半日<mark>學堂<"
+    },
+    {
+     "doc": 16,
+     "page": 44,
+     "block": 3,
+     "text": "鄭思壬字淵如江蘇吳縣人光緒三十二年夏四月署州任 恤士愛民尤熱"
+    },
+    {
+     "doc": 16,
+     "page": 45,
+     "block": 1,
+     "text": "籌經費創設勸學所分區勸導立教育會以取決公評優禮 學生多方獎勵"
+    },
+    {
+     "doc": 16,
+     "page": 143,
+     "block": 1,
+     "text": "中 區 附城內區內古蹟祠廟坊表橋梁市鎮<mark>學堂</m"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 5,
+     "text": "本區之<mark>學堂</mark>"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 6,
+     "text": "髙等小<mark>學堂</mark> 一處在州城內雍順街東向"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 12,
+     "text": "教育會及模範小<mark>學堂</mark>各一附設 勤學所"
+    },
+    {
+     "doc": 16,
+     "page": 155,
+     "block": 1,
+     "text": "初等小<mark>學堂</mark>共十二處州城內共二處一附"
+    },
+    {
+     "doc": 16,
+     "page": 155,
+     "block": 5,
+     "text": "附城內區內古蹟祠廟坊表橋梁市鎮<mark>學堂</mark>"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 2,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "晚清乡土志",
+   "q": "学堂",
+   "params": {},
+   "status": 200,
+   "seconds": 0.44,
+   "total": 7405,
+   "top": [
+    {
+     "doc": 16,
+     "page": 41,
+     "block": 3,
+     "text": "周文藻字芸田浙江人光緒二十八年秋七月署州任持重識大體甫下車特"
+    },
+    {
+     "doc": 16,
+     "page": 43,
+     "block": 1,
+     "text": "值教育萌芽風氣未開設算學館閱報處研究所半日<mark>學堂<"
+    },
+    {
+     "doc": 16,
+     "page": 44,
+     "block": 3,
+     "text": "鄭思壬字淵如江蘇吳縣人光緒三十二年夏四月署州任 恤士愛民尤熱"
+    },
+    {
+     "doc": 16,
+     "page": 45,
+     "block": 1,
+     "text": "籌經費創設勸學所分區勸導立教育會以取決公評優禮 學生多方獎勵"
+    },
+    {
+     "doc": 16,
+     "page": 143,
+     "block": 1,
+     "text": "中 區 附城內區內古蹟祠廟坊表橋梁市鎮<mark>學堂</m"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 5,
+     "text": "本區之<mark>學堂</mark>"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 6,
+     "text": "髙等小<mark>學堂</mark> 一處在州城內雍順街東向"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 12,
+     "text": "教育會及模範小<mark>學堂</mark>各一附設 勤學所"
+    },
+    {
+     "doc": 16,
+     "page": 155,
+     "block": 1,
+     "text": "初等小<mark>學堂</mark>共十二處州城內共二處一附"
+    },
+    {
+     "doc": 16,
+     "page": 155,
+     "block": 5,
+     "text": "附城內區內古蹟祠廟坊表橋梁市鎮<mark>學堂</mark>"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 2,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "晚清乡土志",
+   "q": "上谷郡",
+   "params": {},
+   "status": 200,
+   "seconds": 0.27,
+   "total": 56,
+   "top": [
+    {
+     "doc": 16,
+     "page": 24,
+     "block": 1,
+     "text": "州境在漢為<mark>上谷</mark><mark>郡</m"
+    },
+    {
+     "doc": 16,
+     "page": 26,
+     "block": 9,
+     "text": "戰國屬燕 戰國策西有<mark>上谷</mark>代<mar"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 1,
+     "text": "秦屬<mark>上谷</mark><mark>郡</mark"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 2,
+     "text": "漢屬<mark>上谷</mark><mark>郡</mark"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 3,
+     "text": "後漢為居庸縣屬幽州<mark>上谷</mark><mark>"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 4,
+     "text": "晉為居庸縣屬幽州<mark>上谷</mark><mark>郡"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 5,
+     "text": "後魏為居庸縣屬東燕州<mark>上谷</mark><mark"
+    },
+    {
+     "doc": 16,
+     "page": 36,
+     "block": 4,
+     "text": "胡連河南湯陰人景泰初來任時驚潰之民始復業迺修城 池以捍外患建"
+    },
+    {
+     "doc": 16,
+     "page": 107,
+     "block": 2,
+     "text": "秦王次仲<mark>上谷</mark><mark>郡</ma"
+    },
+    {
+     "doc": 16,
+     "page": 211,
+     "block": 4,
+     "text": "甯河寶坻分邑也國朝雍正九年分治蓋漢泉州雍奴 地周禮職方氏東北"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "晚清乡土志",
+   "q": "居庸",
+   "params": {},
+   "status": 200,
+   "seconds": 0.27,
+   "total": 156,
+   "top": [
+    {
+     "doc": 16,
+     "page": 24,
+     "block": 1,
+     "text": "州境在漢為上谷郡<mark>居庸</mark>夷輿二縣歷查舊"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 2,
+     "text": "漢屬上谷郡 漢書地理志上谷郡領縣十五置<mark>居庸</m"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 3,
+     "text": "後漢為<mark>居庸</mark>縣屬幽州上谷郡 大清一統"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 4,
+     "text": "晉為<mark>居庸</mark>縣屬幽州上谷郡 晉書地理志"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 5,
+     "text": "後魏為<mark>居庸</mark>縣屬東燕州上谷郡 魏書地"
+    },
+    {
+     "doc": 16,
+     "page": 28,
+     "block": 4,
+     "text": "唐初為懷戎縣地東境繼為媯川縣屬媯州之媯川郡 按唐 書懷 戎縣"
+    },
+    {
+     "doc": 16,
+     "page": 31,
+     "block": 3,
+     "text": "朝為延慶州屬直隸省宣化府 畿輔舊志延慶州初屬宣府鎮 為東路領"
+    },
+    {
+     "doc": 16,
+     "page": 46,
+     "block": 2,
+     "text": "度<mark>居庸</mark>等地後肅靖內難舊志參唐書"
+    },
+    {
+     "doc": 16,
+     "page": 54,
+     "block": 2,
+     "text": "得安<mark>居庸</mark>關南北四十餘里為通蒙古要路"
+    },
+    {
+     "doc": 16,
+     "page": 59,
+     "block": 4,
+     "text": "漢元初五年秋八月鮮卑寇上谷燒官寺殺長吏詔發沿邊 甲卒來屯十一"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "晚清乡土志",
+   "q": "故城",
+   "params": {},
+   "status": 200,
+   "seconds": 0.27,
+   "total": 742,
+   "top": [
+    {
+     "doc": 16,
+     "page": 24,
+     "block": 1,
+     "text": "州境在漢為上谷郡居庸夷輿二縣歷查舊志古蹟僅載 其方向而<ma"
+    },
+    {
+     "doc": 16,
+     "page": 26,
+     "block": 9,
+     "text": "戰國屬燕 戰國策西有上谷代郡燕元和志上谷 郡<mark>故城"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 2,
+     "text": "漢屬上谷郡 漢書地理志上谷郡領縣十五置居庸夷輿二 縣按州志沿"
+    },
+    {
+     "doc": 16,
+     "page": 28,
+     "block": 5,
+     "text": "林驛媯川縣<mark>故城</mark>在州西北"
+    },
+    {
+     "doc": 16,
+     "page": 30,
+     "block": 4,
+     "text": "明永樂十三年隆慶州屬北京行部領永寧縣 明史藁永樂 十三年分縉"
+    },
+    {
+     "doc": 16,
+     "page": 155,
+     "block": 7,
+     "text": "東區以永寧鎮為中樞即明永寧縣之<mark>故城</mark>"
+    },
+    {
+     "doc": 16,
+     "page": 401,
+     "block": 1,
+     "text": "清漳水出上黨沾縣東至武安縣南黍窯邑入于濁漳 易水出涿郡故安縣"
+    },
+    {
+     "doc": 16,
+     "page": 469,
+     "block": 1,
+     "text": "卿或置或省當洪武以前府治東去三十里似不可少 已今既徙而西凡大"
+    },
+    {
+     "doc": 16,
+     "page": 474,
+     "block": 2,
+     "text": "也水經酈道元注曰黎山之北<mark>故城</mark>盖黎陽"
+    },
+    {
+     "doc": 16,
+     "page": 475,
+     "block": 1,
+     "text": "開<mark>故城</mark>按五代晉與梁人戰以鐵鎖斷德勝"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "晚清乡土志",
+   "q": "簡筆",
+   "params": {},
+   "status": 200,
+   "seconds": 1.44,
+   "total": 1,
+   "top": [
+    {
+     "doc": 16,
+     "page": 24,
+     "block": 3,
+     "text": "是編悉雇書手鈔錄間有<mark>簡筆</mark>俗字尚待較"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "考据",
+   "q": "乾嘉考据学",
+   "params": {},
+   "status": 200,
+   "seconds": 0.01,
+   "total": 229,
+   "top": [
+    {
+     "doc": 7,
+     "page": 26,
+     "block": 3,
+     "text": "但总体说来，对<mark>乾嘉</mark><mark>考据"
+    },
+    {
+     "doc": 7,
+     "page": 100,
+     "block": 2,
+     "text": "<mark>乾嘉</mark><mark>考据学</mark"
+    },
+    {
+     "doc": 7,
+     "page": 234,
+     "block": 3,
+     "text": "袁枚将著作、<mark>考据</mark>加以比较，并将<m"
+    },
+    {
+     "doc": 7,
+     "page": 24,
+     "block": 3,
+     "text": "如果总前人之论及<mark>乾嘉</mark><mark>考"
+    },
+    {
+     "doc": 7,
+     "page": 13,
+     "block": 2,
+     "text": "第九章 <mark>乾嘉</mark><mark>考据学</"
+    },
+    {
+     "doc": 7,
+     "page": 1,
+     "block": 2,
+     "text": "<mark>乾嘉</mark><mark>考据学</mark"
+    },
+    {
+     "doc": 7,
+     "page": 3,
+     "block": 2,
+     "text": "<mark>乾嘉</mark><mark>考据学</mark"
+    },
+    {
+     "doc": 7,
+     "page": 306,
+     "block": 3,
+     "text": "<mark>乾嘉</mark><mark>考据学</mark"
+    },
+    {
+     "doc": 7,
+     "page": 224,
+     "block": 2,
+     "text": "<mark>乾嘉</mark><mark>考据学</mark"
+    },
+    {
+     "doc": 7,
+     "page": 37,
+     "block": 3,
+     "text": "唐代在<mark>考据学</mark>的创新上，成就并不突出"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 1,
+    "entities": 0,
+    "annotations": 1
+   }
+  },
+  {
+   "shelf": "考据",
+   "q": "布洛赫",
+   "params": {},
+   "status": 200,
+   "seconds": 0.01,
+   "total": 3,
+   "top": [
+    {
+     "doc": 3,
+     "page": 1,
+     "block": 1,
+     "text": "Marc Bloch"
+    },
+    {
+     "doc": 3,
+     "page": 2,
+     "block": 2,
+     "text": "Marc Bloch"
+    },
+    {
+     "doc": 3,
+     "page": 4,
+     "block": 2,
+     "text": "Marc Bloch nació en Lyon el 6 "
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "考据",
+   "q": "历史导论",
+   "params": {},
+   "status": 200,
+   "seconds": 0.02,
+   "total": 2,
+   "top": [
+    {
+     "doc": 3,
+     "page": 1,
+     "block": 2,
+     "text": "INTRODUCCIÓN A LA HISTORIA"
+    },
+    {
+     "doc": 3,
+     "page": 2,
+     "block": 1,
+     "text": "Introducción a la historia"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "两岸三交",
+   "q": "臺灣生番",
+   "params": {},
+   "status": 200,
+   "seconds": 0.01,
+   "total": 13,
+   "top": [
+    {
+     "doc": 2,
+     "page": 1,
+     "block": 2,
+     "text": "## 大批<mark>臺</mark><mark>灣</ma"
+    },
+    {
+     "doc": 2,
+     "page": 1,
+     "block": 3,
+     "text": "國立中央研究院蔡元培院長前派該院民族學組編輯員林惠祥前赴<m"
+    },
+    {
+     "doc": 135,
+     "page": 5,
+     "block": 2,
+     "text": "與語語意略如與警察長相問答者尋又問當館代表人曰「彼婦旣爲<m"
+    },
+    {
+     "doc": 135,
+     "page": 4,
+     "block": 2,
+     "text": "言「君等此意固不謬然吾人始願實欲舉西洋人及其餘一切人種悉陳其"
+    },
+    {
+     "doc": 135,
+     "page": 2,
+     "block": 2,
+     "text": "東京者見之大憤恨議移書内地士大夫阻其來遊並函約華商之旅居大坂"
+    },
+    {
+     "doc": 137,
+     "page": 2,
+     "block": 1,
+     "text": "木花果種種繁茂羣山多樹林而樟樹椰樹沉香樹爲更廣昔有人曾於此處"
+    },
+    {
+     "doc": 137,
+     "page": 3,
+     "block": 1,
+     "text": "西租界又有<mark>台</mark>南<mark>台</m"
+    },
+    {
+     "doc": 137,
+     "page": 4,
+     "block": 1,
+     "text": "後中員將民船十餘隻暗沉於淡水河口防法輪入口法人始登岸步伏約八"
+    },
+    {
+     "doc": 121,
+     "page": 1,
+     "block": 2,
+     "text": "<mark>台</mark><mark>灣</mark><m"
+    },
+    {
+     "doc": 121,
+     "page": 1,
+     "block": 5,
+     "text": "日本人把<mark>台</mark><mark>灣</mar"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "两岸三交",
+   "q": "中央研究院",
+   "params": {},
+   "status": 200,
+   "seconds": 0.0,
+   "total": 1,
+   "top": [
+    {
+     "doc": 2,
+     "page": 1,
+     "block": 3,
+     "text": "國立<mark>中央研究院</mark>蔡元培院長前派該院民"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "ai与历史研究综合",
+   "q": "史学集刊",
+   "params": {},
+   "status": 200,
+   "seconds": 0.1,
+   "total": 18,
+   "top": [
+    {
+     "doc": 3,
+     "page": 1,
+     "block": 1,
+     "text": "--- type: raw source: 《<mark>史"
+    },
+    {
+     "doc": 314,
+     "page": 90,
+     "block": 7,
+     "text": "① 在一篇纪念吕振羽先生的文章中，荣孟源深情地回忆起他与马克"
+    },
+    {
+     "doc": 276,
+     "page": 9,
+     "block": 4,
+     "text": "① 在美国史领域的利用，可参见韩宇《网上美国史资源概述》，《"
+    },
+    {
+     "doc": 126,
+     "page": 2,
+     "block": 3,
+     "text": "为应对新科技革命给<mark>史学</mark>领域带来的挑"
+    },
+    {
+     "doc": 137,
+     "page": 4,
+     "block": 3,
+     "text": "① 傅斯年：《 历史语言研究所工作之旨趣》 ，《 国立中央研"
+    },
+    {
+     "doc": 138,
+     "page": 4,
+     "block": 3,
+     "text": "① 此处化用傅斯年“ 上穷碧落下黄泉，动手动脚找东西” ，参"
+    },
+    {
+     "doc": 138,
+     "page": 9,
+     "block": 5,
+     "text": "① 此处所引内容为 ２０２０ 年 ６ 月北京论坛云端国际论坛"
+    },
+    {
+     "doc": 147,
+     "page": 2,
+     "block": 1,
+     "text": "不断借鉴他者的理论与方法①。 此后,不同时代的新<mark>"
+    },
+    {
+     "doc": 147,
+     "page": 10,
+     "block": 10,
+     "text": "K. Bol) 强调“ 数字人文领域,学者们的学术思考依然是"
+    },
+    {
+     "doc": 215,
+     "page": 9,
+     "block": 3,
+     "text": "① 屠含章：《后人类主义与“后人类<mark>史学</mar"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "ai与历史研究综合",
+   "q": "包伟民",
+   "params": {},
+   "status": 200,
+   "seconds": 0.08,
+   "total": 18,
+   "top": [
+    {
+     "doc": 3,
+     "page": 1,
+     "block": 1,
+     "text": "--- type: raw source: 《史学集刊》20"
+    },
+    {
+     "doc": 276,
+     "page": 8,
+     "block": 4,
+     "text": "① 姜锡东：《微机与史学研究手段的现代化》，《史学理论研究》"
+    },
+    {
+     "doc": 143,
+     "page": 9,
+     "block": 4,
+     "text": "尽管人工智能在历史研究中大有可为，但是历史学在使用人工智能时"
+    },
+    {
+     "doc": 143,
+     "page": 9,
+     "block": 5,
+     "text": "① <mark>包</mark><mark>伟民</mark"
+    },
+    {
+     "doc": 148,
+     "page": 2,
+     "block": 2,
+     "text": "随着这些技术的运用，很多学者撰文认为这些新“ 技术” 的引入"
+    },
+    {
+     "doc": 148,
+     "page": 3,
+     "block": 5,
+     "text": "① <mark>包</mark><mark>伟民</mark"
+    },
+    {
+     "doc": 148,
+     "page": 4,
+     "block": 2,
+     "text": "总之，“ 史料即史学” 以及“ 穷尽所有相关材料” 的史学传"
+    },
+    {
+     "doc": 159,
+     "page": 2,
+     "block": 2,
+     "text": "其中，“数据史学”（ＤａｔａＨｉｓｔｏｒｙ）①是以数据库建设"
+    },
+    {
+     "doc": 218,
+     "page": 12,
+     "block": 2,
+     "text": "注： ①梁晨：《 数字技术方法与研究范式转型———以历史学为"
+    },
+    {
+     "doc": 254,
+     "page": 1,
+     "block": 10,
+     "text": "人文资料电子数据库自诞生以来，在得到越 而这会给研究者带来很"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "ai与历史研究综合",
+   "q": "Marc Bloch",
+   "params": {},
+   "status": 200,
+   "seconds": 0.01,
+   "total": 10,
+   "top": [
+    {
+     "doc": 313,
+     "page": 278,
+     "block": 4,
+     "text": "Bloch, Marc (1967). A Contribu"
+    },
+    {
+     "doc": 224,
+     "page": 7,
+     "block": 6,
+     "text": "法国历史学家马克·布洛赫(<mark>Marc Bloch<"
+    },
+    {
+     "doc": 142,
+     "page": 2,
+     "block": 4,
+     "text": "英国史学家卡尔( E． H． Carr，1892 － 198"
+    },
+    {
+     "doc": 311,
+     "page": 57,
+     "block": 1,
+     "text": "20 取或完全被遺忘的文本。 這給研究帶來了挑戰。我們怎麼知"
+    },
+    {
+     "doc": 313,
+     "page": 146,
+     "block": 3,
+     "text": "Much of the progress of histor"
+    },
+    {
+     "doc": 211,
+     "page": 32,
+     "block": 3,
+     "text": "As I said, you can tweak your "
+    },
+    {
+     "doc": 311,
+     "page": 158,
+     "block": 1,
+     "text": "Eero Tarasti, ed. 2011. *Music"
+    },
+    {
+     "doc": 211,
+     "page": 28,
+     "block": 2,
+     "text": "Returning to the subject of hi"
+    },
+    {
+     "doc": 313,
+     "page": 98,
+     "block": 3,
+     "text": "Historiography progressed afte"
+    },
+    {
+     "doc": 195,
+     "page": 13,
+     "block": 5,
+     "text": "From divergent methodological "
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 1,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "ai与历史研究综合",
+   "q": "Berlin",
+   "params": {},
+   "status": 200,
+   "seconds": 0.04,
+   "total": 121,
+   "top": [
+    {
+     "doc": 313,
+     "page": 301,
+     "block": 7,
+     "text": "Bayesian analysis of counterfa"
+    },
+    {
+     "doc": 313,
+     "page": 278,
+     "block": 2,
+     "text": "<mark>Berlin</mark>, Isaiah (1"
+    },
+    {
+     "doc": 314,
+     "page": 185,
+     "block": 7,
+     "text": "以赛亚·伯林（Isaiah <mark>Berlin</ma"
+    },
+    {
+     "doc": 313,
+     "page": 81,
+     "block": 4,
+     "text": "Franz Bopp is the paradigm fou"
+    },
+    {
+     "doc": 313,
+     "page": 224,
+     "block": 2,
+     "text": "or social sciences extends fro"
+    },
+    {
+     "doc": 313,
+     "page": 92,
+     "block": 3,
+     "text": "The ascension of Frederick Wil"
+    },
+    {
+     "doc": 193,
+     "page": 27,
+     "block": 1,
+     "text": "14682303, 2023, 1, Downloaded "
+    },
+    {
+     "doc": 95,
+     "page": 1,
+     "block": 7,
+     "text": "*History and Philosophy of Mod"
+    },
+    {
+     "doc": 313,
+     "page": 90,
+     "block": 3,
+     "text": "Ranke’s theories and methods l"
+    },
+    {
+     "doc": 171,
+     "page": 1,
+     "block": 6,
+     "text": "1 Fraunhofer HHI 2 University "
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 5,
+    "annotations": 0
+   }
+  }
+ ],
+ "filters": [
+  {
+   "shelf": "晚清乡土志",
+   "q": "學堂",
+   "params": {
+    "exclude": "header,page_number,footer,number"
+   },
+   "status": 200,
+   "seconds": 0.46,
+   "total": 7396,
+   "top": [
+    {
+     "doc": 16,
+     "page": 41,
+     "block": 3,
+     "text": "周文藻字芸田浙江人光緒二十八年秋七月署州任持重識大體甫下車特"
+    },
+    {
+     "doc": 16,
+     "page": 43,
+     "block": 1,
+     "text": "值教育萌芽風氣未開設算學館閱報處研究所半日<mark>學堂<"
+    },
+    {
+     "doc": 16,
+     "page": 44,
+     "block": 3,
+     "text": "鄭思壬字淵如江蘇吳縣人光緒三十二年夏四月署州任 恤士愛民尤熱"
+    },
+    {
+     "doc": 16,
+     "page": 45,
+     "block": 1,
+     "text": "籌經費創設勸學所分區勸導立教育會以取決公評優禮 學生多方獎勵"
+    },
+    {
+     "doc": 16,
+     "page": 143,
+     "block": 1,
+     "text": "中 區 附城內區內古蹟祠廟坊表橋梁市鎮<mark>學堂</m"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 5,
+     "text": "本區之<mark>學堂</mark>"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 6,
+     "text": "髙等小<mark>學堂</mark> 一處在州城內雍順街東向"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 12,
+     "text": "教育會及模範小<mark>學堂</mark>各一附設 勤學所"
+    },
+    {
+     "doc": 16,
+     "page": 155,
+     "block": 1,
+     "text": "初等小<mark>學堂</mark>共十二處州城內共二處一附"
+    },
+    {
+     "doc": 16,
+     "page": 155,
+     "block": 5,
+     "text": "附城內區內古蹟祠廟坊表橋梁市鎮<mark>學堂</mark>"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 2,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "晚清乡土志",
+   "q": "學堂",
+   "params": {
+    "label": "text,vertical_text"
+   },
+   "status": 200,
+   "seconds": 0.45,
+   "total": 6815,
+   "top": [
+    {
+     "doc": 16,
+     "page": 41,
+     "block": 3,
+     "text": "周文藻字芸田浙江人光緒二十八年秋七月署州任持重識大體甫下車特"
+    },
+    {
+     "doc": 16,
+     "page": 43,
+     "block": 1,
+     "text": "值教育萌芽風氣未開設算學館閱報處研究所半日<mark>學堂<"
+    },
+    {
+     "doc": 16,
+     "page": 44,
+     "block": 3,
+     "text": "鄭思壬字淵如江蘇吳縣人光緒三十二年夏四月署州任 恤士愛民尤熱"
+    },
+    {
+     "doc": 16,
+     "page": 45,
+     "block": 1,
+     "text": "籌經費創設勸學所分區勸導立教育會以取決公評優禮 學生多方獎勵"
+    },
+    {
+     "doc": 16,
+     "page": 143,
+     "block": 1,
+     "text": "中 區 附城內區內古蹟祠廟坊表橋梁市鎮<mark>學堂</m"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 5,
+     "text": "本區之<mark>學堂</mark>"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 6,
+     "text": "髙等小<mark>學堂</mark> 一處在州城內雍順街東向"
+    },
+    {
+     "doc": 16,
+     "page": 154,
+     "block": 12,
+     "text": "教育會及模範小<mark>學堂</mark>各一附設 勤學所"
+    },
+    {
+     "doc": 16,
+     "page": 155,
+     "block": 1,
+     "text": "初等小<mark>學堂</mark>共十二處州城內共二處一附"
+    },
+    {
+     "doc": 16,
+     "page": 155,
+     "block": 5,
+     "text": "附城內區內古蹟祠廟坊表橋梁市鎮<mark>學堂</mark>"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 2,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "晚清乡土志",
+   "q": "上谷郡",
+   "params": {
+    "source_type": "primary"
+   },
+   "status": 200,
+   "seconds": 0.27,
+   "total": 55,
+   "top": [
+    {
+     "doc": 16,
+     "page": 24,
+     "block": 1,
+     "text": "州境在漢為<mark>上谷</mark><mark>郡</m"
+    },
+    {
+     "doc": 16,
+     "page": 26,
+     "block": 9,
+     "text": "戰國屬燕 戰國策西有<mark>上谷</mark>代<mar"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 1,
+     "text": "秦屬<mark>上谷</mark><mark>郡</mark"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 2,
+     "text": "漢屬<mark>上谷</mark><mark>郡</mark"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 3,
+     "text": "後漢為居庸縣屬幽州<mark>上谷</mark><mark>"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 4,
+     "text": "晉為居庸縣屬幽州<mark>上谷</mark><mark>郡"
+    },
+    {
+     "doc": 16,
+     "page": 27,
+     "block": 5,
+     "text": "後魏為居庸縣屬東燕州<mark>上谷</mark><mark"
+    },
+    {
+     "doc": 16,
+     "page": 36,
+     "block": 4,
+     "text": "胡連河南湯陰人景泰初來任時驚潰之民始復業迺修城 池以捍外患建"
+    },
+    {
+     "doc": 16,
+     "page": 107,
+     "block": 2,
+     "text": "秦王次仲<mark>上谷</mark><mark>郡</ma"
+    },
+    {
+     "doc": 16,
+     "page": 211,
+     "block": 4,
+     "text": "甯河寶坻分邑也國朝雍正九年分治蓋漢泉州雍奴 地周禮職方氏東北"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "考据",
+   "q": "乾嘉考据学",
+   "params": {
+    "label": "text"
+   },
+   "status": 200,
+   "seconds": 0.01,
+   "total": 178,
+   "top": [
+    {
+     "doc": 7,
+     "page": 26,
+     "block": 3,
+     "text": "但总体说来，对<mark>乾嘉</mark><mark>考据"
+    },
+    {
+     "doc": 7,
+     "page": 100,
+     "block": 2,
+     "text": "<mark>乾嘉</mark><mark>考据学</mark"
+    },
+    {
+     "doc": 7,
+     "page": 234,
+     "block": 3,
+     "text": "袁枚将著作、<mark>考据</mark>加以比较，并将<m"
+    },
+    {
+     "doc": 7,
+     "page": 24,
+     "block": 3,
+     "text": "如果总前人之论及<mark>乾嘉</mark><mark>考"
+    },
+    {
+     "doc": 7,
+     "page": 306,
+     "block": 3,
+     "text": "<mark>乾嘉</mark><mark>考据学</mark"
+    },
+    {
+     "doc": 7,
+     "page": 224,
+     "block": 2,
+     "text": "<mark>乾嘉</mark><mark>考据学</mark"
+    },
+    {
+     "doc": 7,
+     "page": 37,
+     "block": 3,
+     "text": "唐代在<mark>考据学</mark>的创新上，成就并不突出"
+    },
+    {
+     "doc": 7,
+     "page": 306,
+     "block": 2,
+     "text": "——<mark>乾嘉</mark><mark>考据学</ma"
+    },
+    {
+     "doc": 7,
+     "page": 257,
+     "block": 2,
+     "text": "——<mark>乾嘉</mark><mark>考据学</ma"
+    },
+    {
+     "doc": 7,
+     "page": 395,
+     "block": 7,
+     "text": "<mark>乾嘉</mark>时期的学术界，旗帜鲜明地全盘否"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 1,
+    "entities": 0,
+    "annotations": 1
+   }
+  },
+  {
+   "shelf": "ai与历史研究综合",
+   "q": "包伟民",
+   "params": {
+    "year_from": 2020,
+    "year_to": 2026
+   },
+   "status": 200,
+   "seconds": 0.09,
+   "total": 0,
+   "top": [],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "考据",
+   "q": "考據",
+   "params": {},
+   "status": 200,
+   "seconds": 0.02,
+   "total": 613,
+   "top": [
+    {
+     "doc": 3,
+     "page": 10,
+     "block": 2,
+     "text": "Pero si esa historia a la que "
+    },
+    {
+     "doc": 5,
+     "page": 1,
+     "block": 2,
+     "text": "<mark>考据</mark>学新探"
+    },
+    {
+     "doc": 5,
+     "page": 4,
+     "block": 1,
+     "text": "<mark>考据</mark>学新探"
+    },
+    {
+     "doc": 5,
+     "page": 8,
+     "block": 2,
+     "text": "第一节 <mark>考据</mark>学的定义"
+    },
+    {
+     "doc": 5,
+     "page": 8,
+     "block": 3,
+     "text": "<mark>考据</mark>学是什么？应该怎样给<mark"
+    },
+    {
+     "doc": 5,
+     "page": 8,
+     "block": 4,
+     "text": "我认为：<mark>考据</mark>学的定义应该包括两个方"
+    },
+    {
+     "doc": 5,
+     "page": 8,
+     "block": 5,
+     "text": "就<mark>考据</mark>对象说，实际上包括以下几个方"
+    },
+    {
+     "doc": 5,
+     "page": 8,
+     "block": 6,
+     "text": "（一）<mark>考据</mark>是关于史料的内容的探讨。"
+    },
+    {
+     "doc": 5,
+     "page": 8,
+     "block": 7,
+     "text": "例如孔子杀少正卯问题。《荀子》、《史记》、《论衡》等书关于此"
+    },
+    {
+     "doc": 5,
+     "page": 9,
+     "block": 1,
+     "text": "史料间内容上的类似。把这些史料进行排比、归纳，总结出“南朝多"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 1,
+    "wiki": 3,
+    "entities": 0,
+    "annotations": 1
+   }
+  },
+  {
+   "shelf": "晚清乡土志",
+   "q": "戊戌",
+   "params": {},
+   "status": 200,
+   "seconds": 0.87,
+   "total": 528,
+   "top": [
+    {
+     "doc": 16,
+     "page": 273,
+     "block": 3,
+     "text": "陳鴻翊字仲鸞嘉慶<mark>戊戌</mark>科進士性聰頴好"
+    },
+    {
+     "doc": 16,
+     "page": 714,
+     "block": 3,
+     "text": "王家相字豫南小畢村人萬歷<mark>戊戌</mark>進士通"
+    },
+    {
+     "doc": 16,
+     "page": 716,
+     "block": 3,
+     "text": "魏雙鳳字雝伯順治<mark>戊戌</mark>進士初任江西新"
+    },
+    {
+     "doc": 16,
+     "page": 718,
+     "block": 3,
+     "text": "崔如岳字青崎九歲失佔即下惟攻苦康熙己卯舉人由魏 雙鳳薦應康熙"
+    },
+    {
+     "doc": 15,
+     "page": 101,
+     "block": 2,
+     "text": "全遂字東玉淅川人少聰頴讀書目數行下日記 數千言年十九舉萬厯丁"
+    },
+    {
+     "doc": 15,
+     "page": 722,
+     "block": 3,
+     "text": "余懷堂字路門道光<mark>戊戌</mark>進士官山西平陸"
+    },
+    {
+     "doc": 14,
+     "page": 42,
+     "block": 7,
+     "text": "李棨字從質任邱人成化<mark>戊戌</mark>進士宏治十"
+    },
+    {
+     "doc": 14,
+     "page": 107,
+     "block": 1,
+     "text": "紀居守屢疏請回鑾帝崩紀同楊廷和等奏請皇太后收江彬下 獄奉遺詔"
+    },
+    {
+     "doc": 14,
+     "page": 124,
+     "block": 5,
+     "text": "毛漪秀字公衛掖人順治<mark>戊戌</mark>進士初任吳"
+    },
+    {
+     "doc": 14,
+     "page": 609,
+     "block": 1,
+     "text": "臣附監生仗義輕財善承父志清臣子四玟瑛 璋璠璋字奉峩任濟甯州判"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 0,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "考据",
+   "q": "史學方法論",
+   "params": {},
+   "status": 200,
+   "seconds": 0.03,
+   "total": 7,
+   "top": [
+    {
+     "doc": 3,
+     "page": 12,
+     "block": 4,
+     "text": "Porque hay una precaución que "
+    },
+    {
+     "doc": 7,
+     "page": 201,
+     "block": 6,
+     "text": "治史，是钱大昕终身一贯的事业。钱氏治史的特点是：将<mark"
+    },
+    {
+     "doc": 7,
+     "page": 209,
+     "block": 4,
+     "text": "此钱大听以文彦博石刻诗文之意及其外任时行程的宽缓不迫来<ma"
+    },
+    {
+     "doc": 7,
+     "page": 220,
+     "block": 4,
+     "text": "在钱大昕以前，就治史门类而言，如金石、职官、舆地、避讳、姓氏"
+    },
+    {
+     "doc": 7,
+     "page": 221,
+     "block": 5,
+     "text": "在<mark>史学</mark>各分支学科的<mark>方法"
+    },
+    {
+     "doc": 7,
+     "page": 304,
+     "block": 4,
+     "text": "第三，乾嘉学者良好的学风和客观的归纳演绎<mark>方法</"
+    },
+    {
+     "doc": 7,
+     "page": 451,
+     "block": 5,
+     "text": "此书虽不是江藩所纂，但其所<mark>论</mark>，与江"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 3,
+    "entities": 0,
+    "annotations": 0
+   }
+  },
+  {
+   "shelf": "ai与历史研究综合",
+   "q": "大語言模型",
+   "params": {},
+   "status": 200,
+   "seconds": 0.01,
+   "total": 40,
+   "top": [
+    {
+     "doc": 292,
+     "page": 51,
+     "block": 1,
+     "text": "7.1-7.3 Drafting with PARALLEL"
+    },
+    {
+     "doc": 292,
+     "page": 8,
+     "block": 1,
+     "text": "Understanding this broader his"
+    },
+    {
+     "doc": 342,
+     "page": 2,
+     "block": 4,
+     "text": "искусственный интеллект, истор"
+    },
+    {
+     "doc": 343,
+     "page": 18,
+     "block": 4,
+     "text": "Таким образом, дашборд – это п"
+    },
+    {
+     "doc": 343,
+     "page": 1,
+     "block": 1,
+     "text": "10.7256/2585-7797.2025.3.75850"
+    },
+    {
+     "doc": 292,
+     "page": 22,
+     "block": 8,
+     "text": "What it does: Prepares non-sea"
+    },
+    {
+     "doc": 292,
+     "page": 23,
+     "block": 6,
+     "text": "What it does: Makes initial sc"
+    },
+    {
+     "doc": 343,
+     "page": 24,
+     "block": 3,
+     "text": "Xu D. et al. Large language mo"
+    },
+    {
+     "doc": 292,
+     "page": 23,
+     "block": 4,
+     "text": "What it does: Goes beyond keyw"
+    },
+    {
+     "doc": 343,
+     "page": 5,
+     "block": 2,
+     "text": "Особый интерес для нас предста"
+    }
+   ],
+   "groups": {
+    "docs": 0,
+    "cards": 0,
+    "wiki": 2,
+    "entities": 1,
+    "annotations": 0
+   }
+  }
+ ]
+}

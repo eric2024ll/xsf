@@ -645,7 +645,7 @@ function resetFilters(){
 }
 
 function getSelectedIds(){
-  if(selectedIds.size === 0){showMsg('请先选择文献','err'); return null;}
+  if(selectedIds.size === 0){alert('请先在列表勾选要导出的文献（行首复选框）'); return null;}
   return Array.from(selectedIds);
 }
 
@@ -719,6 +719,9 @@ async function exportArchive(pkgType){
 }
 
 async function downloadPost(url, body, filename, mime){
+  // 导出可能跑几分钟 (大书架: SQLite 备份 + 源文件打包), 无提示会被当成「没反应」
+  showMsg('正在打包…（大书架可能需要几分钟，请勿关闭页面）', 'ok');
+  document.body.style.cursor = 'wait';
   try{
     const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
     if(!r.ok){const e = await r.json(); showMsg(e.error || '导出失败','err'); return;}
@@ -728,8 +731,9 @@ async function downloadPost(url, body, filename, mime){
     a.download = filename;
     a.click();
     URL.revokeObjectURL(a.href);
-    showMsg('导出成功','ok');
+    showMsg('导出成功 (' + (blob.size/1048576).toFixed(1) + ' MB)','ok');
   }catch(e){showMsg('导出失败: '+e.message,'err');}
+  finally{document.body.style.cursor = '';}
 }
 
 function showMsg(text, type){
