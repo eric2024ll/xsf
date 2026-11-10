@@ -18,8 +18,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 安装依赖
-        run: pip install -e ".[desktop,build,office,mcp]"
+      - name: 安装依赖 (版本锁定)
+        run: |
+          pip install -c packaging/constraints.txt -e ".[desktop,build,office,mcp]"
+          python -c "import pymupdf, PyInstaller, _pyinstaller_hooks_contrib as h; print('锁定验证: pymupdf', pymupdf.__version__, '| pyinstaller', PyInstaller.__version__, '| hooks', h.__version__)"
 
       - name: FTS5 自检
         run: python -c "import sqlite3, tempfile, os; db = os.path.join(tempfile.mkdtemp(), 't.db'); c = sqlite3.connect(db); c.execute('CREATE VIRTUAL TABLE t USING fts5(x)'); c.close(); print('FTS5 OK')"

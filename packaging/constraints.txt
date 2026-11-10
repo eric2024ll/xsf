@@ -1,0 +1,72 @@
+# 便携版构建依赖锁定 (CI 可复现) — 生成于 2026-11-11
+# 重新生成: bash packaging/gen-constraints.sh
+# 范围: Linux 解析闭包 (与 Windows 同名包版本一致); Windows 独有包
+# (pywin32 等) 不在列, pip 现场解析。
+# 背景: v0.3.5 便携包因无锁解析 + pyinstaller-hooks-contrib 2026.10
+# 漂移, 体积 +43MB (mem 小书房 2026-11-11-xsf-portable-size)。
+
+altgraph==0.17.5
+annotated-doc==0.0.6
+annotated-types==0.8.0
+anyio==4.16.0
+attrs==26.1.0
+certifi==2026.10.23
+cffi==2.1.1
+charset-normalizer==3.5.2
+click==8.5.1
+cryptography==50.0.2
+fastapi==0.162.4
+firecrawl-anydoc==0.2.4
+flatbuffers==25.12.19
+h11==0.16.0
+httpcore2==2.16.0
+httptools==0.9.0
+httpx2==2.16.0
+idna==3.20
+jieba==0.42.1
+Jinja2==3.1.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+MarkupSafe==3.0.4
+mcp==2.3.0
+mcp-types==2.3.0
+networkx==3.7
+numpy==2.5.4
+onnxruntime==1.31.1
+opencc-python-reimplemented==0.1.7
+opentelemetry-api==1.45.2
+packaging==26.3
+pillow==13.0.0
+protobuf==7.36.2
+psutil==7.2.2
+pycparser==3.12
+pydantic==2.14.3
+pydantic_core==2.50.4
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.10
+PyJWT==2.15.1
+pymupdf==2.1
+pymupdf4llm==2.1
+pymupdf_layout==2.1
+pypinyin==0.55.0
+pystray==0.19.5
+python-dotenv==1.2.4
+python-multipart==0.0.33
+python-xlib==0.33
+PyYAML==6.0.3
+referencing==0.37.0
+requests==2.34.2
+rpds-py==2026.9.1
+setuptools==84.2.1
+six==1.17.0
+sse-starlette==3.7.0
+starlette==1.10.0
+tabulate==0.10.0
+truststore==0.10.5
+typing-inspection==0.4.5
+typing_extensions==4.16.0
+urllib3==2.8.0
+uvicorn==0.54.0
+uvloop==0.23.0
+watchfiles==1.3.0
+websockets==17.4
