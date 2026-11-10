@@ -81,6 +81,41 @@ def _bg_job_start(kind: str, target) -> str:
                     _bg_jobs.pop(next(iter(_bg_jobs)))
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+def _bg_job_start_progress(kind: str, fn) -> str:
+    """带进度的后台 job: fn(report, jid) 在线程内跑, report(pct, text) 写入
+    job['progress'] (GET /jobs/{id} 可见); 其余语义同 _bg_job_start。
+
+    书架级导出/导入 (2026-11-11) 用: 大包打包/解包需分钟级, 无进度会被
+    当成「没反应」(教训同导出数据包案)。
+    """
+    jid = f"{kind}-{int(time.time() * 1000) % 10_000_000}"
+    with _bg_jobs_lock:
+        _bg_jobs[jid] = {"kind": kind, "status": "running",
+                         "started": time.strftime("%m-%d %H:%M:%S"),
+                         "progress": {"pct": 0, "text": ""}}
+
+    def report(pct, text=""):
+        with _bg_jobs_lock:
+            if jid in _bg_jobs:
+                _bg_jobs[jid]["progress"] = {"pct": int(pct), "text": text}
+
+    def _run():
+        try:
+            result = fn(report, jid)
+            with _bg_jobs_lock:
+                _bg_jobs[jid].update(status="done", result=result)
+        except Exception as e:  # noqa: BLE001 — 后台任务兜底
+            with _bg_jobs_lock:
+                _bg_jobs[jid].update(status="error", error=str(e))
+        finally:
+            with _bg_jobs_lock:
+                while len(_bg_jobs) > 60:
+                    _bg_jobs.pop(next(iter(_bg_jobs)))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jid
     return jid
 
 from .suspect import detect_suspect
@@ -2669,6 +2704,441 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
                 "skipped": skipped, "pkg_type": pkg_type}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ════════════════════════════════════════════════════════════
+# 书架级导入导出 (2026-11-11): 整书架 .sqcoll 包
+#   manifest.json (format=xsf-collection) + export.db (全库备份)
+#   + files/<id>/ 原件 (+ uploads/ 旧布局如有)
+# 导出/导入均走后台 job (进度经 job['progress']); 导入两阶段:
+#   probe (流式落盘+读 manifest+查重) → 前端决策 (新书架直接 create /
+#   同名三选: 覆盖 overwrite / 继续导入 merge / 放弃) → run
+# 设计: mem 小书房 · 用户需求 2026-11-11
+# ════════════════════════════════════════════════════════════
+
+_SHELF_PKG_FORMAT = 'xsf-collection'
+_shelf_busy: dict = {}                    # collection -> 'export'/'import' (防并发)
+_shelf_busy_lock = threading.Lock()
+_shelf_export_artifacts: dict = {}        # jid -> (Path, collection, filename)
+_shelf_stages: dict = {}                  # stage_id -> {path, collection, manifest}
+
+
+def _shelf_acquire(collection: str, kind: str):
+    """占用书架; 已被占返回当前占用 kind, 成功返回 None。"""
+    with _shelf_busy_lock:
+        held = _shelf_busy.get(collection)
+        if held:
+            return held
+        _shelf_busy[collection] = kind
+        return None
+
+
+def _shelf_release(collection: str):
+    with _shelf_busy_lock:
+        _shelf_busy.pop(collection, None)
+
+
+def _shelf_sweep():
+    """清过期产物: 导出包 >1h 未下载 / 导入暂存 >2h 未执行 (幂等)。"""
+    now = time.time()
+    for jid, (path, _c, _f) in list(_shelf_export_artifacts.items()):
+        try:
+            if now - path.stat().st_mtime > 3600:
+                path.unlink(missing_ok=True)
+                _shelf_export_artifacts.pop(jid, None)
+        except OSError:
+            pass
+    for sid, st in list(_shelf_stages.items()):
+        try:
+            if now - Path(st['path']).stat().st_mtime > 7200:
+                Path(st['path']).unlink(missing_ok=True)
+                _shelf_stages.pop(sid, None)
+        except OSError:
+            pass
+
+
+@app.post("/collections/{collection}/export-shelf")
+async def api_export_shelf(collection: str):
+    """导出整书架为 .sqcoll 包 (后台 job, 进度经 /jobs/{id})。"""
+    if not get_db_path(collection).exists():
+        return JSONResponse(status_code=404, content={"error": "书架不存在"})
+    held = _shelf_acquire(collection, 'export')
+    if held:
+        return JSONResponse(status_code=409,
+                            content={"error": f"该书架正在{held}, 请稍候"})
+    conn = get_conn(collection)
+    try:
+        docs = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    finally:
+        conn.close()
+
+    def _work(report, jid):
+        from .config import read_features  # noqa: F811 — 线程内引用
+        tmp_db = out = None
+        try:
+            report(5, '备份数据库…')
+            fd, tmp_db = tempfile.mkstemp(suffix='.db')
+            os.close(fd)
+            src = get_conn(collection)
+            try:
+                bak = sqlite3.connect(tmp_db)
+                with src:
+                    src.backup(bak)
+                bak.close()
+            finally:
+                src.close()
+
+            report(20, '统计源文件…')
+            coll_dir = get_collections_dir() / collection
+            file_list = []      # (arcname, fs_path, size)
+            for sub in ('files', 'uploads'):
+                base = coll_dir / sub
+                if not base.is_dir():
+                    continue
+                for p in base.rglob('*'):
+                    if p.is_file() and not p.name.startswith('.'):
+                        file_list.append(
+                            (f'{sub}/{p.relative_to(base).as_posix()}',
+                             p, p.stat().st_size))
+            total_bytes = sum(s for _, _, s in file_list) or 1
+            pkg_bytes = os.path.getsize(tmp_db) + total_bytes
+
+            feats = {k: True for k, lst in read_features().items()
+                     if isinstance(lst, list) and collection in lst}
+            manifest = {
+                'format': _SHELF_PKG_FORMAT, 'version': 1,
+                'collection': collection,
+                'exported_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'docs': docs, 'files': len(file_list), 'features': feats,
+            }
+
+            fd, out = tempfile.mkstemp(suffix='.sqcoll')
+            os.close(fd)
+            report(25, '打包中…')
+            done = 0
+            last_pct = 25
+            with tarfile.open(out, 'w:gz', compresslevel=6) as tar:
+                mi = tarfile.TarInfo('manifest.json')
+                data = json.dumps(manifest, ensure_ascii=False).encode('utf-8')
+                mi.size = len(data)
+                mi.mtime = int(time.time())
+                tar.addfile(mi, io.BytesIO(data))
+                tar.add(tmp_db, arcname='export.db')
+                done += os.path.getsize(tmp_db)
+                for arc, p, _sz in file_list:
+                    tar.add(p, arcname=arc)
+                    done += _sz
+                    pct = 25 + int(70 * done / pkg_bytes)
+                    if pct >= last_pct + 5:
+                        last_pct = pct
+                        report(pct, f'打包中… {done // 1048576}'
+                                      f'/{pkg_bytes // 1048576} MB')
+
+            _shelf_sweep()
+            _shelf_export_artifacts[jid] = (
+                Path(out), collection, f'{collection}.sqcoll')
+            report(100, '完成')
+            return {'collection': collection, 'docs': docs,
+                    'size_mb': round(os.path.getsize(out) / 1048576, 1),
+                    'download': f'/collections/export-shelf/{jid}/download'}
+        except Exception:
+            if out:
+                try:
+                    os.unlink(out)
+                except OSError:
+                    pass
+            raise
+        finally:
+            _shelf_release(collection)
+            if tmp_db:
+                try:
+                    os.unlink(tmp_db)
+                except OSError:
+                    pass
+
+    jid = _bg_job_start_progress('shelf-export', _work)
+    return {"ok": True, "job": jid, "collection": collection, "docs": docs}
+
+
+@app.get("/collections/export-shelf/{jid}/download")
+async def api_export_shelf_download(jid: str):
+    """取书架导出产物 (一次性, 发完即删)。"""
+    from starlette.background import BackgroundTask
+    item = _shelf_export_artifacts.pop(jid, None)
+    if not item:
+        return JSONResponse(status_code=410,
+                            content={"error": "导出产物不存在或已被取走"})
+    path, _coll, filename = item
+    if not path.exists():
+        return JSONResponse(status_code=410,
+                            content={"error": "导出产物已过期, 请重新导出"})
+    return FileResponse(path, filename=filename, media_type='application/gzip',
+                        background=BackgroundTask(
+                            lambda: path.unlink(missing_ok=True)))
+
+
+@app.post("/collections/import-shelf")
+async def api_import_shelf_probe(file: UploadFile = File(...)):
+    """书架包导入第一阶段: 流式落盘 + 读 manifest + 查重。
+
+    返回 stage_id 与同名冲突信息; 同名时前端出三选 (覆盖/继续导入/放弃),
+    再带 mode 调 /import-shelf/{stage_id}。
+    """
+    import uuid
+    _shelf_sweep()
+    fd, stage_path = tempfile.mkstemp(suffix='.sqcoll')
+    os.close(fd)
+    try:
+        with open(stage_path, 'wb') as f:
+            shutil.copyfileobj(file.file, f, length=4 * 1024 * 1024)
+        manifest = {}
+        with tarfile.open(stage_path, 'r:gz') as tar:
+            for m in tar:            # manifest 在包首, 惰性遍历命中即止
+                if m.name == 'manifest.json':
+                    manifest = json.loads(
+                        tar.extractfile(m).read().decode('utf-8'))
+                    break
+        if manifest.get('format') != _SHELF_PKG_FORMAT:
+            raise ValueError('不是书架包 (manifest 缺 xsf-collection 标识); '
+                             '文献级数据包请到书架的上传页导入')
+        coll = manifest.get('collection')
+        err = validate_collection_name(coll or '')
+        if err:
+            raise ValueError(f'包内书架名不可用: {err}')
+        exists = get_db_path(coll).exists()
+        local_docs = None
+        if exists:
+            c = get_conn(coll)
+            try:
+                local_docs = c.execute(
+                    "SELECT COUNT(*) FROM documents").fetchone()[0]
+            finally:
+                c.close()
+        sid = uuid.uuid4().hex[:12]
+        _shelf_stages[sid] = {'path': stage_path, 'collection': coll,
+                              'manifest': manifest, 't': time.time()}
+        return {"ok": True, "stage_id": sid, "collection": coll,
+                "exists": exists, "pkg_docs": manifest.get('docs'),
+                "local_docs": local_docs,
+                "exported_at": manifest.get('exported_at')}
+    except Exception as e:
+        try:
+            os.unlink(stage_path)
+        except OSError:
+            pass
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@app.post("/collections/import-shelf/{stage_id}")
+async def api_import_shelf_run(stage_id: str, request: Request):
+    """书架包导入第二阶段: 执行 create/overwrite/merge (后台 job)。"""
+    from .ingest import attach_original
+    stage = _shelf_stages.get(stage_id)
+    if not stage:
+        return JSONResponse(status_code=410,
+                            content={"error": "暂存已过期 (2h), 请重新上传"})
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    mode = (body or {}).get('mode')
+    if mode not in ('create', 'overwrite', 'merge'):
+        return JSONResponse(status_code=400,
+                            content={"error": "mode 须为 create/overwrite/merge"})
+    coll = stage['collection']
+    exists = get_db_path(coll).exists()
+    if mode == 'create' and exists:
+        return JSONResponse(status_code=409,
+                            content={"error": f"书架「{coll}」已存在, 请选覆盖或继续导入"})
+    if mode in ('overwrite', 'merge') and not exists:
+        return JSONResponse(status_code=409,
+                            content={"error": f"书架「{coll}」不存在, 无法执行 {mode}"})
+    held = _shelf_acquire(coll, 'import')
+    if held:
+        return JSONResponse(status_code=409,
+                            content={"error": f"该书架正在{held}, 请稍候"})
+    pkg_path = stage['path']
+    manifest = stage['manifest']
+    _shelf_stages.pop(stage_id, None)      # 一次性消费
+
+    def _work(report, _jid):
+        from .config import set_feature
+        tmp_dir = None
+        aside = []                          # [(原路径, 暂存路径)] overwrite 失败回滚用
+        try:
+            report(5, '解包…')
+            tmp_dir = tempfile.mkdtemp(prefix='xsf_shelfimp_')
+            with tarfile.open(pkg_path, 'r:gz') as tar:
+                tar.extractall(tmp_dir, filter='data')
+            src_db = Path(tmp_dir) / 'export.db'
+            if not src_db.exists():
+                raise RuntimeError('包内缺 export.db')
+            # 先验后毁: 包 DB 可开且有 documents 表才动现有数据
+            chk = sqlite3.connect(src_db)
+            try:
+                pkg_docs = chk.execute(
+                    "SELECT COUNT(*) FROM documents").fetchone()[0]
+            finally:
+                chk.close()
+            report(45, f'包校验通过 ({pkg_docs} 篇)')
+
+            coll_dir = get_collections_dir() / coll
+            db_dir = get_db_path(coll).parent
+
+            if mode in ('create', 'overwrite'):
+                if mode == 'overwrite':
+                    report(50, '移开原书架数据…')
+                    for d in (db_dir, coll_dir):
+                        if d.exists():
+                            holder = Path(tempfile.mkdtemp(prefix='xsf_aside_'))
+                            moved = holder / d.name
+                            d.rename(moved)
+                            aside.append((d, moved))
+                report(60, '恢复数据库…')
+                db_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src_db, get_db_path(coll))
+                init_db(coll)              # 幂等迁移 (包库旧版补新表/新列)
+                report(70, '落源文件…')
+                for sub in ('files', 'uploads'):
+                    s = Path(tmp_dir) / sub
+                    if s.is_dir():
+                        shutil.copytree(s, coll_dir / sub, dirs_exist_ok=True)
+                for feat in (manifest.get('features') or {}):
+                    set_feature(feat, coll, True)
+                report(100, '完成')
+                for _d, moved in aside:    # 成功, 弃旧数据
+                    shutil.rmtree(moved.parent, ignore_errors=True)
+                aside = []
+                return {'collection': coll, 'mode': mode,
+                        'pkg_docs': pkg_docs, 'imported': pkg_docs,
+                        'skipped': 0}
+
+            # merge: 文献级并入, cite_key 幂等 (同 cite_key 跳过, 不覆盖)
+            report(50, '并入文献…')
+            src = dst = None
+            src = sqlite3.connect(src_db)
+            src.row_factory = sqlite3.Row
+            dst = get_conn(coll)
+            imported = skipped = attached = 0
+            try:
+                tables = ('documents', 'lines', 'blocks_fts', 'revision_log')
+                src_cols = {t: [r[1] for r in src.execute(
+                    f'PRAGMA table_info({t})')] for t in tables}
+                dst_cols = {t: set(r[1] for r in dst.execute(
+                    f'PRAGMA table_info({t})')) for t in tables}
+                docs = src.execute(
+                    'SELECT * FROM documents ORDER BY id').fetchall()
+                dcols = [c for c in src_cols['documents']
+                         if c != 'id' and c in dst_cols['documents']]
+                lcols = [c for c in src_cols['lines']
+                         if c != 'id' and c in dst_cols['lines']]
+                bcols = [c for c in src_cols['blocks_fts']
+                         if c in dst_cols['blocks_fts']]
+                rcols = [c for c in src_cols['revision_log']
+                         if c != 'id' and c in dst_cols['revision_log']]
+                for i, doc in enumerate(docs, 1):
+                    d = dict(doc)
+                    old_id = d.pop('id', None)
+                    ck = d.get('cite_key')
+                    # 幂等: cite_key 或 filename 任一命中即视为已在架
+                    # (cite_key 可空 — /add 直传件只有 filename 是稳定身份)
+                    dup = None
+                    if ck:
+                        dup = dst.execute(
+                            "SELECT 1 FROM documents WHERE cite_key = ?",
+                            (ck,)).fetchone()
+                    if not dup and d.get('filename'):
+                        dup = dst.execute(
+                            "SELECT 1 FROM documents WHERE filename = ?",
+                            (d['filename'],)).fetchone()
+                    if dup:
+                        skipped += 1
+                        continue
+                    cur = dst.execute(
+                        f"INSERT INTO documents ({','.join(dcols)}) "
+                        f"VALUES ({','.join('?' * len(dcols))})",
+                        [d.get(c) for c in dcols])
+                    new_id = cur.lastrowid
+                    imported += 1
+                    for r in src.execute(
+                            "SELECT * FROM lines WHERE doc_id = ?",
+                            (old_id,)).fetchall():
+                        r = dict(r)
+                        r.pop('id', None)
+                        r['doc_id'] = new_id
+                        dst.execute(
+                            f"INSERT INTO lines ({','.join(lcols)}) "
+                            f"VALUES ({','.join('?' * len(lcols))})",
+                            [r.get(c) for c in lcols])
+                    for r in src.execute(
+                            "SELECT * FROM blocks_fts WHERE doc_id = ?",
+                            (old_id,)).fetchall():
+                        r = dict(r)
+                        r['doc_id'] = new_id
+                        dst.execute(
+                            f"INSERT INTO blocks_fts ({','.join(bcols)}) "
+                            f"VALUES ({','.join('?' * len(bcols))})",
+                            [r.get(c) for c in bcols])
+                    if 'revision_log' in src_cols:
+                        for r in src.execute(
+                                "SELECT * FROM revision_log WHERE doc_id = ?",
+                                (old_id,)).fetchall():
+                            r = dict(r)
+                            r.pop('id', None)
+                            r['doc_id'] = new_id
+                            dst.execute(
+                                f"INSERT INTO revision_log ({','.join(rcols)}) "
+                                f"VALUES ({','.join('?' * len(rcols))})",
+                                [r.get(c) for c in rcols])
+                    # 原件: 包内 files/<旧id>/ → 归一化落盘 files/<新id>/
+                    fdir = Path(tmp_dir) / 'files' / str(old_id)
+                    if fdir.is_dir():
+                        for fp in sorted(fdir.iterdir()):
+                            if fp.is_file() and not fp.name.startswith('.'):
+                                try:
+                                    attach_original(coll, new_id, fp)
+                                    attached += 1
+                                except Exception:
+                                    pass
+                                break
+                    if i % 5 == 0 or i == len(docs):
+                        report(50 + int(45 * i / len(docs)),
+                               f'并入… {i}/{len(docs)}')
+                dst.commit()
+            except Exception:
+                if dst is not None:
+                    dst.rollback()
+                raise
+            finally:
+                if src is not None:
+                    src.close()
+                if dst is not None:
+                    dst.close()
+            report(100, '完成')
+            return {'collection': coll, 'mode': 'merge',
+                    'pkg_docs': len(docs), 'imported': imported,
+                    'skipped': skipped, 'attached': attached}
+        except Exception:
+            # overwrite 中途失败: 把移开的数据放回去 (只回滚目录级)
+            for d, moved in aside:
+                try:
+                    if moved.exists() and not d.exists():
+                        moved.rename(d)
+                        shutil.rmtree(moved.parent, ignore_errors=True)
+                except OSError:
+                    pass
+            raise
+        finally:
+            _shelf_release(coll)
+            if tmp_dir:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            try:
+                os.unlink(pkg_path)
+            except OSError:
+                pass
+
+    jid = _bg_job_start_progress('shelf-import', _work)
+    return {"ok": True, "job": jid, "collection": coll, "mode": mode}
 
 
 # ── P2c AI 填充 (翻译大模型 draft 层) ────────────────────

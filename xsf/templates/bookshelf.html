@@ -54,6 +54,26 @@
   display: inline-block; padding: 1px 7px; border-radius: 4px; margin-left: 6px;
   font-size: 0.7rem; background: var(--primary); color: #fff;
 }
+/* ── 书架级导入导出 (2026-11-11) ── */
+.shelf-prog {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 14px; margin-bottom: 12px;
+}
+.shelf-prog .sp-label { font-size: 0.85rem; color: var(--text); flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shelf-prog .sp-bar { width: 180px; height: 8px; background: var(--accent);
+  border-radius: 4px; overflow: hidden; flex-shrink: 0; }
+.shelf-prog .sp-bar div { height: 100%; background: var(--primary); width: 0; transition: width .4s; }
+.shelf-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4);
+  display: flex; align-items: center; justify-content: center; z-index: 300; }
+.shelf-modal { background: #fff; border-radius: 10px; padding: 22px 26px;
+  max-width: 460px; width: 92%; box-shadow: 0 8px 30px rgba(0,0,0,.18); }
+.shelf-modal h3 { margin: 0 0 10px; font-size: 1rem; }
+.shelf-modal p { font-size: 0.88rem; color: var(--text-muted); margin: 0 0 16px; line-height: 1.6; }
+.shelf-modal .sm-btns { display: flex; gap: 10px; flex-wrap: wrap; }
+.shelf-modal .sm-btns button { flex: 1; min-width: 100px; padding: 8px 12px; }
+.sm-danger { background: #c0392b !important; color: #fff !important; border-color: #c0392b !important; }
 @media(max-width:768px){ .stats-grid{grid-template-columns:repeat(2,1fr);} }
 </style>
 </head>
@@ -69,9 +89,14 @@
   </div>
 
   <div class="section-title">书架列表</div>
+  <div id="shelfProg" class="shelf-prog" style="display:none;">
+    <div class="sp-label" id="spLabel"></div>
+    <div class="sp-bar"><div id="spFill"></div></div>
+  </div>
   <div class="coll-table" id="collTable">
     <div class="empty-hint">加载中…</div>
   </div>
+  <input type="file" id="shelfImportInput" accept=".sqcoll,.tar.gz,.gz" style="display:none;">
 
   <div class="section-title">最近文献</div>
   <div class="doc-list" id="recentDocs">
@@ -116,11 +141,105 @@ function renderColls(colls){
        '<td>'+c.count+'</td><td>'+c.pages+'</td>'+
        '<td><a href="/collections/'+encodeURIComponent(c.name)+'/docs/list">进入</a> · '+
        '<button class="btn coll-act" onclick="renameColl('+attrEsc(JSON.stringify(c.name))+')">改名</button> · '+
+       '<button class="btn coll-act" onclick="exportShelf('+attrEsc(JSON.stringify(c.name))+')">导出</button> · '+
        '<button class="btn coll-act coll-del" onclick="deleteColl('+attrEsc(JSON.stringify(c.name))+')">删除</button></td></tr>';
   });
-  h+='</tbody><tfoot><tr><td colspan="4"><button class="btn" onclick="newColl()">+ 新建书架</button></td></tr></tfoot>';
+  h+='</tbody><tfoot><tr><td colspan="4"><button class="btn" onclick="newColl()">+ 新建书架</button> '+
+     '<button class="btn" onclick="document.getElementById(\'shelfImportInput\').click()">导入书架包…</button></td></tr></tfoot>';
   h+='</table>';
   box.innerHTML=h;
+}
+
+// ── 书架级导入导出 (2026-11-11) ──
+function spShow(label,pct){
+  var box=document.getElementById('shelfProg');
+  document.getElementById('spLabel').textContent=label;
+  document.getElementById('spFill').style.width=Math.min(100,pct)+'%';
+  box.style.display='flex';
+}
+function spHide(){document.getElementById('shelfProg').style.display='none';}
+
+function pollShelfJob(jid,title,cb){
+  var timer=setInterval(async function(){
+    try{
+      var r=await fetch('/jobs/'+jid);var j=await r.json();
+      var p=j.progress||{pct:0,text:''};
+      if(j.status==='running')spShow(title+' — '+(p.text||'…'),p.pct);
+      else{clearInterval(timer);cb(j);}
+    }catch(e){/* 网络抖动继续轮 */}
+  },1500);
+}
+
+async function exportShelf(name){
+  if(!confirm('导出整书架「'+name+'」？\n(数据库+源文件打包为 .sqcoll, 大书架可能需要几分钟)'))return;
+  spShow('导出「'+name+'」 — 提交…',2);
+  try{
+    var r=await fetch('/collections/'+encodeURIComponent(name)+'/export-shelf',{method:'POST'});
+    var d=await r.json();
+    if(!d.ok){alert(d.error||'导出失败');spHide();return;}
+    pollShelfJob(d.job,'导出「'+name+'」',function(j){
+      if(j.status==='done'){
+        spShow('导出完成 ('+(j.result.size_mb||'?')+' MB), 开始下载…',100);
+        window.location.href=j.result.download;
+        setTimeout(spHide,3000);
+      }else{alert('导出失败: '+(j.error||''));spHide();}
+    });
+  }catch(e){alert('请求失败: '+e.message);spHide();}
+}
+
+document.getElementById('shelfImportInput').addEventListener('change',async function(){
+  var f=this.files&&this.files[0];this.value='';
+  if(!f)return;
+  spShow('上传「'+f.name+'」…',3);
+  try{
+    var fd=new FormData();fd.append('file',f);
+    var r=await fetch('/collections/import-shelf',{method:'POST',body:fd});
+    var d=await r.json();
+    if(!r.ok){alert(d.error||'导入失败');spHide();return;}
+    if(d.exists){
+      spHide();
+      shelfDecision(d,function(mode){
+        if(mode)runShelfImport(d.stage_id,mode,d.collection);else spHide();
+      });
+    }else{
+      runShelfImport(d.stage_id,'create',d.collection);
+    }
+  }catch(e){alert('上传失败: '+e.message);spHide();}
+});
+
+function shelfDecision(d,cb){
+  var mask=document.createElement('div');mask.className='shelf-modal-mask';
+  mask.innerHTML='<div class="shelf-modal"><h3>书架「'+escapeHtml(d.collection)+'」已存在</h3>'+
+    '<p>包内 '+d.pkg_docs+' 篇 (导出于 '+escapeHtml(d.exported_at||'未知时间')+') · '+
+    '本机 '+d.local_docs+' 篇。<br>覆盖 = 本机该书架数据整体替换为包内容; '+
+    '继续导入 = 只并入本机没有的文献 (同 cite_key 跳过); 放弃 = 取消。</p>'+
+    '<div class="sm-btns"><button class="btn sm-danger" data-m="overwrite">覆盖</button>'+
+    '<button class="btn" data-m="merge">继续导入</button>'+
+    '<button class="btn" data-m="">放弃</button></div></div>';
+  mask.addEventListener('click',function(ev){
+    if(ev.target===mask){document.body.removeChild(mask);cb('');return;}
+    var b=ev.target.closest('button');if(!b)return;
+    document.body.removeChild(mask);cb(b.dataset.m||'');
+  });
+  document.body.appendChild(mask);
+}
+
+async function runShelfImport(stageId,mode,coll){
+  spShow('导入「'+coll+'」('+mode+') — 提交…',3);
+  try{
+    var r=await fetch('/collections/import-shelf/'+stageId,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:mode})});
+    var d=await r.json();
+    if(!d.ok){alert(d.error||'导入失败');spHide();return;}
+    pollShelfJob(d.job,'导入「'+coll+'」',function(j){
+      if(j.status==='done'){
+        var res=j.result||{};
+        alert('导入完成: 并入 '+res.imported+' 篇'+
+          (res.skipped?' · 跳过 '+res.skipped+' 篇 (已在架)':''));
+        location.reload();
+      }else{alert('导入失败: '+(j.error||''));spHide();}
+    });
+  }catch(e){alert('请求失败: '+e.message);spHide();}
 }
 
 async function renameColl(name){
