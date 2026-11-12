@@ -2263,85 +2263,66 @@ async def api_batch_tags(collection: str, request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-def _build_sqpkg(collection: str, ids, pkg_type: str = "doc"):
-    """构造单个 .sqpkg 包 (tar.gz bytes) + 台账。
+_SCHEMA_SKIP_PREFIX = ('blocks_fts_', 'cards_fts_', 'sqlite_')
 
-    返回 (content, doc_count, edits_count, filename)。
-    单包包与批量逐篇导出 (2026-11-13) 共用此实现。
+
+def _extract_subset_db(base_db: str, ids, pkg_type: str = "doc") -> str:
+    """从整库备份中抽取指定文献, 生成独立小库 (2026-11-13 逐篇导出优化)。
+
+    只复制 schema + 该篇行, 成本与篇大小相关, 而非整库体积。
+    FTS5 shadow 表 (blocks_fts_*) 跳过, 由虚拟表自动重建。
+    """
+    fd, out = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    dst = sqlite3.connect(out)
+    try:
+        dst.execute("ATTACH DATABASE ? AS src", (base_db,))
+        for name, sql in dst.execute(
+                "SELECT name, sql FROM src.sqlite_master "
+                "WHERE sql IS NOT NULL").fetchall():
+            low = (name or '').lower()
+            if any(low.startswith(pre) for pre in _SCHEMA_SKIP_PREFIX):
+                continue
+            try:
+                dst.execute(sql)
+            except sqlite3.OperationalError:
+                pass
+        ph = ",".join("?" * len(ids))
+        dst.execute(
+            f"INSERT INTO documents SELECT * FROM src.documents "
+            f"WHERE id IN ({ph})", ids)
+        dst.execute(
+            f"INSERT INTO lines SELECT * FROM src.lines "
+            f"WHERE doc_id IN ({ph})", ids)
+        dst.execute(
+            f"INSERT INTO blocks_fts SELECT * FROM src.blocks_fts "
+            f"WHERE doc_id IN ({ph})", ids)
+        rev_where = ("AND in_pkg = 1" if pkg_type == "changeset" else "")
+        dst.execute(
+            f"INSERT INTO revision_log SELECT * FROM src.revision_log "
+            f"WHERE doc_id IN ({ph}) {rev_where}", ids)
+        dst.commit()
+    finally:
+        dst.close()
+    return out
+
+
+def _pack_archive(collection: str, db_path: str, pkg_type: str,
+                  doc_meta, base_versions) -> tuple[bytes, int, str]:
+    """把已备好的 DB 打成 .sqpkg (原件协调 + manifest + 台账)。
+
+    返回 (content, edits_count, filename)。
     """
     import datetime as _dt
+    from .config import resolve_original_path
 
-    if not ids:
-        raise ValueError("未选择文献")
-    if pkg_type not in ("doc", "changeset"):
-        raise ValueError("pkg_type 只接受 doc/changeset")
-
-    db_path = get_db_path(collection)
-    if not db_path.exists():
-        raise FileNotFoundError("书架不存在")
-
-    placeholders = ",".join("?" * len(ids))
-
-    # 1. SQLite backup 到临时 DB，然后按包型清理
-    fd, tmp_db = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    src_conn = get_conn(collection)
+    clean = sqlite3.connect(db_path)
+    arc_map = {}   # doc_id → (归档名 | None, 原件路径)
     try:
-        backup_conn = sqlite3.connect(tmp_db)
-        with src_conn:
-            src_conn.backup(backup_conn)
-        backup_conn.close()
-
-        clean = sqlite3.connect(tmp_db)
-        clean.row_factory = sqlite3.Row
-        # 文档元信息 (manifest + 均含 documents 表)
-        doc_meta = clean.execute(
-            f"""SELECT id, cite_key, filename, title, page_count, linked_pdf
-                FROM documents
-                WHERE id IN ({placeholders}) ORDER BY id""", ids,
-        ).fetchall()
-        # base_version = 导出时该文献全部修订数 (清理前取, 变更增量基准)
-        base_versions = dict(
-            (r[0], r[1]) for r in clean.execute(
-                f"""SELECT doc_id, COUNT(*) FROM revision_log
-                    WHERE doc_id IN ({placeholders}) GROUP BY doc_id""",
-                ids).fetchall())
-
-        if pkg_type == "changeset":
-            # 变更包: 只保留选中文献的 documents + in_pkg=1 修订史
-            clean.execute("DELETE FROM lines")
-            clean.execute("DELETE FROM blocks_fts")
-            clean.execute(
-                f"""DELETE FROM revision_log
-                    WHERE doc_id NOT IN ({placeholders})
-                       OR in_pkg != 1""", ids)
-            clean.execute(
-                f"DELETE FROM documents WHERE id NOT IN ({placeholders})",
-                ids)
-        else:
-            # 文献包: 全量, 但清到选中文献 (含修订史同步过滤)
-            clean.execute(
-                f"DELETE FROM lines WHERE doc_id NOT IN ({placeholders})",
-                ids)
-            clean.execute(
-                f"DELETE FROM blocks_fts WHERE doc_id NOT IN ({placeholders})",
-                ids)
-            clean.execute(
-                f"DELETE FROM revision_log WHERE doc_id NOT IN ({placeholders})",
-                ids)
-            clean.execute(
-                f"DELETE FROM documents WHERE id NOT IN ({placeholders})",
-                ids)
-        clean.commit()
-
         # 单布局收敛 (2026-10-31): 原件从 files/<id>/ 取; 归档仍为
         # uploads/ 平铺 (石渠耦合面不变)。包内 DB 的 linked_pdf 归一化
         # 为归档内实际文件名 (旧裸名语义, 包自洽); 无原件 → NULL+virtual
         # (changeset 包本就无文件, 全部落 virtual)。
-        # 扩展名错配 (md 文献挂 pdf 原件等): 按 {id}-{原件名} 归档,
-        # 旧消费者配不上 (与 10-28 前一致), 我方导入按裸名优先配对。
-        from .config import resolve_original_path
-        arc_map = {}   # doc_id → (归档名 | None, 原件路径)
         for r in doc_meta:
             p = resolve_original_path(collection, r["linked_pdf"])
             if p and p.is_file():
@@ -2360,54 +2341,55 @@ def _build_sqpkg(collection: str, ids, pkg_type: str = "doc"):
                     "original_virtual = 1 WHERE id = ?",
                     (r["id"],))
         clean.commit()
-
-        edits_count = clean.execute("SELECT COUNT(*) FROM revision_log"
-                                    ).fetchone()[0]
-        clean.close()
+        edits_count = clean.execute(
+            "SELECT COUNT(*) FROM revision_log").fetchone()[0]
     finally:
-        src_conn.close()
+        clean.close()
 
-    # 2. 打包 .sqpkg (tar.gz)
+    # 打包 .sqpkg (tar.gz)
     fd, tmp_tar = tempfile.mkstemp(suffix=".tar.gz")
     os.close(fd)
     doc_count = len(doc_meta)
-    with tarfile.open(tmp_tar, "w:gz") as tar:
-        tar.add(tmp_db, arcname="export.db")
-        manifest = {
-            "format": "sqpkg",
-            "version": 2,
-            "pkg_type": pkg_type,
-            "collection": collection,
-            "exported_at": _dt.datetime.now().isoformat(),
-            "doc_count": doc_count,
-            "edits_count": edits_count,
-            "docs": [
-                {
-                    "id": r["id"],
-                    "cite_key": r["cite_key"],
-                    "filename": r["filename"],
-                    "title": r["title"],
-                    "page_count": r["page_count"],
-                    "base_version": base_versions.get(r["id"], 0),
-                }
-                for r in doc_meta
-            ],
-            "filenames": [r["filename"] for r in doc_meta],
-        }
-        manifest_data = json.dumps(manifest, ensure_ascii=False, indent=2)
-        manifest_bytes = manifest_data.encode("utf-8")
-        mi = tarfile.TarInfo(name="manifest.json")
-        mi.size = len(manifest_bytes)
-        tar.addfile(mi, io.BytesIO(manifest_bytes))
-        if pkg_type == "doc":
-            for r in doc_meta:
-                arc, p = arc_map.get(r["id"], (None, None))
-                if arc and p:
-                    tar.add(str(p), arcname=f"uploads/{arc}")
+    try:
+        with tarfile.open(tmp_tar, "w:gz") as tar:
+            tar.add(db_path, arcname="export.db")
+            manifest = {
+                "format": "sqpkg",
+                "version": 2,
+                "pkg_type": pkg_type,
+                "collection": collection,
+                "exported_at": _dt.datetime.now().isoformat(),
+                "doc_count": doc_count,
+                "edits_count": edits_count,
+                "docs": [
+                    {
+                        "id": r["id"],
+                        "cite_key": r["cite_key"],
+                        "filename": r["filename"],
+                        "title": r["title"],
+                        "page_count": r["page_count"],
+                        "base_version": base_versions.get(r["id"], 0),
+                    }
+                    for r in doc_meta
+                ],
+                "filenames": [r["filename"] for r in doc_meta],
+            }
+            manifest_bytes = json.dumps(
+                manifest, ensure_ascii=False, indent=2).encode("utf-8")
+            mi = tarfile.TarInfo(name="manifest.json")
+            mi.size = len(manifest_bytes)
+            tar.addfile(mi, io.BytesIO(manifest_bytes))
+            if pkg_type == "doc":
+                for r in doc_meta:
+                    arc, p = arc_map.get(r["id"], (None, None))
+                    if arc and p:
+                        tar.add(str(p), arcname=f"uploads/{arc}")
+        with open(tmp_tar, "rb") as f:
+            content = f.read()
+    finally:
+        os.unlink(tmp_tar)
 
-    os.unlink(tmp_db)
-
-    # 3. 台账
+    # 台账
     conn = get_conn(collection)
     try:
         stamp = _dt.datetime.now().strftime("%Y%m%d")
@@ -2417,16 +2399,93 @@ def _build_sqpkg(collection: str, ids, pkg_type: str = "doc"):
         conn.execute(
             """INSERT INTO export_log (pkg_type, doc_ids, filename, edits_count)
                VALUES (?, ?, ?, ?)""",
-            (pkg_type, json.dumps(ids), fname, edits_count),
+            (pkg_type, json.dumps([r["id"] for r in doc_meta]), fname,
+             edits_count),
         )
         conn.commit()
     finally:
         conn.close()
+    return content, edits_count, fname
 
-    with open(tmp_tar, "rb") as f:
-        content = f.read()
-    os.unlink(tmp_tar)
-    return content, doc_count, edits_count, fname
+
+def _doc_meta_and_versions(conn, ids) -> tuple[list, dict]:
+    """查导出所需元信息与修订计数 (base_version)。"""
+    ph = ",".join("?" * len(ids))
+    meta = conn.execute(
+        f"""SELECT id, cite_key, filename, title, page_count, linked_pdf
+            FROM documents WHERE id IN ({ph}) ORDER BY id""", ids).fetchall()
+    versions = dict(
+        (r[0], r[1]) for r in conn.execute(
+            f"""SELECT doc_id, COUNT(*) FROM revision_log
+                WHERE doc_id IN ({ph}) GROUP BY doc_id""", ids).fetchall())
+    return meta, versions
+
+
+def _build_sqpkg(collection: str, ids, pkg_type: str = "doc"):
+    """构造单个 .sqpkg 包 (tar.gz bytes) + 台账。
+
+    返回 (content, doc_count, edits_count, filename)。
+    """
+    import datetime as _dt  # noqa: F401 — 保持与旧调用点签名兼容
+
+    if not ids:
+        raise ValueError("未选择文献")
+    if pkg_type not in ("doc", "changeset"):
+        raise ValueError("pkg_type 只接受 doc/changeset")
+    if not get_db_path(collection).exists():
+        raise FileNotFoundError("书架不存在")
+
+    placeholders = ",".join("?" * len(ids))
+
+    # 1. 整库 backup → 按包型清理成单包 DB
+    fd, tmp_db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    src_conn = get_conn(collection)
+    try:
+        backup_conn = sqlite3.connect(tmp_db)
+        with src_conn:
+            src_conn.backup(backup_conn)
+        backup_conn.close()
+
+        clean = sqlite3.connect(tmp_db)
+        clean.row_factory = sqlite3.Row
+        doc_meta, base_versions = _doc_meta_and_versions(clean, ids)
+
+        if pkg_type == "changeset":
+            clean.execute("DELETE FROM lines")
+            clean.execute("DELETE FROM blocks_fts")
+            clean.execute(
+                f"""DELETE FROM revision_log
+                    WHERE doc_id NOT IN ({placeholders})
+                       OR in_pkg != 1""", ids)
+            clean.execute(
+                f"DELETE FROM documents WHERE id NOT IN ({placeholders})",
+                ids)
+        else:
+            clean.execute(
+                f"DELETE FROM lines WHERE doc_id NOT IN ({placeholders})",
+                ids)
+            clean.execute(
+                f"DELETE FROM blocks_fts WHERE doc_id NOT IN ({placeholders})",
+                ids)
+            clean.execute(
+                f"DELETE FROM revision_log WHERE doc_id NOT IN ({placeholders})",
+                ids)
+            clean.execute(
+                f"DELETE FROM documents WHERE id NOT IN ({placeholders})",
+                ids)
+        clean.commit()
+        clean.close()
+    finally:
+        src_conn.close()
+
+    try:
+        content, edits_count, fname = _pack_archive(
+            collection, tmp_db, pkg_type, doc_meta, base_versions)
+    finally:
+        os.unlink(tmp_db)
+    return content, len(doc_meta), edits_count, fname
+
 
 
 @app.post("/collections/{collection}/docs/export-archive")
@@ -2506,10 +2565,33 @@ async def api_export_per_doc(collection: str, request: Request):
 
     def _work(report, jid):
         import zipfile
-        tmp_zip = None
+        tmp_zip = base_db = None
         used = {}
         items = []
         try:
+            # 一次整库备份, 之后逐篇从备份抽取 (2026-11-13 优化:
+            # 原 N 篇 = N 次整库 backup, 大书架线性膨胀)
+            report(2, '备份数据库…')
+            fd, base_db = tempfile.mkstemp(suffix='.db')
+            os.close(fd)
+            src = get_conn(collection)
+            try:
+                bak = sqlite3.connect(base_db)
+                with src:
+                    src.backup(bak)
+                bak.close()
+            finally:
+                src.close()
+
+            base = sqlite3.connect(base_db)
+            base.row_factory = sqlite3.Row
+            try:
+                meta_all, versions = _doc_meta_and_versions(
+                    base, [r['id'] for r in rows])
+            finally:
+                base.close()
+            meta_by_id = {m['id']: m for m in meta_all}
+
             fd, tmp_zip = tempfile.mkstemp(suffix='.zip')
             os.close(fd)
             total = len(rows)
@@ -2517,23 +2599,35 @@ async def api_export_per_doc(collection: str, request: Request):
                 for i, r in enumerate(rows, 1):
                     report(5 + int(90 * (i - 1) / total),
                            f'打包中 {i}/{total}…')
-                    base = _safe_pkg_name(r['title'], r['filename'], r['id'])
-                    n = used.get(base, 0) + 1
-                    used[base] = n
-                    arc = f'{base}.sqpkg' if n == 1 else f'{base}-{n}.sqpkg'
+                    name = _safe_pkg_name(r['title'], r['filename'], r['id'])
+                    n = used.get(name, 0) + 1
+                    used[name] = n
+                    arc = f'{name}.sqpkg' if n == 1 else f'{name}-{n}.sqpkg'
+                    sub_db = None
                     try:
-                        content, _dc, _ec, _fn = _build_sqpkg(
-                            collection, [r['id']], 'doc')
+                        m = meta_by_id.get(r['id'])
+                        if m is None:
+                            raise RuntimeError('文献不存在')
+                        sub_db = _extract_subset_db(base_db, [r['id']], 'doc')
+                        content, _ec, _fn = _pack_archive(
+                            collection, sub_db, 'doc', [m],
+                            {r['id']: versions.get(r['id'], 0)})
                     except Exception as e:      # 单篇失败不拖垮整批
                         items.append((arc, 'FAILED', f'{e}'))
                         continue
+                    finally:
+                        if sub_db:
+                            try:
+                                os.unlink(sub_db)
+                            except OSError:
+                                pass
                     zf.writestr(arc, content)
                     items.append((arc, 'OK', f'{len(content) // 1024} KB'))
                 listing = ['# 小書房逐篇导出清单',
                            f'书架: {collection}',
                            f'时间: {time.strftime("%Y-%m-%d %H:%M:%S")}',
                            f'篇数: {len(items)}', '']
-                listing += [f'{arc}	{st}	{extra}' for arc, st, extra in items]
+                listing += [f'{arc}\t{st}\t{extra}' for arc, st, extra in items]
                 zf.writestr('manifest.txt',
                             '\n'.join(listing).encode('utf-8'))
             report(100, '完成')
@@ -2553,6 +2647,12 @@ async def api_export_per_doc(collection: str, request: Request):
                 except OSError:
                     pass
             raise
+        finally:
+            if base_db:
+                try:
+                    os.unlink(base_db)
+                except OSError:
+                    pass
 
     jid = _bg_job_start_progress('perdoc-export', _work)
     return {'ok': True, 'job': jid, 'count': len(rows)}
