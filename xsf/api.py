@@ -41,6 +41,7 @@ from .search import (search, search_grouped, count_hits, get_block_lines,
 from .bib_utils import (
     generate_cite_key, sync_doc_fields, parse_bib_data, to_bibtex,
     parse_bib_entries, match_docs_to_entries, normalize_bib_type,
+    validate_web_urldate, is_web_source, ensure_web_urldate,
     BIB_TYPE_FIELDS, BIB_TYPE_LABELS, BIB_FIELD_LABELS,
 )
 from .ingest import (
@@ -1564,7 +1565,7 @@ async def api_update_doc(collection: str, doc_id: int,
             conn = get_conn(collection)
             try:
                 row = conn.execute(
-                    "SELECT cite_key, bib_type, bib_data, filename"
+                    "SELECT cite_key, bib_type, bib_data, filename, created_at"
                     " FROM documents WHERE id = ?",
                     (doc_id,),
                 ).fetchone()
@@ -1576,6 +1577,14 @@ async def api_update_doc(collection: str, doc_id: int,
                 cur_bib_type = bib_type if bib_type is not None else row["bib_type"]
                 cur_bib_data_str = bib_data if bib_data is not None else row["bib_data"]
                 cur_bib_data = parse_bib_data(cur_bib_data_str) or {}
+
+                # 网页来源保证有 urldate: 缺失自动填入库日期 (2026-11-13)
+                cur_bib_data, web_err = ensure_web_urldate(
+                    cur_bib_type, cur_bib_data, row["created_at"] or "")
+                if web_err:
+                    return JSONResponse(
+                        status_code=400, content={"error": web_err})
+                _orig_bib_data = parse_bib_data(row["bib_data"]) or {}
 
                 # 同步 title/author 冗余列
                 synced = sync_doc_fields(cur_bib_data)
@@ -1605,7 +1614,7 @@ async def api_update_doc(collection: str, doc_id: int,
                     updates.append("bib_type = ?")
                     params.append(cur_bib_type or None)
                     result_extra["bib_type"] = cur_bib_type
-                if bib_data is not None:
+                if bib_data is not None or cur_bib_data != _orig_bib_data:
                     updates.append("bib_data = ?")
                     params.append(json.dumps(cur_bib_data, ensure_ascii=False))
                     result_extra["bib_data"] = cur_bib_data
@@ -2157,11 +2166,22 @@ async def api_batch_patch(collection: str, request: Request):
                     "SELECT id, filename FROM documents"
                 ).fetchall()
             }
+            created = {
+                r["id"]: (r["created_at"] or "") for r in conn.execute(
+                    "SELECT id, created_at FROM documents"
+                ).fetchall()
+            }
             for u in updates:
                 doc_id = u.get("doc_id")
                 bib_type = u.get("bib_type", "")
                 bib_data = u.get("bib_data", {})
                 if not doc_id or not bib_data:
+                    continue
+                # 网页来源保证 urldate: 缺失填该篇入库日期 (2026-11-13)
+                bib_data, web_err = ensure_web_urldate(
+                    bib_type, bib_data, created.get(doc_id, ""))
+                if web_err:
+                    errors.append({"doc_id": doc_id, "error": web_err})
                     continue
                 ck = generate_cite_key(
                     bib_data, existing_keys,
@@ -4871,7 +4891,7 @@ async def proofread_page(
                 doc = conn.execute(
                     """SELECT id, title, author, filename, page_count, doc_type,
                               source_tags, bib_type, bib_data, cite_key, linked_pdf,
-                              lang, tri_rows, page_map
+                              lang, tri_rows, page_map, created_at
                        FROM documents WHERE id = ?""",
                     (doc_id,),
                 ).fetchone()
@@ -5085,6 +5105,7 @@ async def proofread_page(
                     source_tags=source_tags,
                     bib_type=bib_type,
                     bib_data=bib_data,
+                    default_urldate=(doc["created_at"] or "")[:10],
                     cards_map=cards_map,
                     doc_entities=doc_entities,
                     candidates=[dict(cr) for cr in cand_rows],
