@@ -41,7 +41,7 @@ from .search import (search, search_grouped, count_hits, get_block_lines,
 from .bib_utils import (
     generate_cite_key, sync_doc_fields, parse_bib_data, to_bibtex,
     parse_bib_entries, match_docs_to_entries, normalize_bib_type,
-    validate_web_urldate, is_web_source, ensure_web_urldate,
+    ensure_added,
     BIB_TYPE_FIELDS, BIB_TYPE_LABELS, BIB_FIELD_LABELS,
 )
 from .ingest import (
@@ -1578,13 +1578,13 @@ async def api_update_doc(collection: str, doc_id: int,
                 cur_bib_data_str = bib_data if bib_data is not None else row["bib_data"]
                 cur_bib_data = parse_bib_data(cur_bib_data_str) or {}
 
-                # 网页来源保证有 urldate: 缺失自动填入库日期 (2026-11-13)
-                cur_bib_data, web_err = ensure_web_urldate(
-                    cur_bib_type, cur_bib_data, row["created_at"] or "")
-                if web_err:
-                    return JSONResponse(
-                        status_code=400, content={"error": web_err})
                 _orig_bib_data = parse_bib_data(row["bib_data"]) or {}
+                # 入库日期显式化: 在已有书目数据上追加 added, 并清旧 urldate
+                # (2026-11-13 定稿: 不占用 biblatex urldate 语义, 不为空书目造 bib_data)
+                if cur_bib_data or _orig_bib_data:
+                    cur_bib_data = ensure_added(
+                        cur_bib_data, row["created_at"] or "",
+                        drop_urldate=True)
 
                 # 同步 title/author 冗余列
                 synced = sync_doc_fields(cur_bib_data)
@@ -2177,12 +2177,9 @@ async def api_batch_patch(collection: str, request: Request):
                 bib_data = u.get("bib_data", {})
                 if not doc_id or not bib_data:
                     continue
-                # 网页来源保证 urldate: 缺失填该篇入库日期 (2026-11-13)
-                bib_data, web_err = ensure_web_urldate(
-                    bib_type, bib_data, created.get(doc_id, ""))
-                if web_err:
-                    errors.append({"doc_id": doc_id, "error": web_err})
-                    continue
+                # 入库日期显式化 (同 PATCH 口径)
+                bib_data = ensure_added(
+                    bib_data, created.get(doc_id, ""), drop_urldate=True)
                 ck = generate_cite_key(
                     bib_data, existing_keys,
                     exclude_key=u.get("old_cite_key"),
@@ -5105,7 +5102,7 @@ async def proofread_page(
                     source_tags=source_tags,
                     bib_type=bib_type,
                     bib_data=bib_data,
-                    default_urldate=(doc["created_at"] or "")[:10],
+                    default_added=(doc["created_at"] or "")[:10],
                     cards_map=cards_map,
                     doc_entities=doc_entities,
                     candidates=[dict(cr) for cr in cand_rows],

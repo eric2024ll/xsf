@@ -32,7 +32,7 @@ BIB_TYPE_FIELDS = {
     "@unpublished": ["author", "title", "note", "month", "year"],
     "@manuscript": ["author", "title", "year", "institution"],
     "@misc": ["author", "title", "howpublished", "month", "year", "note"],
-    "@online": ["author", "title", "year", "url", "urldate"],
+    "@online": ["author", "title", "year", "url"],
 }
 
 BIB_TYPE_LABELS = {
@@ -80,54 +80,25 @@ def normalize_bib_type(bib_type: str, fields: dict | None = None) -> str:
     return BIB_TYPE_ALIASES.get(t, t)
 
 
-def is_web_source(bib_type: str, fields: dict | None = None) -> bool:
-    """是否网页来源文献: @online, 或未定类型但带 url 的散件。
+def ensure_added(fields: dict | None, created_at: str = "",
+                 drop_urldate: bool = False) -> dict:
+    """书目数据统一带上入库日期 added (用户 2026-11-13 定稿)。
 
-    判定刻意窄: 期刊/图书条目带 url 只在网上可获取, 不算「网页来源」,
-    不强制 urldate。
-    """
-    t = normalize_bib_type(bib_type or "", fields)
-    if t == "@online":
-        return True
-    f = fields or {}
-    return bool((f.get("url") or "").strip()) and t in (
-        "", "@misc", "@unpublished", "@manual", "@booklet")
-
-
-def validate_web_urldate(bib_type: str, fields: dict | None = None) -> str | None:
-    """网页来源文献强制携带浏览/下载日期 (用户要求, 2026-11-13)。
-
-    返回中文错误消息, 通过返回 None。
-    日期接受 YYYY / YYYY-MM / YYYY-MM-DD (biblatex urldate 语义)。
-    """
-    if not is_web_source(bib_type, fields):
-        return None
-    v = str((fields or {}).get("urldate") or "").strip()
-    if not v:
-        return "网页来源文献必须填写浏览/下载日期（urldate）"
-    if not re.match(r"^\d{4}(-\d{2})?(-\d{2})?$", v):
-        return "urldate 格式应为 YYYY-MM-DD（至少 YYYY）"
-    return None
-
-
-def ensure_web_urldate(bib_type: str, fields: dict | None,
-                       default_date: str = "") -> tuple[dict, str | None]:
-    """网页来源保证 urldate 有值: 缺失时用入库日期补 (用户 2026-11-13)。
-
-    返回 (fields, error)。default_date 通常传 documents.created_at。
+    - 只在已有书目数据上追加, 不为空书目文献造 bib_data
+    - 已有 added 不覆盖 (真实下载日期早于入库时人工改过的值保留)
+    - drop_urldate: 顺手清掉旧 urldate 键 (撤强制浏览日期方案的迁移用)
     """
     f = dict(fields or {})
-    if not is_web_source(bib_type, f):
-        return f, None
-    v = str(f.get("urldate") or "").strip()
-    if v:
-        if not re.match(r"^\d{4}(-\d{2})?(-\d{2})?$", v):
-            return f, "urldate 格式应为 YYYY-MM-DD（至少 YYYY）"
-        return f, None
-    filled = (default_date or "").strip()[:10]
-    if filled:
-        f["urldate"] = filled
-    return f, None
+    if not f:
+        return f          # 空书目不造 added
+    if drop_urldate:
+        f.pop("urldate", None)
+    if not (f.get("added") or "").strip():
+        day = (created_at or "").strip()[:10]
+        if day:
+            f["added"] = day
+    return f
+
 
 BIB_FIELD_LABELS = {
     "author": "作者",
@@ -145,7 +116,6 @@ BIB_FIELD_LABELS = {
     "booktitle": "所在文献标题",
     "chapter": "章节",
     "url": "URL",
-    "urldate": "浏览/下载日期",
     "doi": "DOI",
     "note": "备注",
     "abstract": "摘要",
@@ -155,6 +125,7 @@ BIB_FIELD_LABELS = {
     "organization": "组织",
     "howpublished": "出版方式",
     "keywords": "关键词",
+    "added": "入库日期",
 }
 
 

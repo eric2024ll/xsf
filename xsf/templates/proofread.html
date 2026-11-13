@@ -40,8 +40,6 @@
   border:1px solid var(--border); border-radius:4px; outline:none; background:var(--card-bg);
 }
 .bib-row input:focus { border-color:var(--primary); }
-/* 网页来源必填字段 (urldate) — 2026-11-13 */
-.bib-row input.bib-required { border-color:#c0392b; background:#fff8f7; }
 .bib-type-row { margin-bottom:6px; }
 .bib-citekey-row { margin-top:6px; padding-top:6px; border-top:1px dashed var(--border); }
 .bib-citekey-row .bib-citekey-val {
@@ -1251,7 +1249,7 @@ window.__bibOpts = {
   docTitle: (doc && doc.title) || '',
   citeKey: (doc && doc.cite_key) || '',
   readOnlyCiteKey: true,
-  defaultUrldate: {{ default_urldate | default('') | tojson }}
+  defaultAdded: {{ default_added | default('') | tojson }}
 };
 function initBib() {
   bibEditor.mount('proofBibPanel', window.__bibOpts);

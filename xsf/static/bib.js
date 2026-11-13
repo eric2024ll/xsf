@@ -20,7 +20,7 @@ var bibEditor = (function() {
     docTitle: '',
     citeKey: '',
     readOnlyCiteKey: false,
-    defaultUrldate: '',
+    defaultAdded: '',
     extraFields: [],
     panelEl: null,
   };
@@ -53,14 +53,12 @@ var bibEditor = (function() {
     _state.docTitle = opts.docTitle || '';
     _state.citeKey = opts.citeKey || '';
     _state.readOnlyCiteKey = !!opts.readOnlyCiteKey;
-    _state.defaultUrldate = opts.defaultUrldate || '';
+    _state.defaultAdded = opts.defaultAdded || '';
     _state.extraFields = [];
 
-    // 网页来源: urldate 默认填入库日期 (用户 2026-11-13)
-    if (_webByData(_state.type, _state.data)
-            && !((_state.data.urldate || '').trim())
-            && _state.defaultUrldate) {
-      _state.data.urldate = _state.defaultUrldate;
+    // 入库日期显式化 (2026-11-13): 面板预填, 保存书目时落库; 已有值不覆盖
+    if (!((_state.data.added || '').trim()) && _state.defaultAdded) {
+      _state.data.added = _state.defaultAdded;
     }
 
     var presetFields = (window.BIB_TYPE_FIELDS && window.BIB_TYPE_FIELDS[_state.type]) || [];
@@ -115,22 +113,16 @@ var bibEditor = (function() {
     if (!container) return;
     var presetFields = (window.BIB_TYPE_FIELDS && window.BIB_TYPE_FIELDS[_state.type]) || [];
     var all = presetFields.concat(_state.extraFields);
-    var web = _isWebSource();
     var html = '';
     for (var i = 0; i < all.length; i++) {
       var f = all[i];
       var isPreset = _data_has(presetFields, f);
-      // 网页来源文献: 浏览/下载日期必填 (2026-11-13 用户要求)
-      var required = (web && f === 'urldate');
-      var filled = !!((_state.data[f] || '').toString().trim());
-      var cls = required && !filled ? ' class="bib-required"' : '';
-      html += '<div class="bib-row" data-required="' + (required ? '1' : '0') + '"><label>'
-        + _escape(_label(f)) + (required ? ' <span style="color:#c0392b">*</span>' : '')
-        + '</label>';
-      html += '<input type="text"' + cls + ' data-bibkey="' + _escape(f) + '" value="'
+      var isAdded = (f === 'added');  // 入库日期: 系统事实, 可改不可删
+      html += '<div class="bib-row"><label>' + _escape(_label(f)) + '</label>';
+      html += '<input type="text" data-bibkey="' + _escape(f) + '" value="'
         + _escape(_state.data[f] || '') + '" placeholder="'
-        + _escape(required ? (_label(f) + '（网页来源必填，YYYY-MM-DD）') : _label(f)) + '">';
-      if (!isPreset) {
+        + _escape(isAdded ? '入库日期 YYYY-MM-DD（保存时自动补）' : _label(f)) + '">';
+      if (!isPreset && !isAdded) {
         html += '<span class="bib-field-del" onclick="bibEditor.removeField(\'' + _escape(f) + '\')">&times;</span>';
       }
       html += '</div>';
@@ -138,31 +130,9 @@ var bibEditor = (function() {
     container.innerHTML = html;
   }
 
-  // 与后端 is_web_source 同规则: @online, 或未定类型/散件带 url
-  function _webByData(type, data) {
-    if (type === '@online') return true;
-    var u = ((data && data.url) || '').trim();
-    return !!u && ['', '@misc', '@unpublished', '@manual', '@booklet'].indexOf(type) >= 0;
-  }
-
-  function _isWebSource() {
-    var data = _state.data || {};
-    try {  // 优先读当前输入值 (刚填的 url 尚未保存)
-      var inp = _state.panelEl.querySelector('input[data-bibkey="url"]');
-      if (inp && (inp.value || '').trim()) data = Object.assign({}, data, { url: inp.value.trim() });
-    } catch (e) {}
-    return _webByData(_state.type || '', data);
-  }
-
   function onTypeChange() {
     var sel = document.getElementById(_state.panelEl.id + '_typeSel');
     _state.type = sel.value;
-    // 切到网页来源且未填日期 → 预填入库日期
-    if (_webByData(_state.type, _state.data)
-            && !((_state.data.urldate || '').trim())
-            && _state.defaultUrldate) {
-      _state.data.urldate = _state.defaultUrldate;
-    }
     _renderFields();
   }
 
@@ -178,6 +148,7 @@ var bibEditor = (function() {
   }
 
   function removeField(key) {
+    if (key === 'added') return;  // 入库日期不可删
     _state.extraFields = _state.extraFields.filter(function(f) { return f !== key; });
     delete _state.data[key];
     _renderFields();
@@ -206,15 +177,6 @@ var bibEditor = (function() {
     if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
     if (msg) msg.textContent = '';
     var bibData = collectData();
-    // 网页来源: 缺失时后端用入库日期补 (2026-11-13), 前端只拦格式错
-    if (_webByData(_state.type || '', bibData)) {
-      var ud = (bibData.urldate || '').trim();
-      if (ud && !/^\d{4}(-\d{2})?(-\d{2})?$/.test(ud)) {
-        if (btn) { btn.disabled = false; btn.textContent = '保存元数据'; }
-        if (msg) msg.textContent = '✗ 浏览/下载日期格式应为 YYYY-MM-DD';
-        return;
-      }
-    }
     var body = new URLSearchParams();
     body.append('bib_type', _state.type);
     body.append('bib_data', JSON.stringify(bibData));

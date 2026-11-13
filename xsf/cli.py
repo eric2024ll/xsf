@@ -407,56 +407,55 @@ def _require_collection(name):
         sys.exit(1)
 
 
-def cmd_fix_urldate(args):
-    """网页来源文献缺 urldate 的, 用入库日期 (created_at) 显式回填 (2026-11-13)。
+def cmd_fix_added(args):
+    """存量迁移 (2026-11-13 定稿): 书目数据删 urldate + 补入库日期 added。
 
-    幂等: 已有 urldate 的不动。用户要求网页来源文献一律显式保存日期,
-    不依赖运行时从 created_at 推导。
+    背景: 网页来源强制 urldate 方案撤销 —— urldate 是 biblatex「访问日期」,
+    会被引文格式渲染; 入库日期改用自定义字段 added 一律显式保存。
+    只动已有书目数据的文献 (不给空书目造 bib_data); 幂等。
     """
-    from .bib_utils import is_web_source
+    from .bib_utils import ensure_added
 
     colls = ([args.collection] if getattr(args, 'collection', None)
              else list_collections())
     if not colls:
         print('暂无书架')
         return
-    grand = 0
+    g_drop = g_fill = 0
     for coll in colls:
         _require_collection(coll)
         conn = get_conn(coll)
-        filled = web = skipped = 0
+        dropped = filled = skipped = 0
         try:
             rows = conn.execute(
-                "SELECT id, bib_type, bib_data, created_at FROM documents"
-            ).fetchall()
+                "SELECT id, bib_data, created_at FROM documents").fetchall()
             for r in rows:
                 try:
                     data = json.loads(r['bib_data'] or '{}')
                 except (json.JSONDecodeError, TypeError):
-                    data = {}
-                if not isinstance(data, dict):
-                    data = {}
-                if not is_web_source(r['bib_type'] or '', data):
-                    continue
-                web += 1
-                if (data.get('urldate') or '').strip():
-                    continue
-                day = (r['created_at'] or '').strip()[:10]
-                if not day:
+                    data = None
+                if not isinstance(data, dict) or not data:
                     skipped += 1
                     continue
-                data['urldate'] = day
+                new_data = ensure_added(data, r['created_at'] or '',
+                                        drop_urldate=True)
+                if new_data == data:
+                    continue
+                if 'urldate' in data:
+                    dropped += 1
+                if not (data.get('added') or '').strip():
+                    filled += 1
                 conn.execute(
                     "UPDATE documents SET bib_data = ? WHERE id = ?",
-                    (json.dumps(data, ensure_ascii=False), r['id']))
-                filled += 1
+                    (json.dumps(new_data, ensure_ascii=False), r['id']))
             conn.commit()
         finally:
             conn.close()
-        print(f'{coll}: 网页来源 {web} 篇, 回填 urldate {filled} 篇'
-              + (f', 无入库日期跳过 {skipped} 篇' if skipped else ''))
-        grand += filled
-    print(f'合计回填 {grand} 篇')
+        note = f', 无书目跳过 {skipped} 篇' if skipped else ''
+        print(f'{coll}: 删 urldate {dropped} 篇, 补 added {filled} 篇{note}')
+        g_drop += dropped
+        g_fill += filled
+    print(f'合计: 删 urldate {g_drop} 篇, 补 added {g_fill} 篇')
 
 
 def cmd_gen(args):
@@ -584,8 +583,8 @@ def main():
     sub.add_parser('doctor', help='环境自检: 数据目录/书架一致性/孤儿目录/多实例')
 
     p_fix = sub.add_parser(
-        'fix-urldate',
-        help='网页来源文献缺浏览/下载日期的, 用入库日期显式回填 (幂等)')
+        'fix-added',
+        help='存量迁移: 书目数据删 urldate + 补入库日期 added (幂等)')
     p_fix.add_argument('-c', '--collection', help='限定书架 (缺省全部)')
 
     p_gen = sub.add_parser('gen', help='LLM 生成: 卡片候选/知识地图/实体库')
@@ -633,7 +632,7 @@ def main():
         'init': cmd_init, 'add': cmd_add, 'search': cmd_search,
         'context': cmd_context, 'remove': cmd_remove, 'stats': cmd_stats,
         'doctor': cmd_doctor, 'gen': cmd_gen, 'autofill': cmd_autofill,
-        'fix-urldate': cmd_fix_urldate,
+        'fix-added': cmd_fix_added,
     }
     fn = dispatch.get(args.command)
     if fn:
