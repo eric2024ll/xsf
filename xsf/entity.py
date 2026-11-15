@@ -431,7 +431,7 @@ def ingest_doc(conn, doc_id, provider_id=None):
             "WHERE doc_id = ? ORDER BY page_num, line_num", (doc_id,)):
         k = (r['page_num'], r['block_num'])
         block_txt.setdefault(k, []).append(r['text'] or '')
-    block_norm = {k: re.sub(r'\s+', '', ''.join(v))
+    block_norm = {k: re.sub(r'\s+', '', ''.join(v)).casefold()
                   for k, v in block_txt.items()}
     conn.execute("DELETE FROM entity_mentions WHERE doc_id = ?", (doc_id,))
     n = 0
@@ -439,7 +439,7 @@ def ingest_doc(conn, doc_id, provider_id=None):
         eid = resolved.get(m['surface'])
         if not eid:
             continue
-        s_key = _norm(m['surface'])
+        s_key = _norm(m['surface']).casefold()
         hits = []
         if not m.get('block_num') and len(s_key) >= 2:
             for k, t in block_norm.items():
