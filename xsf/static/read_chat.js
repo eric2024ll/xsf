@@ -6,7 +6,7 @@
   'use strict';
   if (!window.__READ || !window.__READ.enabled) return;
 
-  var GEOM_KEY = 'read_chat_geom', OPEN_KEY = 'read_chat_open';
+  var GEOM_KEY = 'read_chat_geom';
   var el = null, ball = null, bodyEl = null, taEl = null;
   var vision = window.__READ.vision || [];
   var history = [];
@@ -24,7 +24,9 @@
   document.addEventListener('DOMContentLoaded', function () {
     buildDom();
     loadHistory();
-    if (sessionStorage.getItem(OPEN_KEY) === '1') open();
+    // 默认收起: 打开细读页时不自动展开 AI 窗口 (2026-11-19 用户裁定),
+    // 只保留右下角悬浮球; 需要时点球或图上的「问 AI」按钮展开。
+    close();
   });
 
   // ── DOM ──────────────────────────────────
@@ -77,7 +79,6 @@
   function open() {
     el.style.display = 'flex';
     ball.style.display = 'none';
-    sessionStorage.setItem(OPEN_KEY, '1');
     updateCtxHint();
     bodyEl.scrollTop = bodyEl.scrollHeight;
     taEl.focus();
@@ -85,7 +86,6 @@
   function close() {
     el.style.display = 'none';
     ball.style.display = 'block';
-    sessionStorage.setItem(OPEN_KEY, '0');
   }
   window.__readChatOpen = open;
 
