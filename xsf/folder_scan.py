@@ -4,7 +4,7 @@
   - 新 PDF/MD 自动入库 (秒级解析, 文献列表立即可见)
   - PDF 不区分 born-digital 一律入自动 OCR 队列 (2026-09-04 决策),
     OCR worker 单线程串行回填 (与手动 reocr 走同一 job store / 执行器);
-    幂等闸门: doc_type='ocr' 即出队
+    幂等闸门: 已有任一行文本即出队 (doc_type 不作凭证, 2026-11-20 修)
   - 投放重复 (filename 已在 DB) 跳过并记录到状态角标; 新入库文件若与
     其它书架同名, 记录跨书架警告 (仅提醒不阻断, 跨书架共存是设计行为)
 
@@ -224,19 +224,24 @@ def _query(collection: str, sql: str, params=()):
 def _pending_ocr(collection: str) -> list:
     """尚无可用文本的 PDF, 供入队.
 
-    判定 = 已有文本则不待 OCR: native 管线 (born-digital/pdf_native)
-    已提取出行的 pdf 不入队 (2026-10-21 决策, 修正 2026-09-04
-    「PDF 一律入队」— 实测自动 OCR 反而覆盖更优的原生文本层);
-    native 但零行的 (误分流/提取失败) 仍入队补救.
-    天然幂等: OCR 完成后 doc_type→'ocr' 不再返回.
+    判定 = 只要一行文本都没有就待 OCR, 不看 doc_type (2026-11-20 修):
+    旧闸门 `doc_type != 'ocr'` 把「标了 ocr 却零行」的文献永久挡在队列外
+    —— OCR 调用返回空块 / 中途失败仍在收尾时写 doc_type='ocr' 都会留下
+    这种文档 (生产实测 13 本, 无一能再入队). doc_type 是管线标签不是成功
+    凭证, 唯一可信的成功信号是有行.
+    已有文本的一律不入队 (2026-10-21 决策, 修正 2026-09-04「PDF 一律
+    入队」— 实测自动 OCR 反而覆盖更优的原生文本层).
+    幂等: OCR 出文本后不再返回; 反复零结果的由 MAX_OCR_ATTEMPTS 兜底.
+    页级失败 (ocr_page_state.status='error') 也重新排队: 断点续跑只补
+    错误页, 已有文本页跳过 (2026-11-20).
     """
     rows = _query(collection, """
         SELECT d.id, d.filename, d.page_count
         FROM documents d
-        WHERE d.doc_type != 'ocr' AND d.filename LIKE '%.pdf'
-          AND NOT (d.doc_type IN ('born-digital', 'pdf_native')
-                   AND EXISTS (SELECT 1 FROM lines l
-                               WHERE l.doc_id = d.id))
+        WHERE d.filename LIKE '%.pdf'
+          AND (NOT EXISTS (SELECT 1 FROM lines l WHERE l.doc_id = d.id)
+               OR EXISTS (SELECT 1 FROM ocr_page_state s
+                          WHERE s.doc_id = d.id AND s.status = 'error'))
     """)
     return [{'id': r['id'], 'filename': r['filename'],
              'pages': r['page_count']} for r in rows]
@@ -289,29 +294,42 @@ def _scan_cycle() -> None:
     ocr_enabled = _env_int('XSF_SCAN_OCR', 1) != 0
     _warn_orphan_dirs()
     for coll in list_collections():
-        new_records, errors, dups = _ingest_new(coll)
-        pending = _pending_ocr(coll)
-        if ocr_enabled:
-            _enqueue_ocr(coll, pending)
-        cross_warn = [
-            {'filename': r['filename'], 'also_in': r['cross']}
-            for r in new_records if r.get('cross')]
-        missing = _missing(coll)
-        with _status_lock:
-            _status[coll] = {
-                'last_run': time.strftime('%H:%M:%S'),
-                'added': len(new_records),
-                'new': [r['filename'] for r in new_records[:5]],
-                'dup_total': len(dups),
-                'dups': dups[:5],
-                'cross_warn': cross_warn[:3],
-                'pending_ocr': pending,
-                'missing': [m['filename'] for m in missing[:10]],
-                'missing_total': len(missing),
-                'errors': [
-                    {'filename': e['filename'], 'error': e['error']}
-                    for e in errors[:3]],
-            }
+        # 单书架失败不断整轮 (2026-11-20: 一次 database is locked 会让所有
+        # 书架当轮都不入队, 表现就是「扫描了但没排 OCR」)
+        try:
+            _scan_collection(coll, ocr_enabled)
+        except Exception as e:
+            logger.warning("扫描周期异常 coll=%s: %s", coll, e)
+            with _status_lock:
+                st = _status.setdefault(coll, {})
+                st['errors'] = (st.get('errors') or [])[-2:] + [
+                    {'filename': '(扫描周期)', 'error': str(e)}]
+
+
+def _scan_collection(coll: str, ocr_enabled: bool) -> None:
+    new_records, errors, dups = _ingest_new(coll)
+    pending = _pending_ocr(coll)
+    if ocr_enabled:
+        _enqueue_ocr(coll, pending)
+    cross_warn = [
+        {'filename': r['filename'], 'also_in': r['cross']}
+        for r in new_records if r.get('cross')]
+    missing = _missing(coll)
+    with _status_lock:
+        _status[coll] = {
+            'last_run': time.strftime('%H:%M:%S'),
+            'added': len(new_records),
+            'new': [r['filename'] for r in new_records[:5]],
+            'dup_total': len(dups),
+            'dups': dups[:5],
+            'cross_warn': cross_warn[:3],
+            'pending_ocr': pending,
+            'missing': [m['filename'] for m in missing[:10]],
+            'missing_total': len(missing),
+            'errors': [
+                {'filename': e['filename'], 'error': e['error']}
+                for e in errors[:3]],
+        }
 
 
 def _scan_loop(interval: int) -> None:
@@ -344,9 +362,13 @@ def _ocr_worker() -> None:
                 continue
             pdf_path = get_original_file(collection, doc_id)
             if not pdf_path:
+                # 计次: 否则每轮扫描都会重新入队同一个缺原件文档, 刷日志
+                key = (collection, doc_id)
+                n = _ocr_attempts.get(key, 0) + 1
+                _ocr_attempts[key] = n
                 logger.warning("自动 OCR 跳过 coll=%s doc=%s: 无原件 "
-                               "(单布局 files/<id>/, 2026-10-31)",
-                               collection, doc_id)
+                               "(单布局 files/<id>/, 2026-10-31) (%s/%s)",
+                               collection, doc_id, n, MAX_OCR_ATTEMPTS)
                 continue
             src = pymupdf.open(pdf_path)
             total_pages = len(src)
@@ -365,11 +387,17 @@ def _ocr_worker() -> None:
             job = _reocr_get(collection, doc_id)
             if job and job.get('status') == 'done_with_errors':
                 # 页级断点: 大部分页已入库 (doc_type='ocr'), 失败页明细在
-                # ocr_page_state, 重启后重跑会自动跳过 done 页只补失败页
+                # ocr_page_state, 重跑会自动跳过 done 页只补失败页.
+                # 也计次: 失败页会让 _pending_ocr 每轮重新入队, 不计次就
+                # 每 2 分钟重跑一次 (2026-11-20).
+                key = (collection, doc_id)
+                n = _ocr_attempts.get(key, 0) + 1
+                _ocr_attempts[key] = n
                 logger.warning(
-                    "自动 OCR 部分完成 coll=%s doc=%s 失败页=%s (明细见 ocr_page_state)",
-                    collection, doc_id, job.get('failed_pages'))
-                _ocr_attempts.pop((collection, doc_id), None)
+                    "自动 OCR 部分完成 coll=%s doc=%s 失败页=%s (明细见 "
+                    "ocr_page_state, 第 %s/%s 次)",
+                    collection, doc_id, job.get('failed_pages'),
+                    n, MAX_OCR_ATTEMPTS)
             elif job and job.get('status') == 'error':
                 key = (collection, doc_id)
                 n = _ocr_attempts.get(key, 0) + 1

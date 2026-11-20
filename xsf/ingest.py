@@ -239,6 +239,15 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
     finally:
         conn.close()
 
+    # 零行不是成功: provider 回空块时旧实现静默入库并标 doc_type='ocr',
+    # 文档从此既没文本也不再入自动 OCR 队列 (2026-11-20 生产 13 本)。
+    # 保留文档 (元数据/原件已落) 但显式告警, 并让扫描队列按「零行」重排。
+    if total_lines == 0:
+        logger.warning(
+            'ingest_scanned_pdf 零行 coll=%s doc=%s: OCR 未返回任何块 '
+            '(%s 页, provider=%s) — 已标待自动 OCR, 请检查 provider 配置',
+            collection, doc_id, page_count, provider_id or 'default')
+
     return {
         'doc_id': doc_id,
         'pages': page_count,
@@ -246,6 +255,7 @@ def ingest_scanned_pdf(pdf_path: str | Path, collection: str,
         'lines': total_lines,
         'title': title,
         'doc_type': 'ocr',
+        'empty_ocr': total_lines == 0,
     }
 
 
