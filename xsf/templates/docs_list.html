@@ -130,6 +130,7 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
     </div>
     <button class="btn" onclick="openBibMatch()" id="btnBibMatch">批量导入 BibTeX</button>
     <button class="btn" onclick="btOpen()" id="btnBatchTags">批量标签</button>
+    <button class="btn" onclick="tfOpen()">转移到书架…</button>
     <div class="wiki-btn-wrap">
       <button class="btn" id="wikiGenBtn" onclick="wikiGenerate()">生成知识地图</button>
       <a class="btn" id="wikiViewLink" href="#" style="display:none;">查看知识地图</a>
@@ -228,6 +229,34 @@ td .badge.mastersthesis{background:#e8f2f8;color:#2c7da0;}
       </div>
       <div style="text-align:right;">
         <button class="btn" onclick="btApply()">应用</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="bm-overlay" id="tfOverlay">
+  <div class="bm-modal" style="max-width:520px;">
+    <div class="bm-header">
+      <span class="bm-title">转移文献到另一书架（已选 <span id="tfCount">0</span> 篇）</span>
+      <button class="bm-close" onclick="tfClose()">&times;</button>
+    </div>
+    <div class="bm-body">
+      <div class="bm-section">
+        <div class="bm-section-title">目标书架</div>
+        <select id="tfTarget" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;box-sizing:border-box;" onchange="tfTargetChange()"></select>
+        <input type="text" id="tfNewName" placeholder="新书架名" style="display:none;width:100%;margin-top:6px;padding:6px 8px;border:1px solid var(--border);border-radius:5px;font-size:0.85rem;box-sizing:border-box;">
+      </div>
+      <div class="bm-section" id="tfProbeBox" style="display:none;">
+        <div class="bm-section-title">预检结果</div>
+        <div id="tfProbeResult" style="font-size:0.82rem;line-height:1.7;"></div>
+      </div>
+      <div style="font-size:0.78rem;color:var(--text-muted);margin:6px 0 10px;line-height:1.6;">
+        真移动：文本、批注、卡片、原件与实体定义随文献转移；实体提及不搬（可在目标书架重算）。
+        cite_key 冲突跳过、文件名冲突自动改名。复制校验通过后删除源文献，删前自动备份源库。
+      </div>
+      <div style="text-align:right;">
+        <button class="btn" onclick="tfProbe()" id="tfProbeBtn">检查冲突</button>
+        <button class="btn" onclick="tfRun()" id="tfRunBtn" disabled style="margin-left:8px;">确认转移</button>
       </div>
     </div>
   </div>
@@ -753,6 +782,115 @@ function pollPerDocJob(jid){
         window.location.href = res.download;
       }else{
         showMsg('导出失败: ' + (j.error || ''), 'err');
+      }
+    }catch(e){ /* 网络抖动继续 */ }
+  }, 1500);
+}
+
+// ── 文献批量转移 (2026-11-22) ──
+let tfIds = [];
+let tfProbed = false;
+
+async function tfOpen(){
+  const ids = getSelectedIds(); if(!ids) return;
+  tfIds = ids; tfProbed = false;
+  document.getElementById('tfCount').textContent = ids.length;
+  document.getElementById('tfProbeBox').style.display = 'none';
+  document.getElementById('tfRunBtn').disabled = true;
+  document.getElementById('tfNewName').style.display = 'none';
+  document.getElementById('tfNewName').value = '';
+  const sel = document.getElementById('tfTarget');
+  sel.innerHTML = '<option value="">加载中…</option>';
+  document.getElementById('tfOverlay').style.display = 'flex';
+  try{
+    const r = await fetch('/api/stats'); const d = await r.json();
+    let h = '<option value="">— 选择目标书架 —</option>';
+    (d.collections || []).forEach(c => {
+      if(c.name !== collection) h += '<option value="' + escapeHtml(c.name) + '">' + escapeHtml(c.name) + '（' + c.count + ' 篇）</option>';
+    });
+    h += '<option value="__new__">＋ 新建书架…</option>';
+    sel.innerHTML = h;
+  }catch(e){ sel.innerHTML = '<option value="">加载失败</option>'; }
+}
+
+function tfClose(){ document.getElementById('tfOverlay').style.display = 'none'; }
+
+function tfTargetName(){
+  const v = document.getElementById('tfTarget').value;
+  if(v === '__new__') return document.getElementById('tfNewName').value.trim();
+  return v;
+}
+
+function tfTargetChange(){
+  const isNew = document.getElementById('tfTarget').value === '__new__';
+  document.getElementById('tfNewName').style.display = isNew ? 'block' : 'none';
+  tfProbed = false;
+  document.getElementById('tfRunBtn').disabled = true;
+  document.getElementById('tfProbeBox').style.display = 'none';
+}
+
+async function tfProbe(){
+  const target = tfTargetName();
+  if(!target){ alert('请选择或输入目标书架'); return; }
+  const btn = document.getElementById('tfProbeBtn');
+  btn.disabled = true; btn.textContent = '检查中…';
+  try{
+    const r = await fetch('/collections/' + encodeURIComponent(collection) + '/docs/transfer/probe',
+      {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids: tfIds, target})});
+    const d = await r.json();
+    if(!r.ok){ alert(d.error || '预检失败'); return; }
+    let h = '目标「' + escapeHtml(d.target) + '」' + (d.target_exists ? '已存在' : '<b>将新建</b>') +
+            '：可转移 <b>' + d.movable + '</b> 篇';
+    if(d.skipped.length){
+      h += '<br><span style="color:#c0392b;">跳过 ' + d.skipped.length + ' 篇（cite_key 冲突，留在源书架）：</span><br>' +
+           d.skipped.map(s => '　· ' + escapeHtml(s.filename)).join('<br>');
+    }
+    if(d.renamed.length){
+      h += '<br>改名 ' + d.renamed.length + ' 篇（文件名冲突）：<br>' +
+           d.renamed.map(s => '　· ' + escapeHtml(s.filename) + ' → ' + escapeHtml(s.newname)).join('<br>');
+    }
+    document.getElementById('tfProbeResult').innerHTML = h;
+    document.getElementById('tfProbeBox').style.display = 'block';
+    tfProbed = true;
+    document.getElementById('tfRunBtn').disabled = d.movable === 0;
+  }catch(e){ alert('预检失败: ' + e.message); }
+  finally{ btn.disabled = false; btn.textContent = '检查冲突'; }
+}
+
+async function tfRun(){
+  if(!tfProbed){ alert('请先检查冲突'); return; }
+  const target = tfTargetName();
+  if(!confirm('确认把 ' + tfIds.length + ' 篇文献转移到「' + target + '」？\n\n复制校验通过后会删除源文献（删前自动备份源库）。')) return;
+  tfClose();
+  showMsg('正在提交转移…', 'ok');
+  document.body.style.cursor = 'wait';
+  try{
+    const r = await fetch('/collections/' + encodeURIComponent(collection) + '/docs/transfer',
+      {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids: tfIds, target})});
+    const d = await r.json();
+    if(!r.ok || !d.ok){ showMsg(d.error || '转移失败', 'err'); document.body.style.cursor = ''; return; }
+    pollTransferJob(d.job);
+  }catch(e){ showMsg('转移失败: ' + e.message, 'err'); document.body.style.cursor = ''; }
+}
+
+function pollTransferJob(jid){
+  const timer = setInterval(async function(){
+    try{
+      const r = await fetch('/jobs/' + jid); const j = await r.json();
+      const p = j.progress || {pct:0, text:''};
+      if(j.status === 'running'){ showMsg('转移中… ' + (p.text || ''), 'ok'); return; }
+      clearInterval(timer);
+      document.body.style.cursor = '';
+      if(j.status === 'done'){
+        const res = j.result || {};
+        let msg = '转移完成：' + res.moved + ' 篇 → 「' + res.target + '」';
+        if(res.skipped && res.skipped.length) msg += '，跳过 ' + res.skipped.length + ' 篇';
+        if(res.entities_added) msg += '，新增实体 ' + res.entities_added + ' 个';
+        msg += '。实体提及请在目标书架重算。';
+        showMsg(msg, 'ok');
+        setTimeout(() => location.reload(), 1500);
+      }else{
+        showMsg('转移失败: ' + (j.error || ''), 'err');
       }
     }catch(e){ /* 网络抖动继续 */ }
   }, 1500);

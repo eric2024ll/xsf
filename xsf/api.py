@@ -27,7 +27,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import (
-    get_collections_dir, get_upload_dir,
+    get_collections_dir, get_upload_dir, get_data_dir,
     list_collections, get_db_path, validate_collection_name,
     feature_enabled, set_feature,
 )
@@ -3378,6 +3378,410 @@ async def api_import_shelf_run(stage_id: str, request: Request):
 
     jid = _bg_job_start_progress('shelf-import', _work)
     return {"ok": True, "job": jid, "collection": coll, "mode": mode}
+
+
+# ════════════════════════════════════════════════════════════
+# 文献批量转移 (2026-11-22): 书架间库内直搬 (真移动)
+#   范围: 14 表 (本体 8 + 批注 3 + 卡片 3) + 原件 + 实体定义
+#   不搬: entity_mentions / entity_reports (可重算, 源端删除);
+#         entity_links (M1 空表)
+#   冲突: cite_key 命中 → 跳过; filename 命中 → 改名 _imported
+#   安全: 目标整批事务 → 校验 → 备份源库 → 才删源; 书架互斥
+#   设计: mem 小书房 · 用户需求 2026-11-22 (Plan 讨论定稿)
+# ════════════════════════════════════════════════════════════
+
+_TRANSFER_SIMPLE_TABLES = ('lines', 'revision_log', 'annotations',
+                           'read_annotations', 'read_chat',
+                           'ocr_candidates', 'card_candidates')
+_TRANSFER_PK_TABLES = ('page_regions', 'ocr_page_state')
+
+
+def _transfer_cols(conn, table):
+    return [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')]
+
+
+def _table_exists(conn, table) -> bool:
+    return bool(conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,)).fetchone())
+
+
+def _ensure_transfer_schema(src, dst):
+    """目标补齐懒建表: read_annotations/read_chat (细读未启用则无);
+    annotations 为遗留页批注表 (代码已迁 read_annotations), 源有则目标建。"""
+    from .read import ensure_read_tables
+    ensure_read_tables(dst)
+    if _table_exists(src, 'annotations') and not _table_exists(dst, 'annotations'):
+        dst.execute("""CREATE TABLE IF NOT EXISTS annotations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_id INTEGER NOT NULL,
+            page_num INTEGER NOT NULL,
+            x REAL, y REAL, text TEXT,
+            created_at TEXT DEFAULT (datetime('now')))""")
+    dst.commit()
+
+
+def _copy_doc_rows(src, dst, old_id, new_id):
+    """复制文献关联的 14 张表, 重映射 doc_id / card_id / transcript_id。
+
+    列白名单 = 源∩目标 (目标旧库缺列时不炸, 但 init_db 已先迁移)。
+    """
+    def _copy(table, strip_id=True, remap=None):
+        if not _table_exists(src, table) or not _table_exists(dst, table):
+            return
+        scols = _transfer_cols(src, table)
+        dset = set(_transfer_cols(dst, table))
+        cols = [c for c in scols if c in dset and (c != 'id' or not strip_id)]
+        ph = ','.join('?' * len(cols))
+        rows = src.execute(
+            f'SELECT * FROM "{table}" WHERE doc_id = ?', (old_id,)).fetchall()
+        for r in rows:
+            vals = []
+            for c in cols:
+                v = r[c]
+                if c == 'doc_id':
+                    v = new_id
+                elif remap and c in remap:
+                    v = remap[c].get(v)
+                vals.append(v)
+            dst.execute(
+                f'INSERT INTO "{table}" ({",".join(cols)}) VALUES ({ph})',
+                vals)
+
+    for t in _TRANSFER_SIMPLE_TABLES:
+        _copy(t)
+    for t in _TRANSFER_PK_TABLES:
+        _copy(t, strip_id=False)
+    _copy('blocks_fts', strip_id=False)
+
+    # 两级映射: manual_transcripts.id → transcript_pages.transcript_id
+    tid_map = {}
+    if (_table_exists(src, 'manual_transcripts')
+            and _table_exists(dst, 'manual_transcripts')):
+        tcols = [c for c in _transfer_cols(src, 'manual_transcripts')
+                 if c != 'id' and c in set(_transfer_cols(dst, 'manual_transcripts'))]
+        for r in src.execute(
+                'SELECT * FROM manual_transcripts WHERE doc_id = ?',
+                (old_id,)).fetchall():
+            vals = [new_id if c == 'doc_id' else r[c] for c in tcols]
+            cur = dst.execute(
+                f'INSERT INTO manual_transcripts ({",".join(tcols)}) '
+                f'VALUES ({",".join("?" * len(tcols))})', vals)
+            tid_map[r['id']] = cur.lastrowid
+        if tid_map and _table_exists(src, 'transcript_pages'):
+            pcols = [c for c in _transfer_cols(src, 'transcript_pages')
+                     if c != 'id' and c in set(_transfer_cols(dst, 'transcript_pages'))]
+            ph = ','.join('?' * len(pcols))
+            for r in src.execute(
+                    f'SELECT * FROM transcript_pages WHERE transcript_id IN '
+                    f'({",".join("?" * len(tid_map))})',
+                    list(tid_map)).fetchall():
+                vals = [tid_map.get(r[c]) if c == 'transcript_id' else r[c]
+                        for c in pcols]
+                dst.execute(
+                    f'INSERT INTO transcript_pages ({",".join(pcols)}) '
+                    f'VALUES ({ph})', vals)
+
+    # 两级映射: doc_cards.id → cards_fts.card_id
+    if not (_table_exists(src, 'doc_cards') and _table_exists(dst, 'doc_cards')):
+        return
+    cid_map = {}
+    ccols = [c for c in _transfer_cols(src, 'doc_cards')
+             if c != 'id' and c in set(_transfer_cols(dst, 'doc_cards'))]
+    for r in src.execute(
+            'SELECT * FROM doc_cards WHERE doc_id = ?', (old_id,)).fetchall():
+        vals = [new_id if c == 'doc_id' else r[c] for c in ccols]
+        cur = dst.execute(
+            f'INSERT INTO doc_cards ({",".join(ccols)}) '
+            f'VALUES ({",".join("?" * len(ccols))})', vals)
+        cid_map[r['id']] = cur.lastrowid
+    fcols = [c for c in _transfer_cols(src, 'cards_fts')
+             if c in set(_transfer_cols(dst, 'cards_fts'))]
+    fph = ','.join('?' * len(fcols))
+    for r in src.execute(
+            'SELECT * FROM cards_fts WHERE doc_id = ?', (old_id,)).fetchall():
+        vals = []
+        for c in fcols:
+            v = r[c]
+            if c == 'doc_id':
+                v = new_id
+            elif c == 'card_id':
+                v = cid_map.get(v)   # 孤儿卡片行不搬 (card_id 置 NULL)
+            vals.append(v)
+        dst.execute(
+            f'INSERT INTO cards_fts ({",".join(fcols)}) VALUES ({fph})', vals)
+
+
+def _copy_doc_entities(src, dst, old_id) -> int:
+    """只搬实体定义 (按 canonical+aliases 匹配去重), 不搬提及。"""
+    eids = [r[0] for r in src.execute(
+        'SELECT DISTINCT entity_id FROM entity_mentions WHERE doc_id = ?',
+        (old_id,)).fetchall()]
+    added = 0
+    ecols = [c for c in _transfer_cols(src, 'entities') if c != 'id']
+    for eid in eids:
+        er = src.execute('SELECT * FROM entities WHERE id = ?',
+                         (eid,)).fetchone()
+        if er is None:
+            continue
+        names = [er['canonical']]
+        try:
+            aliases = json.loads(er['aliases'] or '[]')
+            if isinstance(aliases, list):
+                names += [str(a) for a in aliases if a]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        names = [n for n in names if n]
+        if not names:
+            continue
+        ph = ','.join('?' * len(names))
+        hit = dst.execute(
+            f'SELECT entity_id FROM entity_names WHERE name IN ({ph})',
+            names).fetchone()
+        if hit:
+            continue
+        cur = dst.execute(
+            f'INSERT INTO entities ({",".join(ecols)}) '
+            f'VALUES ({",".join("?" * len(ecols))})',
+            [er[c] for c in ecols])
+        for n in names:
+            dst.execute(
+                'INSERT INTO entity_names (entity_id, name) VALUES (?, ?)',
+                (cur.lastrowid, n))
+        added += 1
+    return added
+
+
+def _unique_filename(dst, filename: str) -> str:
+    """目标库 filename 撞车时改名 _imported, 再撞加序号。"""
+    if not dst.execute('SELECT 1 FROM documents WHERE filename = ?',
+                       (filename,)).fetchone():
+        return filename
+    stem, dot, ext = filename.rpartition('.')
+    base = f'{stem}_imported' if dot else f'{filename}_imported'
+    suffix = f'.{ext}' if dot else ''
+    cand = base + suffix
+    n = 2
+    while dst.execute('SELECT 1 FROM documents WHERE filename = ?',
+                      (cand,)).fetchone():
+        cand = f'{base}_{n}{suffix}'
+        n += 1
+    return cand
+
+
+def _delete_doc_full(conn, collection: str, doc_id: int):
+    """删源: 14 表 + 实体提及/报告 + transcript_pages + 原件 (补全孤儿表)。"""
+    def _del(table, where, params):
+        if _table_exists(conn, table):
+            conn.execute(f'DELETE FROM "{table}" WHERE {where}', params)
+
+    _del('entity_reports',
+         'mention_id IN (SELECT id FROM entity_mentions WHERE doc_id = ?)',
+         (doc_id,))
+    _del('entity_reports', 'doc_id = ?', (doc_id,))
+    _del('entity_mentions', 'doc_id = ?', (doc_id,))
+    _del('transcript_pages',
+         'transcript_id IN (SELECT id FROM manual_transcripts WHERE doc_id = ?)',
+         (doc_id,))
+    for t in (_TRANSFER_SIMPLE_TABLES + _TRANSFER_PK_TABLES
+              + ('manual_transcripts', 'doc_cards')):
+        _del(t, 'doc_id = ?', (doc_id,))
+    _del('blocks_fts', 'doc_id = ?', (doc_id,))
+    _del('cards_fts', 'doc_id = ?', (doc_id,))
+    conn.execute('DELETE FROM documents WHERE id = ?', (doc_id,))
+    orig_dir = get_collections_dir() / collection / 'files' / str(doc_id)
+    if orig_dir.is_dir():
+        shutil.rmtree(orig_dir, ignore_errors=True)
+
+
+def _transfer_validate(body, collection):
+    ids = body.get('ids') or []
+    target = (body.get('target') or '').strip()
+    if not ids:
+        raise ValueError('未选择文献')
+    err = validate_collection_name(target)
+    if err:
+        raise ValueError(f'目标书架名不可用: {err}')
+    if target == collection:
+        raise ValueError('目标书架不能与源书架相同')
+    if not get_db_path(collection).exists():
+        raise FileNotFoundError('源书架不存在')
+    return ids, target
+
+
+@app.post("/collections/{collection}/docs/transfer/probe")
+async def api_transfer_probe(collection: str, request: Request):
+    """转移预检: 目标存在性 + cite_key/filename 冲突清单 (只读)。"""
+    try:
+        body = await request.json()
+        ids, target = _transfer_validate(body, collection)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+
+    src = get_conn(collection)
+    try:
+        ph = ','.join('?' * len(ids))
+        rows = src.execute(
+            f'SELECT id, cite_key, filename FROM documents '
+            f'WHERE id IN ({ph})', ids).fetchall()
+    finally:
+        src.close()
+    if not rows:
+        return JSONResponse(status_code=404, content={"error": "文献不存在"})
+
+    target_exists = get_db_path(target).exists()
+    skipped, renamed = [], []
+    if target_exists:
+        dst = get_conn(target)
+        try:
+            for r in rows:
+                if r['cite_key'] and dst.execute(
+                        'SELECT 1 FROM documents WHERE cite_key = ?',
+                        (r['cite_key'],)).fetchone():
+                    skipped.append({'id': r['id'], 'cite_key': r['cite_key'],
+                                    'filename': r['filename']})
+                    continue
+                newname = _unique_filename(dst, r['filename'])
+                if newname != r['filename']:
+                    renamed.append({'id': r['id'], 'filename': r['filename'],
+                                    'newname': newname})
+        finally:
+            dst.close()
+    return {'ok': True, 'target': target, 'target_exists': target_exists,
+            'count': len(rows), 'skipped': skipped, 'renamed': renamed,
+            'movable': len(rows) - len(skipped)}
+
+
+@app.post("/collections/{collection}/docs/transfer")
+async def api_transfer_run(collection: str, request: Request):
+    """执行转移 (后台 job): 目标事务 → 校验 → 备份源库 → 删源。"""
+    try:
+        body = await request.json()
+        ids, target = _transfer_validate(body, collection)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+
+    held = _shelf_acquire(collection, 'transfer')
+    if held:
+        return JSONResponse(status_code=409,
+                            content={"error": f"源书架正在{held}, 请稍候"})
+    held = _shelf_acquire(target, 'transfer')
+    if held:
+        _shelf_release(collection)
+        return JSONResponse(status_code=409,
+                            content={"error": f"目标书架正在{held}, 请稍候"})
+
+    def _work(report, jid):
+        src = dst = None
+        copied_dirs = []      # 回滚时清理已复制的原件目录
+        try:
+            report(2, '准备目标书架…')
+            (get_collections_dir() / target).mkdir(parents=True, exist_ok=True)
+            init_db(target)   # 建库或幂等迁移
+            src = get_conn(collection)
+            dst = get_conn(target)
+            _ensure_transfer_schema(src, dst)
+            ph = ','.join('?' * len(ids))
+            rows = src.execute(
+                f'SELECT * FROM documents WHERE id IN ({ph}) ORDER BY id',
+                ids).fetchall()
+
+            dcols_src = _transfer_cols(src, 'documents')
+            dcols = [c for c in dcols_src
+                     if c != 'id' and c in set(_transfer_cols(dst, 'documents'))]
+            moved, skipped, renamed = [], [], []
+            entities_added = 0
+            total = len(rows)
+            dst.execute('BEGIN')
+            try:
+                for i, r in enumerate(rows, 1):
+                    report(5 + int(70 * (i - 1) / total),
+                           f'复制中 {i}/{total}…')
+                    old_id = r['id']
+                    if r['cite_key'] and dst.execute(
+                            'SELECT 1 FROM documents WHERE cite_key = ?',
+                            (r['cite_key'],)).fetchone():
+                        skipped.append({'id': old_id, 'cite_key': r['cite_key'],
+                                        'filename': r['filename']})
+                        continue
+                    newname = _unique_filename(dst, r['filename'])
+                    if newname != r['filename']:
+                        renamed.append({'id': old_id, 'filename': r['filename'],
+                                        'newname': newname})
+                    vals = [newname if c == 'filename' else r[c] for c in dcols]
+                    cur = dst.execute(
+                        f'INSERT INTO documents ({",".join(dcols)}) '
+                        f'VALUES ({",".join("?" * len(dcols))})', vals)
+                    new_id = cur.lastrowid
+                    _copy_doc_rows(src, dst, old_id, new_id)
+                    entities_added += _copy_doc_entities(src, dst, old_id)
+                    # 原件: files/<旧id>/ → files/<新id>/ (复制, 跨挂载点安全)
+                    sdir = get_collections_dir() / collection / 'files' / str(old_id)
+                    if sdir.is_dir():
+                        ddir = get_collections_dir() / target / 'files' / str(new_id)
+                        shutil.copytree(sdir, ddir, dirs_exist_ok=True)
+                        copied_dirs.append(ddir)
+                    moved.append({'old_id': old_id, 'new_id': new_id,
+                                  'filename': newname})
+                dst.commit()
+            except Exception:
+                dst.rollback()
+                for d in copied_dirs:
+                    shutil.rmtree(d, ignore_errors=True)
+                raise
+
+            # 校验: 每篇 lines / blocks_fts 行数一致 (删源前最后防线)
+            report(78, '校验…')
+            for m in moved:
+                for t in ('lines', 'blocks_fts'):
+                    a = src.execute(
+                        f'SELECT COUNT(*) FROM "{t}" WHERE doc_id = ?',
+                        (m['old_id'],)).fetchone()[0]
+                    b = dst.execute(
+                        f'SELECT COUNT(*) FROM "{t}" WHERE doc_id = ?',
+                        (m['new_id'],)).fetchone()[0]
+                    if a != b:
+                        raise RuntimeError(
+                            f'校验失败: {t} 行数不一致 '
+                            f'(源 {a} / 目标 {b}), 源未删除')
+
+            # 备份源库 (删源不可逆的退路)
+            report(82, '备份源库…')
+            stamp = time.strftime('%Y%m%d-%H%M%S')
+            bdir = get_data_dir() / 'backup' / f'{stamp}-transfer-{collection}'
+            bdir.mkdir(parents=True, exist_ok=True)
+            bak = sqlite3.connect(bdir / 'xsf.db')
+            try:
+                with src:
+                    src.backup(bak)
+            finally:
+                bak.close()
+
+            # 删源 (逐篇, 补全孤儿表)
+            report(90, '删除源文献…')
+            for m in moved:
+                _delete_doc_full(src, collection, m['old_id'])
+            src.commit()
+            report(100, '完成')
+            return {'source': collection, 'target': target,
+                    'moved': len(moved), 'skipped': skipped,
+                    'renamed': renamed, 'entities_added': entities_added,
+                    'backup': str(bdir / 'xsf.db'),
+                    'detail': moved}
+        finally:
+            _shelf_release(collection)
+            _shelf_release(target)
+            if src is not None:
+                src.close()
+            if dst is not None:
+                dst.close()
+
+    jid = _bg_job_start_progress('doc-transfer', _work)
+    return {'ok': True, 'job': jid, 'target': target, 'count': len(ids)}
 
 
 # ── P2c AI 填充 (翻译大模型 draft 层) ────────────────────
