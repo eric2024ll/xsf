@@ -3,6 +3,7 @@ import re
 import shutil
 import logging
 import posixpath
+import sqlite3
 
 import pymupdf
 import jieba
@@ -687,7 +688,24 @@ def remove_doc(doc_id: int, collection: str):
         conn.execute('DELETE FROM doc_cards WHERE doc_id = ?', (doc_id,))
         conn.execute('DELETE FROM card_candidates WHERE doc_id = ?', (doc_id,))
         conn.execute('DELETE FROM cards_fts WHERE doc_id = ?', (doc_id,))
+        # 补全无 FK CASCADE 的表 (2026-11-22 孤儿修复: 历史删除曾留
+        # ocr_page_state 等孤儿; 懒建表可能不存在, 逐表容错)
+        # 注意顺序: entity_reports 依赖 mentions 子查询, 须先于 mentions 删
+        conn.execute(
+            'DELETE FROM entity_reports WHERE mention_id IN '
+            '(SELECT id FROM entity_mentions WHERE doc_id = ?)', (doc_id,))
+        conn.execute('DELETE FROM entity_reports WHERE doc_id = ?', (doc_id,))
         conn.execute('DELETE FROM entity_mentions WHERE doc_id = ?', (doc_id,))
+        conn.execute(
+            'DELETE FROM transcript_pages WHERE transcript_id IN '
+            '(SELECT id FROM manual_transcripts WHERE doc_id = ?)', (doc_id,))
+        for t in ('annotations', 'read_annotations', 'read_chat',
+                  'ocr_candidates', 'ocr_page_state', 'page_regions',
+                  'manual_transcripts', 'revision_log'):
+            try:
+                conn.execute(f'DELETE FROM "{t}" WHERE doc_id = ?', (doc_id,))
+            except sqlite3.OperationalError:
+                pass
         conn.execute('DELETE FROM documents WHERE id = ?', (doc_id,))
         conn.commit()
     finally:

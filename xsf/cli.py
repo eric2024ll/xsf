@@ -458,6 +458,122 @@ def cmd_fix_added(args):
     print(f'合计: 删 urldate {g_drop} 篇, 补 added {g_fill} 篇')
 
 
+def cmd_clean_orphans(args):
+    """清理历史孤儿数据 (2026-11-22)。
+
+    - 15 张 doc_id 表中指向已删文献的行 (历史 remove_doc 未清无 FK
+      CASCADE 的表所致, 如 ocr_page_state)
+    - transcript_pages.transcript_id / entity_mentions.entity_id /
+      entity_reports.mention_id / cards_fts.card_id 悬空行
+    - 遗留 annotations 表: 数据清空并删表 (批注统一到 read_annotations,
+      用户 2026-11-22 确认)
+    幂等; 有清理动作的书架先备份 DB。--dry-run 只报告不动数据。
+    """
+    import sqlite3 as _sql
+
+    doc_tables = ('lines', 'blocks_fts', 'page_regions', 'ocr_page_state',
+                  'ocr_candidates', 'manual_transcripts', 'revision_log',
+                  'annotations', 'read_annotations', 'read_chat',
+                  'doc_cards', 'card_candidates', 'cards_fts',
+                  'entity_mentions', 'entity_reports')
+    colls = ([args.collection] if getattr(args, 'collection', None)
+             else list_collections())
+    dry = getattr(args, 'dry_run', False)
+    stamp = __import__('time').strftime('%Y%m%d-%H%M%S')
+    g_total = 0
+    for coll in colls:
+        _require_collection(coll)
+        conn = get_conn(coll)
+        plan = []   # (描述, SQL, params)
+        try:
+            for t in doc_tables:
+                try:
+                    n = conn.execute(
+                        f'SELECT COUNT(*) FROM "{t}" WHERE doc_id NOT IN '
+                        f'(SELECT id FROM documents)').fetchone()[0]
+                except _sql.OperationalError:
+                    continue
+                if n:
+                    plan.append((f'{t} doc_id孤儿 {n}',
+                                 f'DELETE FROM "{t}" WHERE doc_id NOT IN '
+                                 f'(SELECT id FROM documents)', ()))
+            # 悬空外键
+            fk_checks = [
+                ('transcript_pages', 'transcript_id',
+                 'SELECT id FROM manual_transcripts'),
+                ('entity_mentions', 'entity_id', 'SELECT id FROM entities'),
+                ('entity_reports', 'entity_id', 'SELECT id FROM entities'),
+            ]
+            for t, col, sub in fk_checks:
+                try:
+                    n = conn.execute(
+                        f'SELECT COUNT(*) FROM "{t}" WHERE {col} NOT IN '
+                        f'({sub})').fetchone()[0]
+                except _sql.OperationalError:
+                    continue
+                if n:
+                    plan.append((f'{t} {col}悬空 {n}',
+                                 f'DELETE FROM "{t}" WHERE {col} NOT IN '
+                                 f'({sub})', ()))
+            try:
+                n = conn.execute(
+                    'SELECT COUNT(*) FROM entity_reports WHERE mention_id '
+                    'IS NOT NULL AND mention_id NOT IN '
+                    '(SELECT id FROM entity_mentions)').fetchone()[0]
+                if n:
+                    plan.append((f'entity_reports mention_id悬空 {n}',
+                                 'DELETE FROM entity_reports WHERE mention_id '
+                                 'IS NOT NULL AND mention_id NOT IN '
+                                 '(SELECT id FROM entity_mentions)', ()))
+            except _sql.OperationalError:
+                pass
+            try:
+                n = conn.execute(
+                    'SELECT COUNT(*) FROM cards_fts WHERE card_id IS NOT NULL '
+                    'AND card_id NOT IN (SELECT id FROM doc_cards)').fetchone()[0]
+                if n:
+                    plan.append((f'cards_fts card_id悬空 {n}',
+                                 'DELETE FROM cards_fts WHERE card_id IS NOT NULL '
+                                 'AND card_id NOT IN (SELECT id FROM doc_cards)', ()))
+            except _sql.OperationalError:
+                pass
+            # 遗留 annotations 表 (数据可清, 统一到 read_annotations)
+            try:
+                na = conn.execute('SELECT COUNT(*) FROM annotations').fetchone()[0]
+                plan.append((f'annotations 遗留表删除 (含数据 {na} 条)',
+                             'DROP TABLE annotations', ()))
+            except _sql.OperationalError:
+                pass
+
+            if not plan:
+                print(f'{coll}: 无孤儿')
+                continue
+            print(f'{coll}:')
+            for desc, _, _ in plan:
+                print(f'  {"[dry-run] " if dry else ""}{desc}')
+            g_total += len(plan)
+            if dry:
+                continue
+            # 备份后清理
+            bdir = (get_data_dir() / 'backup'
+                    / f'{stamp}-clean-orphans' / coll)
+            bdir.mkdir(parents=True, exist_ok=True)
+            bak = _sql.connect(bdir / 'xsf.db')
+            try:
+                with conn:
+                    conn.backup(bak)
+            finally:
+                bak.close()
+            for _, sql, params in plan:
+                conn.execute(sql, params)
+            conn.commit()
+            print(f'  已清理, 备份: {bdir / "xsf.db"}')
+        finally:
+            conn.close()
+    print(f'合计: {"预计" if dry else "已"}清理 {g_total} 项'
+          + (' (dry-run 未动数据)' if dry else ''))
+
+
 def cmd_gen(args):
     """LLM 生成: 卡片候选 (cards) / 知识地图 (wiki) / 实体库 (entities)."""
     from . import generate as G
@@ -587,6 +703,13 @@ def main():
         help='存量迁移: 书目数据删 urldate + 补入库日期 added (幂等)')
     p_fix.add_argument('-c', '--collection', help='限定书架 (缺省全部)')
 
+    p_co = sub.add_parser(
+        'clean-orphans',
+        help='清理孤儿数据 (doc_id 悬空/外键悬空/遗留 annotations 表), 先备份')
+    p_co.add_argument('-c', '--collection', help='限定书架 (缺省全部)')
+    p_co.add_argument('--dry-run', action='store_true', dest='dry_run',
+                      help='只报告不清理')
+
     p_gen = sub.add_parser('gen', help='LLM 生成: 卡片候选/知识地图/实体库')
     gensub = p_gen.add_subparsers(dest='gen_action')
     g_cards = gensub.add_parser('cards',
@@ -633,6 +756,7 @@ def main():
         'context': cmd_context, 'remove': cmd_remove, 'stats': cmd_stats,
         'doctor': cmd_doctor, 'gen': cmd_gen, 'autofill': cmd_autofill,
         'fix-added': cmd_fix_added,
+        'clean-orphans': cmd_clean_orphans,
     }
     fn = dispatch.get(args.command)
     if fn:
