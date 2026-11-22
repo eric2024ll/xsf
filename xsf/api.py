@@ -3808,6 +3808,15 @@ async def api_transfer_run(collection: str, request: Request):
                         f'INSERT INTO documents ({",".join(dcols)}) '
                         f'VALUES ({",".join("?" * len(dcols))})', vals)
                     new_id = cur.lastrowid
+                    # linked_pdf 重映射 (2026-11-22 bug 修复): 原件复制到
+                    # files/<new_id>/, 指针必须跟随; 否则断链或撞目标书架
+                    # 同编号目录指向他人原件 (期刊ai规范 278 篇事故)
+                    lp = r['linked_pdf']
+                    if lp and lp.startswith(f'files/{old_id}/'):
+                        dst.execute(
+                            'UPDATE documents SET linked_pdf = ? WHERE id = ?',
+                            (f'files/{new_id}/' + lp[len(f'files/{old_id}/'):],
+                             new_id))
                     _copy_doc_rows(src, dst, old_id, new_id)
                     entities_added += _copy_doc_entities(src, dst, old_id)
                     # 原件: files/<旧id>/ → files/<新id>/ (复制, 跨挂载点安全)
