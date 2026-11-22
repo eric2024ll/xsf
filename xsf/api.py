@@ -2308,16 +2308,55 @@ def _extract_subset_db(base_db: str, ids, pkg_type: str = "doc") -> str:
         dst.execute(
             f"INSERT INTO documents SELECT * FROM src.documents "
             f"WHERE id IN ({ph})", ids)
-        dst.execute(
-            f"INSERT INTO lines SELECT * FROM src.lines "
-            f"WHERE doc_id IN ({ph})", ids)
-        dst.execute(
-            f"INSERT INTO blocks_fts SELECT * FROM src.blocks_fts "
-            f"WHERE doc_id IN ({ph})", ids)
+        if pkg_type == "doc":
+            dst.execute(
+                f"INSERT INTO lines SELECT * FROM src.lines "
+                f"WHERE doc_id IN ({ph})", ids)
+            dst.execute(
+                f"INSERT INTO blocks_fts SELECT * FROM src.blocks_fts "
+                f"WHERE doc_id IN ({ph})", ids)
         rev_where = ("AND in_pkg = 1" if pkg_type == "changeset" else "")
         dst.execute(
             f"INSERT INTO revision_log SELECT * FROM src.revision_log "
             f"WHERE doc_id IN ({ph}) {rev_where}", ids)
+
+        if pkg_type == "doc":
+            # 与转移范围一致 (2026-11-22): 批注/卡片/OCR 状态/转录等随包,
+            # 旧包导入端按空表兼容。提及不搬 (可重算), 实体只带定义。
+            def _src_has(t):
+                return dst.execute(
+                    "SELECT 1 FROM src.sqlite_master WHERE type='table' "
+                    "AND name=?", (t,)).fetchone()
+
+            for t in ('page_regions', 'ocr_page_state', 'ocr_candidates',
+                      'manual_transcripts', 'annotations', 'read_annotations',
+                      'read_chat', 'doc_cards', 'card_candidates'):
+                if _src_has(t):
+                    dst.execute(
+                        f'INSERT INTO "{t}" SELECT * FROM src."{t}" '
+                        f'WHERE doc_id IN ({ph})', ids)
+            if _src_has('transcript_pages') and _src_has('manual_transcripts'):
+                dst.execute(
+                    f'INSERT INTO transcript_pages SELECT * FROM '
+                    f'src.transcript_pages WHERE transcript_id IN '
+                    f'(SELECT id FROM src.manual_transcripts '
+                    f'WHERE doc_id IN ({ph}))', ids)
+            if _src_has('cards_fts'):
+                dst.execute(
+                    f'INSERT INTO cards_fts SELECT * FROM src.cards_fts '
+                    f'WHERE doc_id IN ({ph})', ids)
+            # 实体定义 (经提及反查涉及实体; 提及本身不入包)
+            if _src_has('entity_mentions') and _src_has('entities'):
+                eid_sub = (f'SELECT DISTINCT entity_id FROM '
+                           f'src.entity_mentions WHERE doc_id IN ({ph})')
+                dst.execute(
+                    f'INSERT INTO entities SELECT * FROM src.entities '
+                    f'WHERE id IN ({eid_sub})', ids)
+                if _src_has('entity_names'):
+                    dst.execute(
+                        f'INSERT INTO entity_names SELECT * FROM '
+                        f'src.entity_names WHERE entity_id IN ({eid_sub})',
+                        ids)
         dst.commit()
     finally:
         dst.close()
@@ -2452,9 +2491,8 @@ def _build_sqpkg(collection: str, ids, pkg_type: str = "doc"):
     if not get_db_path(collection).exists():
         raise FileNotFoundError("书架不存在")
 
-    placeholders = ",".join("?" * len(ids))
-
-    # 1. 整库 backup → 按包型清理成单包 DB
+    # 1. 整库 backup → 抽取子集 (2026-11-22 与逐篇导出统一: 旧「全库
+    #    backup + DELETE 4 表」会让其余表残留未选文献数据)
     fd, tmp_db = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     src_conn = get_conn(collection)
@@ -2467,40 +2505,17 @@ def _build_sqpkg(collection: str, ids, pkg_type: str = "doc"):
         clean = sqlite3.connect(tmp_db)
         clean.row_factory = sqlite3.Row
         doc_meta, base_versions = _doc_meta_and_versions(clean, ids)
-
-        if pkg_type == "changeset":
-            clean.execute("DELETE FROM lines")
-            clean.execute("DELETE FROM blocks_fts")
-            clean.execute(
-                f"""DELETE FROM revision_log
-                    WHERE doc_id NOT IN ({placeholders})
-                       OR in_pkg != 1""", ids)
-            clean.execute(
-                f"DELETE FROM documents WHERE id NOT IN ({placeholders})",
-                ids)
-        else:
-            clean.execute(
-                f"DELETE FROM lines WHERE doc_id NOT IN ({placeholders})",
-                ids)
-            clean.execute(
-                f"DELETE FROM blocks_fts WHERE doc_id NOT IN ({placeholders})",
-                ids)
-            clean.execute(
-                f"DELETE FROM revision_log WHERE doc_id NOT IN ({placeholders})",
-                ids)
-            clean.execute(
-                f"DELETE FROM documents WHERE id NOT IN ({placeholders})",
-                ids)
-        clean.commit()
         clean.close()
     finally:
         src_conn.close()
 
+    sub_db = _extract_subset_db(tmp_db, ids, pkg_type)
+    os.unlink(tmp_db)
     try:
         content, edits_count, fname = _pack_archive(
-            collection, tmp_db, pkg_type, doc_meta, base_versions)
+            collection, sub_db, pkg_type, doc_meta, base_versions)
     finally:
-        os.unlink(tmp_db)
+        os.unlink(sub_db)
     return content, len(doc_meta), edits_count, fname
 
 
@@ -2756,9 +2771,13 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
             LINE_EXTRA = ["suspect", "gloss", "trans", "translit"]
             line_extras = [c for c in LINE_EXTRA if c in src_line_cols]
             dst = get_conn(collection)
+            # 补齐懒建表 (read_annotations/read_chat/遗留 annotations),
+            # 与转移同口径 (2026-11-22 数据包内容对齐)
+            _ensure_transfer_schema(src, dst)
             imported = 0
             conflicts = []
             skipped = []
+            entities_added = 0
 
             try:
                 doc_rows = src.execute(
@@ -2917,8 +2936,13 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
                                  r["old_value"], r["new_value"], r["basis"],
                                  r["created_at"]),
                             )
+                    # 与转移范围一致 (2026-11-22): 批注/卡片/OCR/转录随文献
+                    # (旧包这些表为空 → 0 行, 天然兼容; 4 表上面已导, skip)
+                    _copy_doc_rows(src, dst, old_id, new_id,
+                                   skip=('lines', 'blocks_fts', 'revision_log'))
                     imported += 1
 
+                entities_added = _import_pkg_entities(src, dst)
                 dst.commit()
                 # 原件归一化落盘 (单布局): 暂存文件移入 files/<new_id>/
                 # 并回写 linked_pdf; 失败不回滚文档 (doctor 体检可见断链)
@@ -2940,7 +2964,8 @@ async def api_import_archive(collection: str, file: UploadFile = File(...),
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         return {"imported": imported, "conflicts": conflicts,
-                "skipped": skipped, "pkg_type": pkg_type}
+                "skipped": skipped, "pkg_type": pkg_type,
+                "entities_added": entities_added}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -3421,12 +3446,15 @@ def _ensure_transfer_schema(src, dst):
     dst.commit()
 
 
-def _copy_doc_rows(src, dst, old_id, new_id):
+def _copy_doc_rows(src, dst, old_id, new_id, skip=()):
     """复制文献关联的 14 张表, 重映射 doc_id / card_id / transcript_id。
 
     列白名单 = 源∩目标 (目标旧库缺列时不炸, 但 init_db 已先迁移)。
+    skip: 调用方已自行处理的表 (导入端已导 lines/blocks_fts/revision_log)。
     """
     def _copy(table, strip_id=True, remap=None):
+        if table in skip:
+            return
         if not _table_exists(src, table) or not _table_exists(dst, table):
             return
         scols = _transfer_cols(src, table)
@@ -3539,6 +3567,45 @@ def _copy_doc_entities(src, dst, old_id) -> int:
             f'SELECT entity_id FROM entity_names WHERE name IN ({ph})',
             names).fetchone()
         if hit:
+            continue
+        cur = dst.execute(
+            f'INSERT INTO entities ({",".join(ecols)}) '
+            f'VALUES ({",".join("?" * len(ecols))})',
+            [er[c] for c in ecols])
+        for n in names:
+            dst.execute(
+                'INSERT INTO entity_names (entity_id, name) VALUES (?, ?)',
+                (cur.lastrowid, n))
+        added += 1
+    return added
+
+
+def _import_pkg_entities(src, dst) -> int:
+    """导入包内实体定义 (包已按涉及文献过滤; 按名匹配去重, 缺则新建)。
+
+    与转移 _copy_doc_entities 同口径, 但包内无提及表, 直接读 entities。
+    """
+    if not _table_exists(src, 'entities'):
+        return 0
+    added = 0
+    ecols = [c for c in _transfer_cols(src, 'entities') if c != 'id']
+    dset = set(_transfer_cols(dst, 'entities'))
+    ecols = [c for c in ecols if c in dset]
+    for er in src.execute('SELECT * FROM entities').fetchall():
+        names = [er['canonical']]
+        try:
+            aliases = json.loads(er['aliases'] or '[]')
+            if isinstance(aliases, list):
+                names += [str(a) for a in aliases if a]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        names = [n for n in names if n]
+        if not names:
+            continue
+        ph = ','.join('?' * len(names))
+        if dst.execute(
+                f'SELECT entity_id FROM entity_names WHERE name IN ({ph})',
+                names).fetchone():
             continue
         cur = dst.execute(
             f'INSERT INTO entities ({",".join(ecols)}) '
