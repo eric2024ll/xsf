@@ -2557,15 +2557,37 @@ async def api_export_archive(collection: str, request: Request):
     )
 
 
-def _safe_pkg_name(title, filename, doc_id) -> str:
-    """逐篇包文件名: 书名/篇名优先, 回退原文件名去扩展名。
+def _safe_pkg_name(title, filename, doc_id, author='', year='') -> str:
+    """逐篇包文件名: 书名/篇名 + 作者 + 年代 (2026-11-22 防重名)。
 
-    清 Windows/Unix 非法字符, 截 60 字; 空则 doc{id}。
+    书名/篇名优先, 回退原文件名去扩展名; 作者/年代非空才拼入,
+    下划线分隔。清 Windows/Unix 非法字符, 截 80 字; 空则 doc{id}。
     """
     base = (title or '').strip() or Path(filename or '').stem
+    parts = [base]
+    if (author or '').strip():
+        parts.append(author.strip())
+    if str(year or '').strip():
+        parts.append(str(year).strip())
+    base = '_'.join(p for p in parts if p)
     base = re.sub(r'[\\/:*?"<>|\r\n\t]+', '_', base or '')
-    base = base.strip(' ._')[:60].strip(' ._')
+    base = base.strip(' ._')[:80].strip(' ._')
     return base or f"doc{doc_id}"
+
+
+def _bib_year(bib_data_raw) -> str:
+    """从 bib_data 取年代: year 优先, 回退 date 前 4 位。"""
+    try:
+        d = json.loads(bib_data_raw or '{}')
+    except (json.JSONDecodeError, TypeError):
+        return ''
+    if not isinstance(d, dict):
+        return ''
+    y = str(d.get('year') or '').strip()
+    if y:
+        return y
+    date = str(d.get('date') or '').strip()
+    return date[:4] if date[:4].isdigit() else ''
 
 
 @app.post("/collections/{collection}/docs/export-per-doc")
@@ -2588,7 +2610,7 @@ async def api_export_per_doc(collection: str, request: Request):
     conn = get_conn(collection)
     try:
         rows = conn.execute(
-            f"""SELECT id, title, filename FROM documents
+            f"""SELECT id, title, filename, author, bib_data FROM documents
                 WHERE id IN ({','.join('?' * len(ids))})""", ids).fetchall()
     finally:
         conn.close()
@@ -2631,7 +2653,9 @@ async def api_export_per_doc(collection: str, request: Request):
                 for i, r in enumerate(rows, 1):
                     report(5 + int(90 * (i - 1) / total),
                            f'打包中 {i}/{total}…')
-                    name = _safe_pkg_name(r['title'], r['filename'], r['id'])
+                    name = _safe_pkg_name(r['title'], r['filename'], r['id'],
+                                          author=r['author'],
+                                          year=_bib_year(r['bib_data']))
                     n = used.get(name, 0) + 1
                     used[name] = n
                     arc = f'{name}.sqpkg' if n == 1 else f'{name}-{n}.sqpkg'
