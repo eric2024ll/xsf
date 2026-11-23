@@ -6653,14 +6653,19 @@ def _reocr_regions_for_page(provider, src, page_num: int, region_list: list):
             bx1, by1 = bbox[2] * kx, bbox[3] * ky
         except (TypeError, ValueError):
             continue  # bbox 非数值, 无法换算
-        barea = max(1e-6, (bx1 - bx0) * (by1 - by0))
         cx, cy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0
         for ri, (rx0, ry0, rx1, ry1) in enumerate(valid_regions):
             center_in = (rx0 <= cx <= rx1) and (ry0 <= cy <= ry1)
             if not center_in:
                 ix = max(0.0, min(bx1, rx1) - max(bx0, rx0))
                 iy = max(0.0, min(by1, ry1) - max(by0, ry0))
-                center_in = (ix * iy) / barea >= 0.5
+                # 重叠按「选区面积」判 (2026-11-23 修复): 整块入库下,
+                # 框选大段落的局部时块中心在选区外、重叠占块面积 <50%,
+                # 旧式按块面积判会整块丢弃 → 「未返回任何文本」。改按选区
+                # 面积: 块覆盖选区 ≥50% 即保留 (框选局部时选区被块全覆盖,
+                # 比例≈1 → 保留); 中心点条件仍覆盖「大选区小块」情形。
+                rarea = max(1e-6, (rx1 - rx0) * (ry1 - ry0))
+                center_in = (ix * iy) / rarea >= 0.5
             if center_in:
                 assigned.append((ri, order, {
                     "block_label": label,
