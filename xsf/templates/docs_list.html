@@ -399,6 +399,9 @@ function typeBadge(bibType){
 }
 
 function ocrBadge(d){
+  if(d.doc_type === 'pending')
+    return '<span class="badge" style="background:#fdf6e3;color:#b58900;" ' +
+           'title="已入库, 后台排队提取 (anydoc 优先, 失败自动转 OCR)">提取中…</span>';
   if(d.doc_type !== 'ocr' || !d.ocr_state) return '';
   const st = d.ocr_state;
   if(st.error > 0){

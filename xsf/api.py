@@ -1295,35 +1295,36 @@ async def api_add(
             try:
                 note = None
                 if ext == 'pdf':
+                    # 先入库后提取 (2026-11-26 统一): 骨架落库 → 原件
+                    # 归位 → 入提取队列, add 秒回; native 失败由 worker
+                    # 自动转 OCR 接力 (folder_scan._run_native_extract)
                     mode = str(ocr).strip().lower()
-                    if mode in ('force_ocr', 'true'):   # 'true': 旧勾选值兼容
-                        ingest_func = ingest_scanned_pdf
-                    else:   # 'auto' / 'force_text' (旧值) / 其余值:
-                        # 2026-10-31 管线收敛: 强制 anydoc 原生提取,
-                        # 无文本层的页留空, 整篇不可转自动回退扫描件 OCR
-                        def _native_then_ocr(path, **kw):
-                            try:
-                                res = ingest_native_pdf(path, **kw)
-                                res['note'] = ('原生提取 (anydoc 段落建块); '
-                                               '无文本层页留空')
-                                if res.get('needs_ocr_fallback'):
-                                    res['note'] += (
-                                        f"; {res['needs_ocr_fallback']} 页"
-                                        ' ClearScan 直提兜底')
-                                if res.get('warning'):
-                                    res['note'] += '; ⚠ ' + res['warning']
-                                return res
-                            except (sqlite3.Error, OSError):
-                                # 环境故障 (锁/磁盘满/IO): 换管线救不了,
-                                # 不回退 OCR, 直接抛给调用方
-                                raise
-                            except Exception as e:
-                                res = ingest_scanned_pdf(path, **kw)
-                                res['note'] = (f'anydoc 不可转 ({e}), '
-                                               '已转扫描件 OCR')
-                                return res
-                        ingest_func = _native_then_ocr
-                elif ext in ('md', 'markdown'):
+                    kind = ('ocr' if mode in ('force_ocr', 'true')
+                            else 'native')   # 'true': 旧勾选值兼容
+                    from .ingest import register_pdf_doc, attach_original \
+                        as _reg_attach
+                    from .folder_scan import _enqueue_extract
+                    doc_id = await asyncio.to_thread(
+                        register_pdf_doc, collection, dst,
+                        cite_key or None, title or None, author or None,
+                        source_tags)
+                    await asyncio.to_thread(
+                        _reg_attach, collection, doc_id, dst, True)
+                    queued = _enqueue_extract(collection, doc_id, kind)
+                    cross = _cross_collection_hits(fname, collection)
+                    results.append({
+                        "filename": fname,
+                        "result": {"doc_id": doc_id, "queued": True,
+                                   "extract": kind, "lines": 0,
+                                   "blocks": 0, "doc_type": "pending"},
+                        "note": (('已入库, 后台提取文本层 (anydoc)')
+                                 if kind == 'native'
+                                 else '已入库, 后台 OCR 提取中')
+                                + ('' if queued else ' (已在队列)'),
+                        "cross_collection": cross,
+                    })
+                    continue
+                if ext in ('md', 'markdown'):
                     ingest_func = ingest_markdown
                 else:  # 图片：强制 OCR
                     ingest_func = ingest_image

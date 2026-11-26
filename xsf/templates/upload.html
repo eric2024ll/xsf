@@ -341,7 +341,7 @@ document.getElementById('uploadForm').addEventListener('submit', async function(
       var errs=(data.errors||[]).filter(function(r){return r.filename===f.name;});
       var cross=(okR[0]&&okR[0].cross_collection)||(skpR[0]&&skpR[0].cross_collection)||[];
       var crossMsg=cross.length?'（同名也存在于: '+cross.join('、')+'）':'';
-      if(okR.length){if(stEl){stEl.className='fstate ok';stEl.textContent='✓'+(okR[0].result.blocks||0)+'块'+(cross.length?'⚠':'');}okCount++;if(okR[0].note){statusEl.textContent='已入库 '+f.name+': '+okR[0].note;}else if(cross.length){statusEl.textContent='已入库 '+f.name+crossMsg;}}
+      if(okR.length){var _rr=okR[0].result||{};if(stEl){stEl.className='fstate ok';stEl.textContent=(_rr.queued?'✓排队':('✓'+(_rr.blocks||0)+'块'))+(cross.length?'⚠':'');}okCount++;if(okR[0].note){statusEl.textContent='已入库 '+f.name+': '+okR[0].note;}else if(cross.length){statusEl.textContent='已入库 '+f.name+crossMsg;}}
       else if(skpR.length){if(stEl){stEl.className='fstate wait';stEl.textContent='跳过(重复)'+(cross.length?'⚠':'');}skipCount++;statusEl.textContent='跳过 '+f.name+': 已在本架'+crossMsg;}
       else{if(stEl){stEl.className='fstate err';stEl.textContent='失败';}failCount++;}
     }catch(err){if(stEl){stEl.className='fstate err';stEl.textContent='失败';}failCount++;}

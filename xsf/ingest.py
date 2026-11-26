@@ -545,6 +545,89 @@ def _native_extract_pages(pdf_path: str | Path, conn, doc_id: int):
         src.close()
 
 
+def register_pdf_doc(collection: str, pdf_path: str | Path,
+                     cite_key: str = None, title: str = None,
+                     author: str = None,
+                     source_tags: str = '["primary"]') -> int:
+    """PDF 骨架入库 (2026-11-26 先入库后提取): 只落元数据行,
+    doc_type='pending' 待后台提取 (native 或 OCR)。
+
+    原件由调用方 attach_original 落 files/<id>/; 提取 worker 从
+    get_original_file 取。返回 doc_id。
+    """
+    pdf_path = Path(pdf_path)
+    doc = pymupdf.open(str(pdf_path))
+    page_count = len(doc)
+    meta = doc.metadata or {}
+    if not title:
+        title = meta.get('title') or None
+    if not author:
+        author = meta.get('author') or None
+    doc.close()
+
+    is_primary, is_secondary, is_reference = _source_flags(source_tags)
+    conn = get_conn(collection)
+    try:
+        cur = conn.execute(
+            '''INSERT INTO documents
+               (cite_key, title, author, filename, page_count, doc_type,
+                is_primary, is_secondary, is_reference, source_tags)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)''',
+            (cite_key, title, author, pdf_path.name, page_count,
+             is_primary, is_secondary, is_reference, source_tags))
+        doc_id = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    return doc_id
+
+
+def extract_native_doc(collection: str, doc_id: int,
+                       pdf_path: str | Path) -> dict:
+    """对已入库 (pending) 文档跑 native anydoc 提取 (2026-11-26)。
+
+    成功: 写 lines/blocks_fts + doc_type='pdf_native' + 语种推断。
+    整篇零行/异常: 清 partial + doc_type 置 NULL → 归 _pending_ocr
+    的 OCR 兜底通道, 并抛 RuntimeError 供 worker 记日志/转队。
+    调用方在后台线程执行。
+    """
+    conn = get_conn(collection)
+    try:
+        total_lines, total_blocks, empty_pages, needs_ocr_pages = \
+            _native_extract_pages(pdf_path, conn, doc_id)
+        if total_lines == 0:
+            conn.rollback()
+            conn.execute(
+                "UPDATE documents SET doc_type = NULL WHERE id = ?",
+                (doc_id,))
+            conn.commit()
+            raise RuntimeError(
+                '整篇无可转文本层 (全部页需 OCR), 已转扫描件 OCR 队列')
+        conn.execute(
+            "UPDATE documents SET doc_type = 'pdf_native' WHERE id = ?",
+            (doc_id,))
+        _apply_detected_lang(conn, doc_id)
+        conn.commit()
+    except RuntimeError:
+        raise
+    except Exception:
+        conn.rollback()
+        conn.execute(
+            "UPDATE documents SET doc_type = NULL WHERE id = ?", (doc_id,))
+        conn.commit()
+        raise
+    finally:
+        conn.close()
+    return {
+        'doc_id': doc_id,
+        'blocks': total_blocks,
+        'lines': total_lines,
+        'mode': 'native (anydoc)',
+        'empty_pages': empty_pages,
+        'needs_ocr_fallback': len(needs_ocr_pages),
+    }
+
+
 def ingest_native_pdf(pdf_path: str | Path, collection: str,
                       cite_key: str = None, title: str = None,
                       author: str = None,

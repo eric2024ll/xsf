@@ -47,7 +47,7 @@ _DUP_REPORT_WINDOW = 3600   # mtime 距今小于此值的重复文件才报「�
 
 _stop = threading.Event()
 _queue_cond = threading.Condition()
-_ocr_queue: list = []                     # [(collection, doc_id)]
+_ocr_queue: list = []                     # [(collection, doc_id, kind)] kind: native|ocr
 _ocr_attempts: dict = {}                  # (collection, doc_id) -> 失败次数
 _status_lock = threading.Lock()
 _status: dict = {}                        # collection -> 状态快照
@@ -239,6 +239,7 @@ def _pending_ocr(collection: str) -> list:
         SELECT d.id, d.filename, d.page_count
         FROM documents d
         WHERE d.filename LIKE '%.pdf'
+          AND d.doc_type != 'pending'
           AND (NOT EXISTS (SELECT 1 FROM lines l WHERE l.doc_id = d.id)
                OR EXISTS (SELECT 1 FROM ocr_page_state s
                           WHERE s.doc_id = d.id AND s.status = 'error'))
@@ -247,20 +248,28 @@ def _pending_ocr(collection: str) -> list:
              'pages': r['page_count']} for r in rows]
 
 
-def _enqueue_ocr(collection: str, pending: list) -> None:
+def _enqueue_extract(collection: str, doc_id: int, kind: str) -> bool:
+    """提取任务入队 (2026-11-26 先入库后提取)。kind: native | ocr。
+
+    幂等: 已在队 / 正在跑 / 超尝试上限 → 不入队。返回是否入队。
+    """
+    key = (collection, doc_id, kind)
     with _queue_cond:
-        queued = {item for item in _ocr_queue}
-        for d in pending:
-            key = (collection, d['id'])
-            if key in queued:
-                continue
-            if _ocr_attempts.get(key, 0) >= MAX_OCR_ATTEMPTS:
-                continue  # 放弃, 留在状态 errors 里人工处理
-            job = _reocr_get(collection, d['id'])
-            if job and job.get('status') == 'running':
-                continue  # 手动/自动正在跑
-            _ocr_queue.append(key)
+        if key in set(_ocr_queue):
+            return False
+        if _ocr_attempts.get(key, 0) >= MAX_OCR_ATTEMPTS:
+            return False
+        job = _reocr_get(collection, doc_id)
+        if job and job.get("status") == "running":
+            return False  # 手动/自动正在跑
+        _ocr_queue.append(key)
         _queue_cond.notify_all()
+    return True
+
+
+def _enqueue_ocr(collection: str, pending: list) -> None:
+    for d in pending:
+        _enqueue_extract(collection, d["id"], "ocr")
 
 
 _orphan_warned: set = set()            # 已警告过的投放孤儿 (集合变化时才再报)
@@ -308,6 +317,11 @@ def _scan_cycle() -> None:
 
 def _scan_collection(coll: str, ocr_enabled: bool) -> None:
     new_records, errors, dups = _ingest_new(coll)
+    # pending 滞留兜底 (2026-11-26: add 先入库后提取, worker 崩溃时
+    # 扫描周期负责重新入队; _enqueue_extract 幂等去重)
+    for r in _query(coll, "SELECT id FROM documents "
+                          "WHERE doc_type = 'pending'"):
+        _enqueue_extract(coll, r['id'], 'native')
     pending = _pending_ocr(coll)
     if ocr_enabled:
         _enqueue_ocr(coll, pending)
@@ -343,6 +357,51 @@ def _scan_loop(interval: int) -> None:
     logger.info("文件夹扫描线程退出")
 
 
+def _run_native_extract(collection: str, doc_id: int, pdf_path,
+                        row) -> None:
+    """worker: 对 pending 文档试跑 native anydoc 提取 (2026-11-26)。
+
+    成功 → doc_type='pdf_native' (extract_native_doc 内写);
+    零行/异常 → doc_type 已置 NULL, 直接入 OCR 队列接力。
+    """
+    from .ingest import extract_native_doc
+    if not register_job(collection, doc_id,
+                        _pdf_pages(pdf_path), mode='native',
+                        source='auto'):
+        return  # 已有任务在跑
+    to_ocr = False
+    try:
+        logger.info("提取开始 coll=%s doc=%s: native (anydoc)",
+                    collection, doc_id)
+        r = extract_native_doc(collection, doc_id, pdf_path)
+        logger.info("提取完成 coll=%s doc=%s: native %s 行 %s 块 "
+                    "(空页 %s, 直提兜底 %s)",
+                    collection, doc_id, r['lines'], r['blocks'],
+                    len(r['empty_pages']), r['needs_ocr_fallback'])
+        _ocr_attempts.pop((collection, doc_id, 'native'), None)
+    except Exception as e:
+        logger.info("native 提取不可用 coll=%s doc=%s: %s → 转 OCR 队列",
+                    collection, doc_id, e)
+        to_ocr = True  # extract_native_doc 已把 doc_type 置 NULL
+    finally:
+        pop_job(collection, doc_id)
+    # 转 OCR 必须晚于 pop_job: 否则 _enqueue_extract 见本 job 仍 running
+    # 拒收 (2026-11-26 首测踩到, 文档滞留 NULL 只能等扫描周期兜底)
+    if to_ocr:
+        _enqueue_extract(collection, doc_id, 'ocr')
+
+
+def _pdf_pages(pdf_path) -> int:
+    try:
+        src = pymupdf.open(str(pdf_path))
+        try:
+            return len(src)
+        finally:
+            src.close()
+    except Exception:
+        return 1
+
+
 def _ocr_worker() -> None:
     logger.info("自动 OCR worker 启动")
     while not _stop.is_set():
@@ -351,19 +410,19 @@ def _ocr_worker() -> None:
                 _queue_cond.wait(timeout=5)
             if _stop.is_set():
                 return
-            collection, doc_id = _ocr_queue.pop(0)
+            collection, doc_id, kind = _ocr_queue.pop(0)
 
         try:
             row = _query(
                 collection,
-                'SELECT id FROM documents WHERE id = ?', (doc_id,))
+                'SELECT id, filename FROM documents WHERE id = ?', (doc_id,))
             if not row:
-                _ocr_attempts.pop((collection, doc_id), None)
+                _ocr_attempts.pop((collection, doc_id, kind), None)
                 continue
             pdf_path = get_original_file(collection, doc_id)
             if not pdf_path:
                 # 计次: 否则每轮扫描都会重新入队同一个缺原件文档, 刷日志
-                key = (collection, doc_id)
+                key = (collection, doc_id, kind)
                 n = _ocr_attempts.get(key, 0) + 1
                 _ocr_attempts[key] = n
                 logger.warning("自动 OCR 跳过 coll=%s doc=%s: 无原件 "
@@ -373,6 +432,10 @@ def _ocr_worker() -> None:
             src = pymupdf.open(pdf_path)
             total_pages = len(src)
             src.close()
+
+            if kind == 'native':
+                _run_native_extract(collection, doc_id, pdf_path, row)
+                continue
 
             from .ocr import get_provider
             provider = get_provider()
@@ -390,7 +453,7 @@ def _ocr_worker() -> None:
                 # ocr_page_state, 重跑会自动跳过 done 页只补失败页.
                 # 也计次: 失败页会让 _pending_ocr 每轮重新入队, 不计次就
                 # 每 2 分钟重跑一次 (2026-11-20).
-                key = (collection, doc_id)
+                key = (collection, doc_id, kind)
                 n = _ocr_attempts.get(key, 0) + 1
                 _ocr_attempts[key] = n
                 logger.warning(
@@ -399,7 +462,7 @@ def _ocr_worker() -> None:
                     collection, doc_id, job.get('failed_pages'),
                     n, MAX_OCR_ATTEMPTS)
             elif job and job.get('status') == 'error':
-                key = (collection, doc_id)
+                key = (collection, doc_id, kind)
                 n = _ocr_attempts.get(key, 0) + 1
                 _ocr_attempts[key] = n
                 logger.warning("自动 OCR 失败 coll=%s doc=%s (第 %s/%s 次): %s",
@@ -412,10 +475,10 @@ def _ocr_worker() -> None:
                         'error': f"自动OCR失败: {job.get('error')}"})
                     st['errors'] = st['errors'][-3:]
             else:
-                _ocr_attempts.pop((collection, doc_id), None)
+                _ocr_attempts.pop((collection, doc_id, kind), None)
         except Exception as e:
             pop_job(collection, doc_id)
-            key = (collection, doc_id)
+            key = (collection, doc_id, kind)
             _ocr_attempts[key] = _ocr_attempts.get(key, 0) + 1
             logger.warning("自动 OCR worker 异常 coll=%s doc=%s: %s",
                            collection, doc_id, e)
@@ -430,7 +493,7 @@ def get_scan_status(collection: str) -> dict:
     running = 0
     queued = 0
     with _queue_cond:
-        queued = sum(1 for c, _ in _ocr_queue if c == collection)
+        queued = sum(1 for item in _ocr_queue if item[0] == collection)
     job = _reocr_get_all_for(collection)
     running = sum(1 for j in job.values()
                   if j.get('status') == 'running' and j.get('source') == 'auto')

@@ -111,7 +111,7 @@ def main():
             try:
                 conn.execute("DELETE FROM lines WHERE doc_id=?", (did,))
                 conn.execute("DELETE FROM blocks_fts WHERE doc_id=?", (did,))
-                n_lines, n_blocks, empty = _native_extract_pages(
+                n_lines, n_blocks, empty, needs_ocr = _native_extract_pages(
                     orig, conn, did)
                 if n_lines == 0:
                     conn.rollback()
